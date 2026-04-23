@@ -1,3 +1,4 @@
+#[repr(C)]
 pub struct State {
     pub counter: usize,
 }
