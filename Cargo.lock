@@ -5,3 +5,10 @@ version = 4
 [[package]]
 name = "symbiont"
 version = "0.1.0"
+dependencies = [
+ "symbiont-lib",
+]
+
+[[package]]
+name = "symbiont-lib"
+version = "0.1.0"
