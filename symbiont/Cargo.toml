@@ -11,3 +11,5 @@ categories = ["ai"]
 
 [dependencies]
 symbiont-lib = { path = "../symbiont-lib" }
+
+hot-lib-reloader = "0.8.2"

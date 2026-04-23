@@ -29,4 +29,6 @@ and memory-safety guarantees offered by the Rust compiler and its ecosystem.
 - Auto-research workflows.
 - Typed Function Body implementation search.
 - Black-box optimization of inputs that produce the desired outputs.
-
+- Self evolving feature processing pipelines.
+- Agentic code evolution generally.
+- Do you even need more?

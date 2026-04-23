@@ -45,6 +45,7 @@
       cargo-tarpaulin
       cargo-mutants
       cargo-llvm-cov
+      cargo-watch
       taplo # Toml toolkit with formatter
       yamlfmt
     ];
