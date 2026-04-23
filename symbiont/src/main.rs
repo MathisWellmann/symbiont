@@ -1,3 +1,7 @@
+use std::env::var;
+
+use rig::{client::CompletionClient, completion::Prompt, providers::openai};
+
 // The value of `dylib = "..."` should be the library containing the hot-reloadable functions
 // It should normally be the crate name of your sub-crate.
 #[hot_lib_reloader::hot_module(
@@ -15,7 +19,29 @@ mod hot_lib {
     pub use symbiont_lib::State;
 }
 
-fn main() {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let api_key = var("API_KEY").unwrap_or_default();
+    let base_url = var("BASE_URL").unwrap_or_default();
+    let model = var("MODEL").unwrap_or_default();
+
+    let client = openai::Client::builder()
+        .api_key(api_key)
+        .base_url(base_url)
+        .build()?
+        .completions_api(); // Use Chat Completions API instead of Responses API
+
+    // Create agent with a single context prompt
+    let comedian_agent = client
+        .agent(model)
+        .preamble("You are a comedian here to entertain the user using humour and jokes.")
+        .build();
+
+    // Prompt the agent and print the response
+    let response = comedian_agent.prompt("Entertain me!").await?;
+
+    println!("{response}");
+
     let mut state = hot_lib::State { counter: 0 };
     // Running in a loop so you can modify the code and see the effects
     loop {
