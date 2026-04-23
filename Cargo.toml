@@ -1,0 +1,8 @@
+[package]
+name = "symbiont"
+version = "0.1.0"
+edition = "2024"
+authors = ["MathisWellmann <wellmannmathis@gmail.com>"]
+description = "Agent harness where models write native Rust code as dylibs, that get hot-swapped into the primary binary."
+
+[dependencies]
