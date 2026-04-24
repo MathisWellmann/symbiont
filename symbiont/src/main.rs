@@ -25,7 +25,7 @@ mod hot_lib {
 
     // Because we generate functions with the exact same signatures,
     // we need to import types used
-    pub use symbiont_lib::State;
+    // pub use symbiont_lib::State;
 }
 
 #[tokio::main]
@@ -68,10 +68,11 @@ async fn main() -> Result<()> {
     let response = agent.prompt(prompt).await?;
     info!("{response}");
 
-    let mut state = hot_lib::State { counter: 0 };
+    // let mut state = hot_lib::State { counter: 0 };
+    let mut counter = 1;
     // Running in a loop so you can modify the code and see the effects
     loop {
-        hot_lib::step(&mut state);
+        hot_lib::step(&mut counter);
         std::thread::sleep(std::time::Duration::from_secs(1));
     }
 }
