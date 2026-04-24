@@ -8,16 +8,7 @@ use std::fs;
 use syn::{ItemFn, ReturnType, parse_file};
 use tracing::debug;
 
-/// Represents a parsed function's metadata and stringified signature.
-#[derive(Debug)]
-pub(crate) struct FuncSig {
-    /// The function name.
-    name: String,
-    /// Full signature, e.g. `fn step(state: &mut State)`.
-    signature: String,
-    /// Whether the function is `pub`.
-    is_public: bool,
-}
+pub(crate) type FuncSig = String;
 
 /// Parse a Rust source file and return all function signatures.
 pub(crate) fn parse_functions() -> Result<Vec<FuncSig>> {
@@ -31,16 +22,17 @@ pub(crate) fn parse_functions() -> Result<Vec<FuncSig>> {
             let name = item_fn.sig.ident.to_string();
             let is_public = matches!(item_fn.vis, syn::Visibility::Public(_));
 
+            if !is_public {
+                debug!("Function is not `pub`, skipping.");
+                return None;
+            }
+
             if !is_no_mangle(item_fn) {
                 debug!("Function is not `#[no_mangle]`, ignoring: {name}");
                 return None;
             }
 
-            format_signature(&item_fn.sig).map(|signature| FuncSig {
-                name,
-                signature,
-                is_public,
-            })
+            format_signature(&item_fn.sig)
         } else {
             None
         }
