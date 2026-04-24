@@ -1,4 +1,5 @@
 use quote::ToTokens;
+use tracing::info;
 
 use crate::{
     Error, Result,
@@ -11,14 +12,14 @@ use crate::{
 /// - All function signatures match the expected signatures from lib.rs.
 ///
 /// Returns `Err` with a descriptive message if any check fails.
-pub(crate) fn validate_generated_ast(file: &syn::File, expected_sigs: &[String]) -> Result<()> {
+pub(crate) fn validate_generated_ast(file: &mut syn::File, expected_sigs: &[String]) -> Result<()> {
     if expected_sigs.is_empty() {
         return Ok(());
     }
 
     let mut found_sigs: Vec<String> = Vec::new();
 
-    for item in &file.items {
+    for item in &mut file.items {
         match item {
             syn::Item::Fn(item_fn) => {
                 let name = item_fn.sig.ident.to_string();
@@ -27,9 +28,11 @@ pub(crate) fn validate_generated_ast(file: &syn::File, expected_sigs: &[String])
                 if !is_pub(item_fn) {
                     return Err(Error::NonPublicFunction(name));
                 }
-                // Check #[no_mangle] attribute
+                // Add #[unsafe(no_mangle)] if missing
                 if !is_no_mangle(item_fn) {
-                    return Err(Error::MissingNoMangle(name));
+                    info!("Function `{name}` missing #[unsafe(no_mangle)], adding it");
+                    let attr: syn::Attribute = syn::parse_quote!(#[unsafe(no_mangle)]);
+                    item_fn.attrs.insert(0, attr);
                 }
 
                 // Format the signature and check it matches one of the expected ones
@@ -136,25 +139,31 @@ pub fn step(counter: &mut usize) {
     *counter += 1;
 }
 ```"#;
-        let file = parse_rust_code(input).unwrap();
+        let mut file = parse_rust_code(input).unwrap();
         let expected = vec!["fn step(counter: &mut usize)".to_string()];
-        validate_generated_ast(&file, &expected).expect("validation passed");
+        validate_generated_ast(&mut file, &expected).expect("validation passed");
     }
 
     #[test]
-    fn test_validate_missing_no_mangle() {
+    fn test_validate_missing_no_mangle_gets_added() {
         let input = r#"```rust
 pub fn step(counter: &mut usize) {
     *counter += 1;
 }
 ```"#;
-        let file = parse_rust_code(input).unwrap();
+        let mut file = parse_rust_code(input).unwrap();
         let expected = vec!["fn step(counter: &mut usize)".to_string()];
-        let err = validate_generated_ast(&file, &expected).unwrap_err();
-        let msg = format!("{err}");
+        validate_generated_ast(&mut file, &expected)
+            .expect("should succeed by adding #[unsafe(no_mangle)]");
+
+        // Verify the attribute was actually added
+        let item_fn = match &file.items[0] {
+            syn::Item::Fn(f) => f,
+            _ => panic!("expected fn item"),
+        };
         assert!(
-            msg.contains("no_mangle"),
-            "expected no_mangle error, got: {msg}"
+            is_no_mangle(item_fn),
+            "expected #[unsafe(no_mangle)] to be present after validation"
         );
     }
 
@@ -166,9 +175,9 @@ fn step(counter: &mut usize) {
     *counter += 1;
 }
 ```"#;
-        let file = parse_rust_code(input).unwrap();
+        let mut file = parse_rust_code(input).unwrap();
         let expected = vec!["fn step(counter: &mut usize)".to_string()];
-        let err = validate_generated_ast(&file, &expected).unwrap_err();
+        let err = validate_generated_ast(&mut file, &expected).unwrap_err();
         let msg = format!("{err}");
         assert!(
             msg.contains("not `pub`") || msg.contains("NonPublic"),
@@ -184,9 +193,9 @@ pub fn add(a: i32, b: i32) -> i32 {
     a + b
 }
 ```"#;
-        let file = parse_rust_code(input).unwrap();
+        let mut file = parse_rust_code(input).unwrap();
         let expected = vec!["fn step(counter: &mut usize)".to_string()];
-        let err = validate_generated_ast(&file, &expected).unwrap_err();
+        let err = validate_generated_ast(&mut file, &expected).unwrap_err();
         let msg = format!("{err}");
         assert!(
             msg.contains("step") && msg.contains("add"),
@@ -202,9 +211,9 @@ pub fn step(counter: &mut usize) {
     *counter += 1;
 }
 ```"#;
-        let file = parse_rust_code(input).unwrap();
+        let mut file = parse_rust_code(input).unwrap();
         let expected = vec!["fn step(counter: &mut usize)".to_string()];
-        validate_generated_ast(&file, &expected).expect("#[unsafe(no_mangle)] should be valid");
+        validate_generated_ast(&mut file, &expected).expect("#[unsafe(no_mangle)] should be valid");
     }
 
     #[test]
@@ -215,8 +224,8 @@ pub fn step(counter: &mut usize) -> usize {
     *counter
 }
 ```"#;
-        let file = parse_rust_code(input).unwrap();
+        let mut file = parse_rust_code(input).unwrap();
         let expected = vec!["fn step(counter: &mut usize) -> usize".to_string()];
-        validate_generated_ast(&file, &expected).expect("validation with return type passed");
+        validate_generated_ast(&mut file, &expected).expect("validation with return type passed");
     }
 }
