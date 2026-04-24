@@ -3,7 +3,6 @@ use std::{
     path::Path,
 };
 
-use prettyplease;
 use tracing::info;
 
 use crate::{
