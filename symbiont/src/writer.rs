@@ -1,11 +1,15 @@
-use crate::Result;
-use std::fs;
-use std::path::Path;
+use std::{
+    fs,
+    path::Path,
+};
 
 use prettyplease;
 use tracing::info;
 
-use crate::error::Error;
+use crate::{
+    Result,
+    error::Error,
+};
 
 /// Write the validated AST to `symbiont-lib/src/lib.rs`, preserving
 /// any non-function items (comments, structs, etc.) that were already there.

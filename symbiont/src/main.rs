@@ -7,18 +7,29 @@ mod validation;
 mod writer;
 
 use error::Result;
-use tracing::{info, warn};
+use tracing::{
+    info,
+    warn,
+};
 use tracing_subscriber::EnvFilter;
 mod function_parser;
 mod parser;
 
-use rig::{agent::Agent, completion::Prompt, providers::openai::completion::CompletionModel};
 use std::time::Duration;
+
+use rig::{
+    agent::Agent,
+    completion::Prompt,
+    providers::openai::completion::CompletionModel,
+};
 
 use crate::{
     compiler::compile_lib,
     error::Error,
-    function_parser::{FuncSig, parse_functions},
+    function_parser::{
+        FuncSig,
+        parse_functions,
+    },
     inference::init_agent,
     parser::parse_rust_code,
     validation::validate_generated_ast,

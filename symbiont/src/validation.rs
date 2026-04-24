@@ -1,10 +1,19 @@
 use quote::ToTokens;
-use syn::{FnArg, Signature, Type, Visibility};
+use syn::{
+    FnArg,
+    Signature,
+    Type,
+    Visibility,
+};
 use tracing::info;
 
 use crate::{
-    Error, Result,
-    utils::{is_no_mangle, is_pub},
+    Error,
+    Result,
+    utils::{
+        is_no_mangle,
+        is_pub,
+    },
 };
 
 /// Validate that a parsed AST enforces typed generation:
@@ -129,9 +138,8 @@ fn format_return_type(ty: &Type) -> String {
 
 #[cfg(test)]
 mod tests {
-    use crate::parser::parse_rust_code;
-
     use super::*;
+    use crate::parser::parse_rust_code;
 
     #[test]
     fn test_validate_valid_code() {

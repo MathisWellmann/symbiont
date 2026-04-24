@@ -2,11 +2,17 @@
 //!
 //! Uses `syn` to parse the AST and `quote` to convert types back to source text.
 
-use crate::Result;
-use quote::ToTokens;
 use std::fs;
-use syn::{ItemFn, ReturnType, parse_file};
+
+use quote::ToTokens;
+use syn::{
+    ItemFn,
+    ReturnType,
+    parse_file,
+};
 use tracing::debug;
+
+use crate::Result;
 
 pub(crate) type FuncSig = String;
 

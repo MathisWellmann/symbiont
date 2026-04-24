@@ -1,7 +1,13 @@
 use std::env::var;
 
-use rig::providers::openai::completion::CompletionModel;
-use rig::{agent::Agent, client::CompletionClient, providers::openai};
+use rig::{
+    agent::Agent,
+    client::CompletionClient,
+    providers::{
+        openai,
+        openai::completion::CompletionModel,
+    },
+};
 
 pub(crate) fn init_agent() -> crate::Result<Agent<CompletionModel>> {
     let api_key = var("API_KEY").unwrap_or_default();

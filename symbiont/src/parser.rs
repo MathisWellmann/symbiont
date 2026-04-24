@@ -9,8 +9,12 @@
 //! ```"
 //!
 
-use crate::{Result, error::Error};
 use syn::parse_file;
+
+use crate::{
+    Result,
+    error::Error,
+};
 
 /// Extract the inner Rust source code from a markdown-fenced code block.
 ///
