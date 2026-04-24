@@ -63,7 +63,9 @@ async fn main() -> Result<()> {
         if counter % 10 == 0 {
             // Prompt the agent and print the response
             let prompt = format!(
-                "Give a concise implementation for this function signature: ```{}```. Code Only. Function must have `pub` visibility and `#[unsafe(no_mangle)]` annotation",
+                "Give a concise implementation for this function signature: ```{}```, \
+                that increments the counter by a random small value. \
+                Code Only. Function must have `pub` visibility and `#[unsafe(no_mangle)]` annotation",
                 fn_sigs[0]
             );
             info!("prompt: {prompt}");

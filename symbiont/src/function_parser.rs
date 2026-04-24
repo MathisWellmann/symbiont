@@ -109,13 +109,12 @@ fn default_lib_path() -> String {
     format!("{}/../symbiont-lib/src/lib.rs", manifest)
 }
 
-/// If `true`, then the function is marked as `#[no_mangle]` or `#[unsafe(no_mangle)]`
+/// If `true`, the function is marked with `#[unsafe(no_mangle)]`
 fn is_no_mangle(code: &ItemFn) -> bool {
     code.attrs.iter().any(|attr| {
-        // `#[no_mangle]` → path is ["no_mangle"]
-        // `#[unsafe(no_mangle)]` → path is ["unsafe"], meta is "unsafe (no_mangle)"
-        attr.path().is_ident("no_mangle")
-            || format!("{}", attr.meta.to_token_stream()).contains("no_mangle")
+        // Only match exactly #[unsafe(no_mangle)]
+        attr.path().is_ident("unsafe")
+            && matches!(&attr.meta, syn::Meta::List(list) if list.tokens.to_string() == "no_mangle")
     })
 }
 
