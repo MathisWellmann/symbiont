@@ -18,6 +18,9 @@ pub(crate) enum Error {
     #[error("Could not parse Rust code.")]
     CouldNotParseRust,
 
+    #[error("Failed to write lib.rs: {0}")]
+    WriteLib(String),
+
     #[error("Validation failed: function '{0}' is not `pub`")]
     NonPublicFunction(String),
 
