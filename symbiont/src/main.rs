@@ -75,7 +75,7 @@ async fn main() -> Result<()> {
             let base_prompt = format!(
                 "Give a concise implementation for this function signature: ```{}```, \
                 that increments the counter by a constant in the range (5..20). \
-                Code Only. Function must have `pub` visibility and `#[unsafe(no_mangle)]` annotation",
+                Code Only. Function must have `pub` visibility.",
                 fn_sigs[0]
             );
             let mut prompt = base_prompt.clone();
@@ -99,8 +99,6 @@ async fn main() -> Result<()> {
                     NonPublicFunction(_) => {
                         prompt.push_str("Generated function was not of `pub` visibility")
                     }
-                    // TODO: this could just be added by the harness too.
-                    MissingNoMangle(_) => prompt.push_str("Generated function was not annotated with `#[unsafe(no_mangle)]`. Try again and include it."),
                     SignatureMismatch{ name: _, expected, got } => prompt.push_str(&format!("Generated function signature miss-match. Expected ```{expected}```, Got ```{got}```")),
                     CompilationFailed(ref stderr) => prompt.push_str(&format!("The generated code failed to compile. Compiler output:\n```\n{stderr}\n```\nPlease fix the compilation errors.")),
                     _ => warn!("Unhandled error"),
@@ -116,8 +114,8 @@ async fn evolve(agent: &Agent<CompletionModel>, prompt: &str, fn_sigs: &[FuncSig
     let response = agent.prompt(prompt).await?;
     info!("{response}");
 
-    let ast = parse_rust_code(&response).map_err(|_| Error::CouldNotParseRust)?;
-    validate_generated_ast(&ast, &fn_sigs)?;
+    let mut ast = parse_rust_code(&response).map_err(|_| Error::CouldNotParseRust)?;
+    validate_generated_ast(&mut ast, &fn_sigs)?;
 
     // Subscribe to reload events before triggering any changes,
     // so we don't miss the notification.

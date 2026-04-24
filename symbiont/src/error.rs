@@ -24,9 +24,6 @@ pub(crate) enum Error {
     #[error("Validation failed: function '{0}' is not `pub`")]
     NonPublicFunction(String),
 
-    #[error("Validation failed: function '{0}' is missing `#[no_mangle]`")]
-    MissingNoMangle(String),
-
     #[error("Validation failed: signature mismatch for '{name}'. Expected: {expected}. Got: {got}")]
     SignatureMismatch {
         name: String,
