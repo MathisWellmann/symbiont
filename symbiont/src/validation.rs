@@ -1,4 +1,5 @@
 use quote::ToTokens;
+use syn::{FnArg, Signature, Type, Visibility};
 use tracing::info;
 
 use crate::{
@@ -24,9 +25,10 @@ pub(crate) fn validate_generated_ast(file: &mut syn::File, expected_sigs: &[Stri
             syn::Item::Fn(item_fn) => {
                 let name = item_fn.sig.ident.to_string();
 
-                // Check pub visibility
+                // Add `pub` visibility if missing
                 if !is_pub(item_fn) {
-                    return Err(Error::NonPublicFunction(name));
+                    info!("Function `{name}` missing `pub` visibility, adding it");
+                    item_fn.vis = Visibility::Public(syn::token::Pub::default());
                 }
                 // Add #[unsafe(no_mangle)] if missing
                 if !is_no_mangle(item_fn) {
@@ -74,7 +76,7 @@ pub(crate) fn validate_generated_ast(file: &mut syn::File, expected_sigs: &[Stri
 }
 
 /// Format a `syn::Signature` into a human-readable string (same format as function_parser).
-fn format_signature(sig: &syn::Signature) -> Option<String> {
+fn format_signature(sig: &Signature) -> Option<String> {
     let mut out = String::from("fn ");
     out.push_str(&sig.ident.to_string());
 
@@ -95,7 +97,7 @@ fn format_signature(sig: &syn::Signature) -> Option<String> {
     Some(out)
 }
 
-fn format_fn_arg(arg: &syn::FnArg) -> String {
+fn format_fn_arg(arg: &FnArg) -> String {
     match arg {
         syn::FnArg::Receiver(recv) => {
             if recv.mutability.is_some() {
@@ -121,7 +123,7 @@ fn normalize_tokens(mut s: String) -> String {
     s
 }
 
-fn format_return_type(ty: &syn::Type) -> String {
+fn format_return_type(ty: &Type) -> String {
     normalize_tokens(ty.to_token_stream().to_string())
 }
 
@@ -168,20 +170,28 @@ pub fn step(counter: &mut usize) {
     }
 
     #[test]
-    fn test_validate_non_public_function() {
+    fn test_validate_non_public_gets_pub_added() {
         let input = r#"```rust
-#[no_mangle]
 fn step(counter: &mut usize) {
     *counter += 1;
 }
 ```"#;
         let mut file = parse_rust_code(input).unwrap();
         let expected = vec!["fn step(counter: &mut usize)".to_string()];
-        let err = validate_generated_ast(&mut file, &expected).unwrap_err();
-        let msg = format!("{err}");
+        validate_generated_ast(&mut file, &expected)
+            .expect("should succeed by adding `pub` and #[unsafe(no_mangle)]");
+
+        let item_fn = match &file.items[0] {
+            syn::Item::Fn(f) => f,
+            _ => panic!("expected fn item"),
+        };
         assert!(
-            msg.contains("not `pub`") || msg.contains("NonPublic"),
-            "expected pub error, got: {msg}"
+            is_pub(item_fn),
+            "expected `pub` visibility after validation"
+        );
+        assert!(
+            is_no_mangle(item_fn),
+            "expected #[unsafe(no_mangle)] after validation"
         );
     }
 
