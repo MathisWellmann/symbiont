@@ -27,8 +27,12 @@ pub(crate) enum Error {
     #[error("Validation failed: function '{0}' is missing `#[no_mangle]`")]
     MissingNoMangle(String),
 
-    #[error("Validation failed: signature mismatch for '{0}'. Expected: {1}. Got: {2}")]
-    SignatureMismatch(String, String, String),
+    #[error("Validation failed: signature mismatch for '{name}'. Expected: {expected}. Got: {got}")]
+    SignatureMismatch {
+        name: String,
+        expected: String,
+        got: String,
+    },
 }
 
 pub(crate) type Result<T, E = Error> = std::result::Result<T, E>;
