@@ -3,6 +3,7 @@ mod inference;
 mod tests;
 mod utils;
 mod validation;
+mod writer;
 
 use error::Result;
 use tracing::info;
@@ -14,7 +15,7 @@ use rig::completion::Prompt;
 
 use crate::{
     error::Error, function_parser::parse_functions, inference::init_agent, parser::parse_rust_code,
-    validation::validate_generated_ast,
+    validation::validate_generated_ast, writer::write_generated_lib,
 };
 
 // The value of `dylib = "..."` should be the library containing the hot-reloadable functions
@@ -51,27 +52,29 @@ async fn main() -> Result<()> {
 
     let agent = init_agent()?;
 
-    // Prompt the agent and print the response
-    let prompt = format!(
-        "Give a concise implementation for this function signature: ```{}```. Code Only. Function must have `pub` visibility and `#[unsafe(no_mangle)]` annotation",
-        fn_sigs[0]
-    );
-    info!("prompt: {prompt}");
-    let response = agent.prompt(prompt).await?;
-    info!("{response}");
-
-    let ast = parse_rust_code(&response).map_err(|_| Error::CouldNotParseRust)?;
-    validate_generated_ast(&ast, &fn_sigs)?;
-
-    // TODO: overwrite the existing `lib.rs` file with new code
-    // TODO: compile rust code
-    // TODO: run new rust code.
-
     // let mut state = hot_lib::State { counter: 0 };
     let mut counter = 1;
     // Running in a loop so you can modify the code and see the effects
     loop {
         hot_lib::step(&mut counter);
+        println!("counter: {counter}");
         std::thread::sleep(std::time::Duration::from_secs(1));
+
+        if counter % 10 == 0 {
+            // Prompt the agent and print the response
+            let prompt = format!(
+                "Give a concise implementation for this function signature: ```{}```. Code Only. Function must have `pub` visibility and `#[unsafe(no_mangle)]` annotation",
+                fn_sigs[0]
+            );
+            info!("prompt: {prompt}");
+            let response = agent.prompt(prompt).await?;
+            info!("{response}");
+
+            let ast = parse_rust_code(&response).map_err(|_| Error::CouldNotParseRust)?;
+            validate_generated_ast(&ast, &fn_sigs)?;
+
+            // Write the validated AST to lib.rs
+            write_generated_lib(&ast)?;
+        }
     }
 }
