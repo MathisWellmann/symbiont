@@ -34,11 +34,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create agent with a single context prompt
     let comedian_agent = client
         .agent(model)
-        .preamble("You are a comedian here to entertain the user using humour and jokes.")
+        .preamble("You are a Rust Software Engineer, specialized in function body implementations.")
         .build();
 
     // Prompt the agent and print the response
-    let response = comedian_agent.prompt("Entertain me!").await?;
+    let response = comedian_agent
+        .prompt("Implement a function body for this signature: `pub fn step(state: &mut State)`")
+        .await?;
 
     println!("{response}");
 
