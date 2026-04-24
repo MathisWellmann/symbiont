@@ -95,10 +95,6 @@ async fn main() -> Result<()> {
                         "Your response did not contain valid Rust code. Please try again",
                     ),
                     WriteLib(_) => todo!(),
-                    // TODO: this could just be added by the harness too.
-                    NonPublicFunction(_) => {
-                        prompt.push_str("Generated function was not of `pub` visibility")
-                    }
                     SignatureMismatch{ name: _, expected, got } => prompt.push_str(&format!("Generated function signature miss-match. Expected ```{expected}```, Got ```{got}```")),
                     CompilationFailed(ref stderr) => prompt.push_str(&format!("The generated code failed to compile. Compiler output:\n```\n{stderr}\n```\nPlease fix the compilation errors.")),
                     _ => warn!("Unhandled error"),

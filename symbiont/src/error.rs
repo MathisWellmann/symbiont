@@ -21,9 +21,6 @@ pub(crate) enum Error {
     #[error("Failed to write lib.rs: {0}")]
     WriteLib(String),
 
-    #[error("Validation failed: function '{0}' is not `pub`")]
-    NonPublicFunction(String),
-
     #[error("Validation failed: signature mismatch for '{name}'. Expected: {expected}. Got: {got}")]
     SignatureMismatch {
         name: String,
