@@ -51,7 +51,7 @@ fn format_signature(sig: &syn::Signature) -> Option<String> {
 
     // Inputs: `(a: i32, b: &str)`
     out.push('(');
-    let inputs: Vec<_> = sig.inputs.iter().map(|arg| format_fn_arg(arg)).collect();
+    let inputs: Vec<_> = sig.inputs.iter().map(format_fn_arg).collect();
     out.push_str(&inputs.join(", "));
     out.push(')');
 
