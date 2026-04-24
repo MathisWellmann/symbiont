@@ -38,8 +38,12 @@ pub(crate) fn validate_generated_ast(file: &syn::File, expected_sigs: &[String])
                 found_sigs.push(sig.clone());
 
                 if !expected_sigs.contains(&sig) {
-                    let expected_str = expected_sigs.join(", ");
-                    return Err(Error::SignatureMismatch(name, expected_str, sig));
+                    let expected = expected_sigs.join(", ");
+                    return Err(Error::SignatureMismatch {
+                        name,
+                        expected,
+                        got: sig,
+                    });
                 }
             }
             _ => {}
@@ -55,11 +59,11 @@ pub(crate) fn validate_generated_ast(file: &syn::File, expected_sigs: &[String])
                 .split('(')
                 .next()
                 .unwrap_or("unknown");
-            return Err(Error::SignatureMismatch(
-                name.to_string(),
-                expected.clone(),
-                "not found".to_string(),
-            ));
+            return Err(Error::SignatureMismatch {
+                name: name.to_string(),
+                expected: expected.clone(),
+                got: "not found".to_string(),
+            });
         }
     }
 
