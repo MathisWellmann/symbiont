@@ -1,4 +1,5 @@
 mod error;
+mod tests;
 
 use error::Result;
 use tracing::info;

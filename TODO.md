@@ -1,0 +1,2 @@
+- Include function doc comments for more context.
+- Include type definitions for any input and output types to the function.
