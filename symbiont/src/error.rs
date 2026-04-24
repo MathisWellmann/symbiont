@@ -17,6 +17,15 @@ pub(crate) enum Error {
 
     #[error("Could not parse Rust code.")]
     CouldNotParseRust,
+
+    #[error("Validation failed: function '{0}' is not `pub`")]
+    NonPublicFunction(String),
+
+    #[error("Validation failed: function '{0}' is missing `#[no_mangle]`")]
+    MissingNoMangle(String),
+
+    #[error("Validation failed: signature mismatch for '{0}'. Expected: {1}. Got: {2}")]
+    SignatureMismatch(String, String, String),
 }
 
 pub(crate) type Result<T, E = Error> = std::result::Result<T, E>;

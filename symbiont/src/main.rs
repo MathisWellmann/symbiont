@@ -1,6 +1,8 @@
 mod error;
 mod inference;
 mod tests;
+mod utils;
+mod validation;
 
 use error::Result;
 use tracing::info;
@@ -12,6 +14,7 @@ use rig::completion::Prompt;
 
 use crate::{
     error::Error, function_parser::parse_functions, inference::init_agent, parser::parse_rust_code,
+    validation::validate_generated_ast,
 };
 
 // The value of `dylib = "..."` should be the library containing the hot-reloadable functions
@@ -50,16 +53,15 @@ async fn main() -> Result<()> {
 
     // Prompt the agent and print the response
     let prompt = format!(
-        "Give a concise implementation for this function signature: ```{}```. Code Only",
+        "Give a concise implementation for this function signature: ```{}```. Code Only. Function must have `pub` visibility and `#[unsafe(no_mangle)]` annotation",
         fn_sigs[0]
     );
     info!("prompt: {prompt}");
     let response = agent.prompt(prompt).await?;
     info!("{response}");
 
-    let Ok(_ast) = parse_rust_code(&response) else {
-        return Err(Error::CouldNotParseRust);
-    };
+    let ast = parse_rust_code(&response).map_err(|_| Error::CouldNotParseRust)?;
+    validate_generated_ast(&ast, &fn_sigs)?;
 
     // TODO: overwrite the existing `lib.rs` file with new code
     // TODO: compile rust code
