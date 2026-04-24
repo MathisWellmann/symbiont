@@ -7,7 +7,7 @@ use crate::{
 
 /// Validate that a parsed AST enforces typed generation:
 /// - All functions are `pub`
-/// - All functions have `#[no_mangle]` (or `#[unsafe(no_mangle)]`)
+/// - All functions have `#[unsafe(no_mangle)]`)
 /// - All function signatures match the expected signatures from lib.rs.
 ///
 /// Returns `Err` with a descriptive message if any check fails.
