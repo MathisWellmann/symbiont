@@ -1,12 +1,12 @@
 [package]
-name = "symbiont-lib"
-version = "0.1.0"
-edition = "2024"
 authors = ["MathisWellmann <wellmannmathis@gmail.com>"]
 description = "Core library for the symbiont agent harness."
+edition = "2024"
+name = "symbiont-lib"
+version = "0.1.0"
 
 
 [lib]
-crate-type = ["rlib", "dylib"]
+crate-type = ["dylib", "rlib"]
 
 [dependencies]
