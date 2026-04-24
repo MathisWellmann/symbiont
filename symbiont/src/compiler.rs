@@ -1,6 +1,10 @@
-use crate::error::{Error, Result};
 use tokio::process::Command;
 use tracing::info;
+
+use crate::error::{
+    Error,
+    Result,
+};
 
 /// Compile `symbiont-lib` by invoking `cargo build -p symbiont-lib`.
 /// Blocks (async) until compilation finishes.
