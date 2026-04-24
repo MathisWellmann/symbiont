@@ -1,9 +1,15 @@
 mod error;
 
 use error::Result;
+use tracing::info;
+use tracing_subscriber::EnvFilter;
+mod function_parser;
+
 use std::env::var;
 
 use rig::{client::CompletionClient, completion::Prompt, providers::openai};
+
+use crate::function_parser::parse_functions;
 
 // The value of `dylib = "..."` should be the library containing the hot-reloadable functions
 // It should normally be the crate name of your sub-crate.
@@ -24,6 +30,14 @@ mod hot_lib {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env())
+        .with_line_number(true)
+        .init();
+
+    let fn_sigs = parse_functions()?;
+    info!("fn_sigs: {fn_sigs:?}");
+
     let api_key = var("API_KEY").unwrap_or_default();
     let base_url = var("BASE_URL").unwrap_or_default();
     let model = var("MODEL").unwrap_or_default();
