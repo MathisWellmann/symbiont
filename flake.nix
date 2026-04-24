@@ -64,6 +64,7 @@
             ++ tooling
             ++ nix_tools;
           RUST_BACKTRACE = "1";
+          RUST_LOG="debug";
         };
       };
     };
