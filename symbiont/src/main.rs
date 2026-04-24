@@ -1,3 +1,6 @@
+mod error;
+
+use error::Result;
 use std::env::var;
 
 use rig::{client::CompletionClient, completion::Prompt, providers::openai};
@@ -20,7 +23,7 @@ mod hot_lib {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<()> {
     let api_key = var("API_KEY").unwrap_or_default();
     let base_url = var("BASE_URL").unwrap_or_default();
     let model = var("MODEL").unwrap_or_default();

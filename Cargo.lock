@@ -1709,6 +1709,7 @@ dependencies = [
  "hot-lib-reloader",
  "rig-core",
  "symbiont-lib",
+ "thiserror 2.0.18",
  "tokio",
 ]
 
