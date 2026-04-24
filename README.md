@@ -5,9 +5,10 @@ It enables fast-iteration cycles in agentic auto-research tasks such a function 
 
 ## Core highlights:
 - Agents express intent as type-safe Rust code.
+- Constrained code generation with harness-enforced rules.
 - In-place evolution of functions through [hot-reloading dylibs](https://github.com/rksm/hot-lib-reloader-rs)
 - Bare metal function execution performance (configurable optimization profile)
-- Plug-in Inference provider support, with a focus on self-hosting.
+- Plug-in Inference provider support, using [rig](https://github.com/0xPlaygrounds/rig)
 
 ## Motivation
 Current generation agent harnesses such as [Agentica](https://github.com/symbolica-ai/ARC-AGI-3-Agents) achive SOTA
