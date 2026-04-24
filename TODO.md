@@ -1,5 +1,4 @@
-- Feed validation errors back into the LLM
-- Use the compilation trigger into the harness, instead of relying on `cargo watch`.
-- Feed compile errors back into the LLM to force it to produce correct code.
+- Include basic example for counter.
 - Include function doc comments for more context.
 - Include type definitions for any input and output types to the function.
+- Add metrics like compilation time, tokens-in tokens-out, num evolutions.
