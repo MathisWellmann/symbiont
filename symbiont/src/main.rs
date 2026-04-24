@@ -6,10 +6,13 @@ use error::Result;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 mod function_parser;
+mod parser;
 
 use rig::completion::Prompt;
 
-use crate::{function_parser::parse_functions, inference::init_agent};
+use crate::{
+    error::Error, function_parser::parse_functions, inference::init_agent, parser::parse_rust_code,
+};
 
 // The value of `dylib = "..."` should be the library containing the hot-reloadable functions
 // It should normally be the crate name of your sub-crate.
@@ -44,6 +47,7 @@ async fn main() -> Result<()> {
     );
 
     let agent = init_agent()?;
+
     // Prompt the agent and print the response
     let prompt = format!(
         "Give a concise implementation for this function signature: ```{}```. Code Only",
@@ -52,6 +56,14 @@ async fn main() -> Result<()> {
     info!("prompt: {prompt}");
     let response = agent.prompt(prompt).await?;
     info!("{response}");
+
+    let Ok(_ast) = parse_rust_code(&response) else {
+        return Err(Error::CouldNotParseRust);
+    };
+
+    // TODO: overwrite the existing `lib.rs` file with new code
+    // TODO: compile rust code
+    // TODO: run new rust code.
 
     // let mut state = hot_lib::State { counter: 0 };
     let mut counter = 1;

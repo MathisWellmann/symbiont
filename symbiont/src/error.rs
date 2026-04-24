@@ -11,6 +11,12 @@ pub(crate) enum Error {
 
     #[error(transparent)]
     RigHttp(#[from] rig::http_client::Error),
+
+    #[error("The text does not contain any rust code.")]
+    NoRustCode,
+
+    #[error("Could not parse Rust code.")]
+    CouldNotParseRust,
 }
 
 pub(crate) type Result<T, E = Error> = std::result::Result<T, E>;
