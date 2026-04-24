@@ -1,24 +1,23 @@
 [package]
-name = "symbiont"
-version = "0.1.0"
-edition = "2024"
 authors = ["MathisWellmann <wellmannmathis@gmail.com>"]
+categories = ["ai"]
 description = "Agent harness where models write native Rust code as dylibs, that get hot-swapped into the primary binary."
+edition = "2024"
+keywords = ["agent", "dylib", "dynamic", "harness", "llm"]
+name = "symbiont"
 readme = "../README.md"
 repository = "https://github.com/MathisWellmann/symbiont"
-keywords = ["agent", "llm", "harness", "dylib", "dynamic"]
-categories = ["ai"]
+version = "0.1.0"
 
 [dependencies]
 symbiont-lib = { path = "../symbiont-lib" }
 
-syn = { version = "2", features = ["full"] }
-quote = "1"
-
 hot-lib-reloader = "0.8.2"
+prettyplease = "0.2.37"
+quote = "1"
 rig-core = "0.35"
-tokio = { version = "1.0", features = ["full"] }
+syn = { version = "2", features = ["full"] }
 thiserror = "2"
+tokio = { version = "1.0", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-prettyplease = "0.2.37"
