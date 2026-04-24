@@ -1,10 +1,10 @@
-#[repr(C)]
-pub struct State {
-    pub counter: usize,
-}
+// #[repr(C)]
+// pub struct State {
+//     pub counter: usize,
+// }
 
 #[unsafe(no_mangle)]
-pub fn step(state: &mut State) {
-    state.counter += 1;
-    println!("doing stuff in iteration {}", state.counter);
+pub fn step(counter: &mut usize) {
+    *counter += 1;
+    println!("doing stuff in iteration {}", counter);
 }
