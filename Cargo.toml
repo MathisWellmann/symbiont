@@ -183,5 +183,3 @@ needless_raw_strings = "warn"
 implicit_clone = "warn"
 rc_mutex = "warn"
 ref_option_ref = "warn"
-
-
