@@ -1,4 +1,5 @@
 mod error;
+mod inference;
 mod tests;
 
 use error::Result;
@@ -6,11 +7,9 @@ use tracing::info;
 use tracing_subscriber::EnvFilter;
 mod function_parser;
 
-use std::env::var;
+use rig::completion::Prompt;
 
-use rig::{client::CompletionClient, completion::Prompt, providers::openai};
-
-use crate::function_parser::parse_functions;
+use crate::{function_parser::parse_functions, inference::init_agent};
 
 // The value of `dylib = "..."` should be the library containing the hot-reloadable functions
 // It should normally be the crate name of your sub-crate.
@@ -44,22 +43,7 @@ async fn main() -> Result<()> {
         "Only 1 public function is supported for now"
     );
 
-    let api_key = var("API_KEY").unwrap_or_default();
-    let base_url = var("BASE_URL").unwrap_or_default();
-    let model = var("MODEL").unwrap_or_default();
-
-    let client = openai::Client::builder()
-        .api_key(api_key)
-        .base_url(base_url)
-        .build()?
-        .completions_api(); // Use Chat Completions API instead of Responses API
-
-    // Create agent with a single context prompt
-    let agent = client
-        .agent(model)
-        .preamble("You are a Rust Software Engineer, specialized in function body implementations.")
-        .build();
-
+    let agent = init_agent()?;
     // Prompt the agent and print the response
     let prompt = format!(
         "Give a concise implementation for this function signature: ```{}```. Code Only",
