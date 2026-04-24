@@ -61,22 +61,10 @@ fn format_signature(sig: &syn::Signature) -> Option<String> {
         out.push_str(&format_return_type(ty));
     }
 
-    // Where clause
-    if !sig.generics.where_clause.is_none() {
-        out.push_str(" where ");
-        let preds: Vec<_> = sig
-            .generics
-            .where_clause
-            .as_ref()
-            .map(|wc| {
-                wc.predicates
-                    .iter()
-                    .map(|p| normalize_tokens(p.to_token_stream().to_string()))
-                    .collect()
-            })
-            .unwrap_or_default();
-        out.push_str(&preds.join(", "));
-    }
+    assert!(
+        sig.generics.where_clause.is_none(),
+        "Generics are not supported and this is checked above"
+    );
 
     Some(out)
 }
