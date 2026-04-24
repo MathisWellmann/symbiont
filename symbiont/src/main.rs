@@ -37,6 +37,11 @@ async fn main() -> Result<()> {
 
     let fn_sigs = parse_functions()?;
     info!("fn_sigs: {fn_sigs:?}");
+    assert_eq!(
+        fn_sigs.len(),
+        1,
+        "Only 1 public function is supported for now"
+    );
 
     let api_key = var("API_KEY").unwrap_or_default();
     let base_url = var("BASE_URL").unwrap_or_default();
@@ -49,17 +54,19 @@ async fn main() -> Result<()> {
         .completions_api(); // Use Chat Completions API instead of Responses API
 
     // Create agent with a single context prompt
-    let comedian_agent = client
+    let agent = client
         .agent(model)
         .preamble("You are a Rust Software Engineer, specialized in function body implementations.")
         .build();
 
     // Prompt the agent and print the response
-    let response = comedian_agent
-        .prompt("Implement a function body for this signature: `pub fn step(state: &mut State)`")
-        .await?;
-
-    println!("{response}");
+    let prompt = format!(
+        "Give a concise implementation for this function signature: ```{}```. Code Only",
+        fn_sigs[0]
+    );
+    info!("prompt: {prompt}");
+    let response = agent.prompt(prompt).await?;
+    info!("{response}");
 
     let mut state = hot_lib::State { counter: 0 };
     // Running in a loop so you can modify the code and see the effects
