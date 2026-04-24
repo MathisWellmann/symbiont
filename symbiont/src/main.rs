@@ -1,3 +1,4 @@
+mod compiler;
 mod error;
 mod inference;
 mod tests;
@@ -12,8 +13,10 @@ mod function_parser;
 mod parser;
 
 use rig::{agent::Agent, completion::Prompt, providers::openai::completion::CompletionModel};
+use std::time::Duration;
 
 use crate::{
+    compiler::compile_lib,
     error::Error,
     function_parser::{FuncSig, parse_functions},
     inference::init_agent,
@@ -33,6 +36,9 @@ mod hot_lib {
     // wrapper functions with the same signature inside this module.
     // Note that this path relative to the project root (or absolute)
     hot_functions_from_file!("symbiont-lib/src/lib.rs");
+
+    #[lib_change_subscription]
+    pub fn subscribe() -> hot_lib_reloader::LibReloadObserver {}
 
     // Because we generate functions with the exact same signatures,
     // we need to import types used
@@ -96,7 +102,8 @@ async fn main() -> Result<()> {
                     // TODO: this could just be added by the harness too.
                     MissingNoMangle(_) => prompt.push_str("Generated function was not annotated with `#[unsafe(no_mangle)]`. Try again and include it."),
                     SignatureMismatch{ name: _, expected, got } => prompt.push_str(&format!("Generated function signature miss-match. Expected ```{expected}```, Got ```{got}```")),
-                    _ => warn!("Unhandler error"),
+                    CompilationFailed(ref stderr) => prompt.push_str(&format!("The generated code failed to compile. Compiler output:\n```\n{stderr}\n```\nPlease fix the compilation errors.")),
+                    _ => warn!("Unhandled error"),
                 }
             }
             info!("Successfully evolved the function");
@@ -112,8 +119,23 @@ async fn evolve(agent: &Agent<CompletionModel>, prompt: &str, fn_sigs: &[FuncSig
     let ast = parse_rust_code(&response).map_err(|_| Error::CouldNotParseRust)?;
     validate_generated_ast(&ast, &fn_sigs)?;
 
+    // Subscribe to reload events before triggering any changes,
+    // so we don't miss the notification.
+    let observer = hot_lib::subscribe();
+
     // Write the validated AST to lib.rs
     write_generated_lib(&ast)?;
+
+    // Compile the library (replaces external `cargo watch`)
+    compile_lib().await?;
+
+    // Wait for hot_lib_reloader to pick up the new .so and reload it.
+    const RELOAD_TIMEOUT: Duration = Duration::from_secs(10);
+    if observer.wait_for_reload_timeout(RELOAD_TIMEOUT) {
+        info!("Library hot-reloaded successfully");
+    } else {
+        warn!("Timed out waiting for library hot-reload");
+    }
 
     Ok(())
 }

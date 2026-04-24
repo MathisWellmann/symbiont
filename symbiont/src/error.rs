@@ -33,6 +33,9 @@ pub(crate) enum Error {
         expected: String,
         got: String,
     },
+
+    #[error("Compilation failed:\n{0}")]
+    CompilationFailed(String),
 }
 
 pub(crate) type Result<T, E = Error> = std::result::Result<T, E>;
