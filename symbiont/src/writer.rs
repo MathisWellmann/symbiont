@@ -2,7 +2,7 @@ use crate::Result;
 use std::fs;
 use std::path::Path;
 
-use quote::ToTokens;
+use prettyplease;
 use tracing::info;
 
 use crate::error::Error;
@@ -14,7 +14,7 @@ use crate::error::Error;
 /// then write them to lib.rs. Everything else in the existing lib.rs
 /// (structs, comments, etc.) is kept as-is.
 ///
-/// The generated Rust code is piped through `rustfmt` for clean formatting.
+/// The generated Rust code is formatted with `prettyplease` for clean output.
 pub(crate) fn write_generated_lib(file: &syn::File) -> Result<()> {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let lib_path = Path::new(manifest_dir)
@@ -24,7 +24,9 @@ pub(crate) fn write_generated_lib(file: &syn::File) -> Result<()> {
         .join("src")
         .join("lib.rs");
 
-    fs::write(&lib_path, file.to_token_stream().to_string())
+    let formatted_code = prettyplease::unparse(file);
+
+    fs::write(&lib_path, formatted_code)
         .map_err(|e| Error::WriteLib(format!("Failed to write lib.rs: {e}")))?;
     info!("Wrote new `lib.rs` to {lib_path:?}");
 
