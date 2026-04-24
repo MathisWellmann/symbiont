@@ -122,7 +122,7 @@ async fn evolve(agent: &Agent<CompletionModel>, prompt: &str, fn_sigs: &[FuncSig
     info!("{response}");
 
     let mut ast = parse_rust_code(&response).map_err(|_| Error::CouldNotParseRust)?;
-    validate_generated_ast(&mut ast, &fn_sigs)?;
+    validate_generated_ast(&mut ast, fn_sigs)?;
 
     // Subscribe to reload events before triggering any changes,
     // so we don't miss the notification.

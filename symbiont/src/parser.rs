@@ -47,9 +47,7 @@ pub(crate) fn extract_rust_code(input: &str) -> Option<String> {
     if let Some(start) = input.find("```") {
         let after_fence = &input[start + 3..];
         // Skip language tag and optional whitespace
-        let lang_end = after_fence
-            .find(|c: char| c == '\n')
-            .unwrap_or(after_fence.len());
+        let lang_end = after_fence.find('\n').unwrap_or(after_fence.len());
         let code_start = lang_end
             + start
             + 3

@@ -30,37 +30,34 @@ pub(crate) fn validate_generated_ast(file: &mut syn::File, expected_sigs: &[Stri
     let mut found_sigs: Vec<String> = Vec::new();
 
     for item in &mut file.items {
-        match item {
-            syn::Item::Fn(item_fn) => {
-                let name = item_fn.sig.ident.to_string();
+        if let syn::Item::Fn(item_fn) = item {
+            let name = item_fn.sig.ident.to_string();
 
-                // Add `pub` visibility if missing
-                if !is_pub(item_fn) {
-                    info!("Function `{name}` missing `pub` visibility, adding it");
-                    item_fn.vis = Visibility::Public(syn::token::Pub::default());
-                }
-                // Add #[unsafe(no_mangle)] if missing
-                if !is_no_mangle(item_fn) {
-                    info!("Function `{name}` missing #[unsafe(no_mangle)], adding it");
-                    let attr: syn::Attribute = syn::parse_quote!(#[unsafe(no_mangle)]);
-                    item_fn.attrs.insert(0, attr);
-                }
-
-                // Format the signature and check it matches one of the expected ones
-                let sig = format_signature(&item_fn.sig)
-                    .unwrap_or_else(|| format!("fn {}(...)", item_fn.sig.ident));
-                found_sigs.push(sig.clone());
-
-                if !expected_sigs.contains(&sig) {
-                    let expected = expected_sigs.join(", ");
-                    return Err(Error::SignatureMismatch {
-                        name,
-                        expected,
-                        got: sig,
-                    });
-                }
+            // Add `pub` visibility if missing
+            if !is_pub(item_fn) {
+                info!("Function `{name}` missing `pub` visibility, adding it");
+                item_fn.vis = Visibility::Public(syn::token::Pub::default());
             }
-            _ => {}
+            // Add #[unsafe(no_mangle)] if missing
+            if !is_no_mangle(item_fn) {
+                info!("Function `{name}` missing #[unsafe(no_mangle)], adding it");
+                let attr: syn::Attribute = syn::parse_quote!(#[unsafe(no_mangle)]);
+                item_fn.attrs.insert(0, attr);
+            }
+
+            // Format the signature and check it matches one of the expected ones
+            let sig = format_signature(&item_fn.sig)
+                .unwrap_or_else(|| format!("fn {}(...)", item_fn.sig.ident));
+            found_sigs.push(sig.clone());
+
+            if !expected_sigs.contains(&sig) {
+                let expected = expected_sigs.join(", ");
+                return Err(Error::SignatureMismatch {
+                    name,
+                    expected,
+                    got: sig,
+                });
+            }
         }
     }
 
