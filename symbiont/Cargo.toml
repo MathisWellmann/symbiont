@@ -22,3 +22,10 @@ prettyplease = "0.2"
 quote = "1"
 syn = { version = "2", features = ["full"] }
 thiserror = "2"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "dispatch_overhead"
+harness = false
