@@ -44,3 +44,5 @@ in the future if this is configured in `Runtime`. See `TODO.md`.
 
 Running with `Profile::Release` set in `Runtimie` and compiling Harness with `--release` too, for more evaluation performance:
 
+![Sort Example Release](sort-example-release.png)
+
