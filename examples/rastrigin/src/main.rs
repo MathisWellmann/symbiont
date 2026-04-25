@@ -136,7 +136,7 @@ fn sample_table(samples: &[Sample]) -> String {
         chosen.insert(rng.mod_usize(samples.len()));
     }
 
-    let mut indices = Vec::<usize>::from_iter(chosen.into_iter());
+    let mut indices = Vec::<usize>::from_iter(chosen);
     indices.sort_unstable();
 
     let mut table = String::from("| x | y | f(x,y) |\n|---|---|---|\n");
