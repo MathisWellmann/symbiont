@@ -210,8 +210,9 @@ async fn main() -> symbiont::Result<()> {
 
         if new_mse < mse_threshold {
             println!("Exact formula found after {round} evolution round(s)!\n");
-            let code = std::fs::read_to_string(runtime.crate_dir().join("src/lib.rs"))
-                .expect("failed to read generated lib.rs");
+            let code = runtime
+                .read_clean_code()
+                .expect("failed to read generated code");
             println!("Generated code:\n```rust\n{code}```");
             return Ok(());
         }

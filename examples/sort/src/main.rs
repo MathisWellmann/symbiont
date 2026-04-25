@@ -282,8 +282,9 @@ async fn main() -> symbiont::Result<()> {
             .await
             .expect("evolution should succeed");
 
-        prev_code = std::fs::read_to_string(runtime.crate_dir().join("src/lib.rs"))
-            .expect("failed to read generated lib.rs");
+        prev_code = runtime
+            .read_clean_code()
+            .expect("failed to read generated code");
 
         let results = run_benchmarks(runtime, &benches);
         let new_report = format_report(&results);
@@ -311,8 +312,9 @@ async fn main() -> symbiont::Result<()> {
     }
 
     println!("\nEvolution complete after {max_rounds} rounds.");
-    let code = std::fs::read_to_string(runtime.crate_dir().join("src/lib.rs"))
-        .expect("failed to read generated lib.rs");
+    let code = runtime
+        .read_clean_code()
+        .expect("failed to read generated code");
     println!("Final generated code:\n```rust\n{code}```");
 
     Ok(())
