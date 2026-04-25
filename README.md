@@ -204,6 +204,8 @@ These constraints arise from the binary/dylib interaction boundary. The harness 
 - **`unsafe` at the boundary**:
   Dynamic symbol lookup is inherently `unsafe`. The harness validates function signatures against the `evolvable!` declaration and only loads code that parses, type-checks, and compiles — but the `extern "Rust"` pointer cast remains an unsafe invariant.
 
+See [CAVEATS.md](CAVEATS.md) for more details.
+
 ## See also:
 
 - [slopc](https://github.com/shorwood/slopc) for function body implementations at compile time, but no evolution or feedback cycles there.
