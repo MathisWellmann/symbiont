@@ -213,6 +213,14 @@ fn all_correct(results: &[BenchResult]) -> bool {
     results.iter().all(|r| r.correct)
 }
 
+fn collect_panics(results: &[BenchResult]) -> Vec<(&str, &str)> {
+    Vec::from_iter(
+        results
+            .iter()
+            .filter_map(|r| r.panic.as_deref().map(|msg| (r.name, msg))),
+    )
+}
+
 fn total_time(results: &[BenchResult]) -> Duration {
     results.iter().map(|r| r.median).sum()
 }
@@ -238,7 +246,7 @@ async fn main() -> symbiont::Result<()> {
 
     // -- Round 0: benchmark the default bubble sort ----------------------
     println!("\n=== Round 0: default implementation (bubble sort) ===");
-    let results = run_benchmarks(runtime, &benches);
+    let mut results = run_benchmarks(runtime, &benches);
     let mut report = format_report(&results);
     println!("{report}");
 
@@ -246,19 +254,21 @@ async fn main() -> symbiont::Result<()> {
     let max_rounds = 5;
     let orig_total = total_time(&results);
     let mut prev_code = String::new();
+    let mut best_total = Duration::MAX;
+    let mut best_code = String::new();
 
     for round in 1..=max_rounds {
         println!("\n=== Round {round}: evolving via LLM ===");
 
-        // Include the previous implementation so the LLM can make targeted
-        // fixes rather than rewriting from scratch each round.
+        // Core prompt: signature + rules + previous code (if any).
+        // Kept lean so that backpressure retries (compilation errors)
+        // don't carry stale benchmark noise.
         let prev_impl_section = if prev_code.is_empty() {
             String::new()
         } else {
             format!("Your previous implementation:\n```rust\n{prev_code}```\n\n")
         };
-
-        let prompt = format!(
+        let core_prompt = format!(
             "Implement this function that sorts the first `len` elements of `data` \
              in ascending order:\n\
              ```\n{sig}\n```\n\n\
@@ -267,15 +277,32 @@ async fn main() -> symbiont::Result<()> {
              (.sort(), .sort_unstable(), .sort_by(), etc.)\n\
              - Implement the sorting algorithm from scratch\n\
              - Must produce correct ascending order for ALL distributions\n\n\
-             {prev_impl_section}\
-             Benchmark results ({ARRAY_LEN} elements, median of {BENCH_RUNS} runs):\n\
-             {report}\n\
-             Minimize the total time across all distributions. \
-             Focus on the slowest distributions first. Code only.",
+             {prev_impl_section}",
             sig = fn_sigs[0],
         );
 
-        info!("Evolution prompt:\n{prompt}");
+        let panics = collect_panics(&results);
+        let prompt = if !panics.is_empty() {
+            // Panic-focused prompt: no benchmarks, just the crash info.
+            let mut panic_report = String::new();
+            for (dist, msg) in &panics {
+                panic_report.push_str(&format!("- Distribution '{dist}': {msg}\n"));
+            }
+            format!(
+                "{core_prompt}\
+                 Runtime panics:\n{panic_report}\n\
+                 Fix the panic. The function must not crash for any input. Code only.",
+            )
+        } else {
+            // Normal optimization prompt with benchmark results.
+            format!(
+                "{core_prompt}\
+                 Benchmark results ({ARRAY_LEN} elements, median of {BENCH_RUNS} runs):\n\
+                 {report}\n\
+                 Minimize the total time across all distributions. \
+                 Focus on the slowest distributions first. Code only.",
+            )
+        };
 
         runtime
             .evolve_with_backpressure(&agent, &prompt)
@@ -286,7 +313,7 @@ async fn main() -> symbiont::Result<()> {
             .read_clean_code()
             .expect("failed to read generated code");
 
-        let results = run_benchmarks(runtime, &benches);
+        results = run_benchmarks(runtime, &benches);
         let new_report = format_report(&results);
         println!("{new_report}");
 
@@ -304,6 +331,12 @@ async fn main() -> symbiont::Result<()> {
                 },
                 if speedup >= 1.0 { "faster" } else { "slower" },
             );
+
+            if new_total < best_total {
+                best_total = new_total;
+                best_code = prev_code.clone();
+                info!("New best: {}", format_duration(best_total));
+            }
         } else {
             warn!("Incorrect output — LLM must fix correctness next round.");
         }
@@ -312,10 +345,14 @@ async fn main() -> symbiont::Result<()> {
     }
 
     println!("\nEvolution complete after {max_rounds} rounds.");
-    let code = runtime
-        .read_clean_code()
-        .expect("failed to read generated code");
-    println!("Final generated code:\n```rust\n{code}```");
+    if best_code.is_empty() {
+        println!("No correct implementation was found.");
+    } else {
+        println!(
+            "Best implementation (total: {}):\n```rust\n{best_code}```",
+            format_duration(best_total),
+        );
+    }
 
     Ok(())
 }
