@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 //! Parse Rust code from markdown-fenced code blocks.
 //!
 //! Handles strings like:

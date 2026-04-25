@@ -4,6 +4,7 @@ categories = ["ai"]
 description = "Agent harness for hot-reloadable function evolution in Rust."
 edition = "2024"
 keywords = ["agent", "dylib", "dynamic", "harness", "llm"]
+license = "MPL-2.0"
 name = "symbiont"
 readme = "../README.md"
 repository = "https://github.com/MathisWellmann/symbiont"

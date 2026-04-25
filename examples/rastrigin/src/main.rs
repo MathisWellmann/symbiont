@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 //! Symbolic regression: discover the Rastrigin function from sample data.
 //!
 //! The ground-truth function is the 2-D Rastrigin:

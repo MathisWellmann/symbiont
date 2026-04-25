@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 //! The example shows a basic counter function where the Agent evolves the implementation,
 //! based on a user-defined prompt.
 //! The compiled dylib (of the function) gets hot-swapped in the evaluation loop, achieving bare-metal performance.

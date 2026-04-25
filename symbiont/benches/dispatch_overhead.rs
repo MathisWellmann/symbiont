@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 //! Benchmark comparing direct function calls vs `evolvable!` dispatch
 //! to measure the overhead of the RwLock + dlsym wrapper.
 

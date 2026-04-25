@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 //! Errors of this crate.
 
 /// Errors that can occur during symbiont runtime operations.

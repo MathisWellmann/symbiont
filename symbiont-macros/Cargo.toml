@@ -2,6 +2,7 @@
 authors = ["MathisWellmann <wellmannmathis@gmail.com>"]
 description = "Proc macros for symbiont hot-reloadable function declarations."
 edition = "2024"
+license = "MPL-2.0"
 name = "symbiont-macros"
 version = "0.1.0"
 
