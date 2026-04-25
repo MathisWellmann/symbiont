@@ -33,20 +33,23 @@ async fn main() -> symbiont::Result<()> {
 
     let agent = symbiont::inference::init_agent()?;
 
+    let base_prompt = format!(
+        "Give a concise implementation for this function signature: ```{}```, \
+        that increments the counter by a constant in the range (5..20). \
+        Code Only",
+        fn_sigs[0]
+    );
+
     let mut counter = 1;
-    // Running in a loop so you can modify the code and see the effects
+    let mut last_evolution = std::time::Instant::now();
+    let evolution_interval = Duration::from_secs(10);
+
     loop {
         step(&mut counter);
         println!("counter: {counter}");
         std::thread::sleep(Duration::from_secs(1));
 
-        if counter % 10 == 0 {
-            let base_prompt = format!(
-                "Give a concise implementation for this function signature: ```{}```, \
-                that increments the counter by a constant in the range (5..20). \
-                Code Only",
-                fn_sigs[0]
-            );
+        if last_evolution.elapsed() >= evolution_interval {
             info!("base_prompt: {base_prompt}");
 
             runtime
@@ -56,6 +59,7 @@ async fn main() -> symbiont::Result<()> {
             info!(
                 "Successfully evolved the function, which is now hot-reloaded in-place. Next call to `step` will run the newly compiled Agent code."
             );
+            last_evolution = std::time::Instant::now();
         }
     }
 }

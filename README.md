@@ -57,13 +57,15 @@ async fn main() -> symbiont::Result<()> {
     );
 
     let mut counter = 0;
+    let mut last_evolution = std::time::Instant::now();
     loop {
         step(&mut counter);  // bare-metal: calls into the hot-loaded native dylib
         println!("counter: {counter}");
 
-        if counter % 10 == 0 {
+        if last_evolution.elapsed() >= std::time::Duration::from_secs(10) {
             // LLM rewrites the function, harness validates + compiles + hot-swaps
-            runtime.evolve_with_backpressure(&agent, base_prompt).await?;
+            runtime.evolve_with_backpressure(&agent, &base_prompt).await?;
+            last_evolution = std::time::Instant::now();
             // New Agent written code is available next time `step` is called and executed natively.
         }
     }
