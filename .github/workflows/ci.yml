@@ -84,3 +84,16 @@ jobs:
             timeout 30s cargo run -p counter-example || [ $? -eq 124 ]
             devenv processes down
           '
+      - name: fizzbuzz-example-smoke-test
+        env:
+          RUSTFLAGS: "-D warnings"
+        # Run the fizzbuzz example which evolves a function to pass a test
+        # suite. Timeout after 60s — the example exits on its own once all
+        # tests pass or after max_rounds.
+        run: |
+          nix develop --command bash -c '
+            devenv up -d
+            devenv processes wait llama-server --timeout 120
+            timeout 60s cargo run -p fizzbuzz-example || [ $? -eq 124 ]
+            devenv processes down
+          '
