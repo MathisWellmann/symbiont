@@ -94,6 +94,8 @@ See the [Development setup](#development-setup) section and the `examples/` dire
   The hot path is fully lock-free and multi-thread safe.
 - **Plug-in inference**:
   Any Inference provider via [rig](https://github.com/0xPlaygrounds/rig).
+- **Tiny Core**:
+  Only ~1000 LOC for the Agent harness and constrained generation part.
 
 ## Motivation
 
@@ -112,10 +114,12 @@ while `symbiont`'s constrained generation loop ensures the LLM output always com
 
 ## Use cases
 
-- Auto-research workflows with native-speed evaluation.
 - Typed function body search (e.g., find an implementation that satisfies a test suite).
   - See [fizzbuzz-example](examples/fizzbuzz/src/main.rs)
   - See [rastrigin-example](examples/rastrigin/src/main.rs)
+- Performance Optimization under functional equivalence
+  - See [sort-example](examples/sort/src/main.rs)
+- Auto-research workflows with native-speed evaluation.
 - Black-box optimization of inputs that produce desired outputs, e.g. Parameter Search.
 - Self-evolving feature processing pipelines.
 - Agentic code evolution generally.
