@@ -1,5 +1,6 @@
+/// Errors that can occur during symbiont runtime operations.
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum Error {
+pub enum Error {
     #[error(transparent)]
     Io(#[from] std::io::Error),
 
@@ -30,6 +31,16 @@ pub(crate) enum Error {
 
     #[error("Compilation failed:\n{0}")]
     CompilationFailed(String),
+
+    #[error("No evolvable functions found. Use the evolvable! macro to declare at least one.")]
+    NoEvolvableFunctions,
+
+    #[error("Runtime already initialized. Call Runtime::init() only once.")]
+    AlreadyInitialized,
+
+    #[error("Failed to load dylib: {0}")]
+    DylibLoad(String),
 }
 
-pub(crate) type Result<T, E = Error> = std::result::Result<T, E>;
+/// Result type alias for symbiont operations.
+pub type Result<T, E = Error> = std::result::Result<T, E>;

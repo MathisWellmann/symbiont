@@ -1,7 +1,7 @@
 //! Parse Rust code from markdown-fenced code blocks.
 //!
 //! Handles strings like:
-//! ```
+//! ```text
 //! "```rust
 //! fn step(counter: &mut usize) {
 //!     *counter += 1;

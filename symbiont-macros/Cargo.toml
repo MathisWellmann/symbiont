@@ -1,0 +1,14 @@
+[package]
+authors = ["MathisWellmann <wellmannmathis@gmail.com>"]
+description = "Proc macros for symbiont hot-reloadable function declarations."
+edition = "2024"
+name = "symbiont-macros"
+version = "0.1.0"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["extra-traits", "full"] }
