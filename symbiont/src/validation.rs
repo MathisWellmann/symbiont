@@ -104,15 +104,16 @@ fn format_signature(sig: &Signature) -> Option<String> {
 }
 
 fn format_fn_arg(arg: &FnArg) -> String {
+    use FnArg::*;
     match arg {
-        syn::FnArg::Receiver(recv) => {
+        Receiver(recv) => {
             if recv.mutability.is_some() {
                 "&mut self".into()
             } else {
                 "&self".into()
             }
         }
-        syn::FnArg::Typed(pat) => {
+        Typed(pat) => {
             let name = pat.pat.to_token_stream().to_string();
             let ty = normalize_tokens(pat.ty.to_token_stream().to_string());
             format!("{name}: {ty}")

@@ -8,7 +8,7 @@ pub(crate) fn is_pub(item_fn: &ItemFn) -> bool {
 
 /// If `true`, the function is annotated with `#[unsafe(no_mangle)]`
 #[inline]
-pub(crate) fn is_no_mangle(item_fn: &syn::ItemFn) -> bool {
+pub(crate) fn is_no_mangle(item_fn: &ItemFn) -> bool {
     item_fn.attrs.iter().any(|attr| {
         // Only match exactly #[unsafe(no_mangle)]
         attr.path().is_ident("unsafe")

@@ -1,5 +1,8 @@
+//! Errors of this crate.
+
 /// Errors that can occur during symbiont runtime operations.
 #[derive(Debug, thiserror::Error)]
+#[expect(missing_docs, reason = "Self explaining")]
 pub enum Error {
     #[error(transparent)]
     Io(#[from] std::io::Error),

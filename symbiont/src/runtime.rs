@@ -1,6 +1,11 @@
+//! The runtime module contains the primary `Runtime`,
+//! managing the lifecycle of the temporary dylib crate: creation, compilation,
+//! loading, and hot-reloading.
+
 use std::{
     collections::hash_map::DefaultHasher,
     ffi::CString,
+    fmt::Write,
     hash::{
         Hash,
         Hasher,
@@ -252,7 +257,7 @@ impl Runtime {
 
         // Load new library
         let new_lib = unsafe {
-            libloading::Library::new(&versioned_so).map_err(|e| {
+            Library::new(&versioned_so).map_err(|e| {
                 Error::DylibLoad(format!("Failed to load {}: {e}", versioned_so.display()))
             })?
         };
@@ -312,12 +317,12 @@ impl Runtime {
                         name: _,
                         expected,
                         got,
-                    } => prompt.push_str(&format!(
+                    } => write!(prompt,
                         "Generated function signature miss-match. Expected ```{expected}```, Got ```{got}```"
-                    )),
-                    CompilationFailed(ref stderr) => prompt.push_str(&format!(
+                    ).expect("Can write to prompt"),
+                    CompilationFailed(ref stderr) => write!(prompt,
                         "The generated code failed to compile. Compiler output:\n```\n{stderr}\n```\nPlease fix the compilation errors."
-                    )),
+                    ).expect("Can write to prompt"),
                     e => {
                         warn!("Unhandled error: {e}");
                         return Err(e)
