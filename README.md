@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/symbiont_logo_4a_440.png" alt="Symbiont Logo">
+</p>
+
 # Symbiont Agent Harness
 
 Agent harness for hot-reloading function evolution of Rust code.
