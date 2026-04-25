@@ -116,6 +116,7 @@ while `symbiont`'s constrained generation loop ensures the LLM output always com
 - Typed function body search (e.g., find an implementation that satisfies a test suite).
   See [fizzbuzz-example](examples/fizzbuzz/src/main.rs)
 - Black-box optimization of inputs that produce desired outputs, e.g. Parameter Search.
+  See [rastrigin-example](examples/rastrigin/src/main.rs)
 - Self-evolving feature processing pipelines.
 - Agentic code evolution generally.
 
