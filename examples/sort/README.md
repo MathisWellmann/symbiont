@@ -34,7 +34,8 @@ cargo run -p sort-example
 
 ## Solution
 
-Running with `Profile::Debug`, set in `Runtime`:
+Running with `Profile::Debug`, set in `Runtime`.
+Using `unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M`.
 
 ![Sort Example](sort-example.png)
 

@@ -1,8 +1,11 @@
-- Show multi-threading support.
+- Show multi-threading support with example.
 - Support non-trivial type definitions for any input and output types to the function.
-- Support multi function evolution.
+- Support multi function evolution, with example too.
 - Support external dependencies in lib.
 - Support shared externala dependencies across function boundary.
 - Support disallowing methods, crates or unsafe, enforced by the harness.
 - Proper eval pipeline to compare model performance across tasks.
 - Probably some more prompt engineering can improve results, built on top of eval.
+- Compare examples with SOTA equivalent search strategies, see if it beats any already.
+- Run Harness for my symbolic regression evaluation comparison, to see if it beats SOTA for ~150 optimization targets.
+- Bidirectionality, like evolving a fractal rendering function using `evolvable` and a UI in the main harness binary shows the results.
