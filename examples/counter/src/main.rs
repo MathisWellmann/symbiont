@@ -3,19 +3,8 @@
 
 use std::time::Duration;
 
-use rig::{
-    agent::Agent,
-    completion::Prompt,
-    providers::openai::completion::CompletionModel,
-};
-use symbiont::{
-    Error,
-    Runtime,
-};
-use tracing::{
-    info,
-    warn,
-};
+use symbiont::Runtime;
+use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 // The starting function definition, used during constrained generation,
@@ -56,48 +45,15 @@ async fn main() -> symbiont::Result<()> {
                 Code Only",
                 fn_sigs[0]
             );
-            let mut prompt = base_prompt.clone();
+            info!("base_prompt: {base_prompt}");
 
-            while let Err(e) = evolve_step(runtime, &agent, &prompt).await {
-                info!("Function evolution error: {e}");
-
-                prompt = base_prompt.clone();
-
-                // TODO: the example should not have to have the back-pressure here.
-                use Error::*;
-                match e {
-                    NoRustCode => prompt.push_str(
-                        "Your response did not contain a rust code block. Please try again and make sure its wrapped like this: ```CODE```",
-                    ),
-                    CouldNotParseRust => prompt.push_str(
-                        "Your response did not contain valid Rust code. Please try again",
-                    ),
-                    WriteLib(_) => todo!(),
-                    SignatureMismatch {
-                        name: _,
-                        expected,
-                        got,
-                    } => prompt.push_str(&format!(
-                        "Generated function signature miss-match. Expected ```{expected}```, Got ```{got}```"
-                    )),
-                    CompilationFailed(ref stderr) => prompt.push_str(&format!(
-                        "The generated code failed to compile. Compiler output:\n```\n{stderr}\n```\nPlease fix the compilation errors."
-                    )),
-                    _ => warn!("Unhandled error"),
-                }
-            }
-            info!("Successfully evolved the function");
+            runtime
+                .evolve_with_backpressure(&agent, &base_prompt)
+                .await
+                .expect("Can successfully evolve");
+            info!(
+                "Successfully evolved the function, which is now hot-reloaded in-place. Next call to `step` will run the newly compiled Agent code."
+            );
         }
     }
-}
-
-async fn evolve_step(
-    runtime: &Runtime,
-    agent: &Agent<CompletionModel>,
-    prompt: &str,
-) -> symbiont::Result<()> {
-    info!("prompt: {prompt}");
-    let response = agent.prompt(prompt).await?;
-    info!("{response}");
-    runtime.evolve(&response).await
 }
