@@ -1,4 +1,4 @@
-# Sort — Performance-Driven Evolution Example
+# Sort — Performance-Driven Evolution Example (1000x improvement)
 
 This example challenges an LLM to implement and iteratively optimize a sorting
 algorithm **from scratch** (no standard library sort methods allowed).
@@ -18,12 +18,9 @@ distributions that expose different algorithmic weaknesses:
 
 Each round the LLM receives its **previous implementation** alongside
 per-distribution median timings, so it can make targeted fixes rather than
-rewriting from scratch. This naturally drives a multi-round progression:
+rewriting from scratch.
 
-1. **Round 1**: Basic quicksort — fast on random, slow on sorted/reverse
-2. **Round 2**: Better pivot (median-of-3) — fixes sorted/reverse
-3. **Round 3**: Insertion sort fallback + 3-way partition for few_unique
-4. **Round 4+**: Further micro-optimizations
+This may be highly useful in the search for a sorting algorithm, tuned for a specific input distribution.
 
 ## Running
 
@@ -31,3 +28,7 @@ rewriting from scratch. This naturally drives a multi-round progression:
 # Requires API_KEY, BASE_URL, and MODEL env vars (or a local llama-cpp server).
 cargo run -p sort-example
 ```
+
+## Solution
+
+![Sort Example](sort-example.png)
