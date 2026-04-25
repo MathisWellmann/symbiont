@@ -9,7 +9,7 @@ use rig::{
     },
 };
 
-pub(crate) fn init_agent() -> crate::Result<Agent<CompletionModel>> {
+pub fn init_agent() -> crate::Result<Agent<CompletionModel>> {
     let api_key = var("API_KEY").unwrap_or_default();
     let base_url = var("BASE_URL").unwrap_or_default();
     let model = var("MODEL").unwrap_or_default();
