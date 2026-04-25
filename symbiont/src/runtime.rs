@@ -273,10 +273,16 @@ impl Runtime {
         // Validate signatures match declarations
         validate_generated_ast(&mut ast, &self.fn_sigs)?;
 
+        // Save the clean (unwrapped) LLM code for display / prompt feedback.
+        let clean_code = prettyplease::unparse(&ast);
+        let clean_path = self.crate_dir.join("src").join("clean.rs");
+        std::fs::write(&clean_path, &clean_code)
+            .map_err(|e| Error::WriteLib(format!("Failed to write clean.rs: {e}")))?;
+
         // Wrap function bodies in catch_unwind so panics stay inside the dylib.
         wrap_bodies_in_catch_unwind(&mut ast);
 
-        // Write validated AST to temp crate's lib.rs (preamble + LLM code).
+        // Write final lib.rs (preamble + wrapped code) for compilation.
         let lib_rs_path = self.crate_dir.join("src").join("lib.rs");
         let formatted = format!("{PANIC_PREAMBLE}\n{}", prettyplease::unparse(&ast));
         std::fs::write(&lib_rs_path, &formatted)
@@ -400,6 +406,13 @@ impl Runtime {
         } else {
             Some(String::from_utf8_lossy(&buf[..len]).into_owned())
         }
+    }
+
+    /// Read the clean LLM-generated code (without panic-catching wrappers
+    /// or preamble). Suitable for feeding back into the LLM prompt or
+    /// displaying to the user.
+    pub fn read_clean_code(&self) -> std::io::Result<String> {
+        std::fs::read_to_string(self.crate_dir.join("src").join("clean.rs"))
     }
 }
 
