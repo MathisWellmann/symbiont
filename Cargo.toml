@@ -1,5 +1,10 @@
 [workspace]
-members = ["examples/counter", "symbiont", "symbiont-macros"]
+members = [
+  "examples/counter",
+  "examples/fizzbuzz",
+  "symbiont",
+  "symbiont-macros",
+]
 resolver = "2"
 
 [workspace.lints.rust]
