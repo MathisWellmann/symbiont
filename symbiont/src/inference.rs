@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 //! Module containing inference related functions.
 
 use std::env::var;

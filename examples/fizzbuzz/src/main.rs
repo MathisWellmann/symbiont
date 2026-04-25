@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 //! Test-driven function evolution: the LLM must satisfy a test suite.
 //!
 //! Declares an evolvable `fizzbuzz` function that classifies numbers by

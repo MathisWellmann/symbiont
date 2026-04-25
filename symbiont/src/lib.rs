@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 //! Symbiont: Agent harness for hot-reloadable function evolution in Rust.
 //!
 //! Declare functions with [`evolvable!`] and let an LLM rewrite their

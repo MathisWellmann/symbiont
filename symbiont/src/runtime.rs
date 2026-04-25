@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 //! The runtime module contains the primary `Runtime`,
 //! managing the lifecycle of the temporary dylib crate: creation, compilation,
 //! loading, and hot-reloading.

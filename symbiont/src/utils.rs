@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 use syn::ItemFn;
 
 /// If `true`, the function has visibiliity `pub`

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 //! Performance-driven sort evolution across multiple data distributions.
 //!
 //! The LLM must implement a sorting algorithm **from scratch** (no std

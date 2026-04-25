@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 /// Catch a panic from an evolvable function call, returning the result
 /// or a human-readable panic message.
 ///

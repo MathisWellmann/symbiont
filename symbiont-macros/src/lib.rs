@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 //! Proc macros for the `symbiont` crate.
 //!
 //! Provides the [`evolvable!`] function-like macro that declares
