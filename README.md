@@ -78,7 +78,7 @@ The compiled dylib (of the function) gets hot-swapped in the evaluation loop, ac
 This is agentic code mode in action.
 The harness provides constrained generation and nudges the LLM prompt if necessary.
 
-See [Development setup] for how to get started.
+See the [Development setup](#development-setup) section and the `examples/` directory for more.
 
 ## Core highlights
 
