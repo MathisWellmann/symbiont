@@ -349,7 +349,8 @@ async fn main() -> symbiont::Result<()> {
         println!("No correct implementation was found.");
     } else {
         println!(
-            "Best implementation (total: {}):\n```rust\n{best_code}```",
+            "Best implementation found ({max_rounds} iterations, original time: {}, new time: {}):\n```rust\n{best_code}```",
+            format_duration(orig_total),
             format_duration(best_total),
         );
     }

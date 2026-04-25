@@ -172,14 +172,15 @@ A typical evolution cycle (LLM inference → constrained generation → compilat
 - The model being used (Inference latency)
 - Size of the generated Rust code.
 - Optimization level for the compiled dylib.
+- Did the LLM make a misstake? -> Repeat cycle again with new steering prompt.
 
-Example timings for `fizzbuzz-example` using `Qwen3.6-35B-A3B`:
+Example timings for `fizzbuzz-example` using `unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M` on an RTX Pro 6000 Blackwell and `llama-cpp` (~150TPS):
 | Stage          | Time    |
 |----------------|---------|
 | LLM inference  | 4852 ms |
 | Harness checks | 0 ms    |
 | Compilation    | 118 ms  |
-| Function Eval  | ~5ns    |
+| Function Eval  | <3ns    |
 
 The function evaluation pipeline should be built to keep these proportions in mind.
 The `fizzbuzz-example` can be oneshot and function evaluation is super cheap, so its not representative, just a toy example.
@@ -207,6 +208,10 @@ These constraints arise from the binary/dylib interaction boundary. The harness 
 
 - [slopc](https://github.com/shorwood/slopc) for function body implementations at compile time, but no evolution or feedback cycles there.
 - [hot-lib-reloader](https://github.com/rksm/hot-lib-reloader-rs) for the idea of hot-swapping functions at runtime.
+- [GEPA](https://github.com/gepa-ai/gepa)  for optimizing any system with textual parameters against any evaluation metric. But not Rust :(
+- [Agentica](https://github.com/symbolica-ai/agentica-python-sdk) for a Python Agent SDK, providing persistent REPL and sub-agents.
+
+Also **checkout** the [TODOs](TODO.md) file for what might come next for `symbiont`. Stay tuned!
 
 ## License
 
