@@ -4,10 +4,12 @@ name = "counter-example"
 publish = false
 version = "0.1.0"
 
+[lints]
+workspace = true
+
 [dependencies]
 symbiont = { path = "../../symbiont" }
 
-rig-core.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

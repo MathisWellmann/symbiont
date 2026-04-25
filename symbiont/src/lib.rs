@@ -58,3 +58,9 @@ pub mod __internal {
         enter_call,
     };
 }
+
+#[cfg(test)]
+mod tests {
+    #[expect(unused, reason = "Used in benchmarks.")]
+    use criterion::*;
+}

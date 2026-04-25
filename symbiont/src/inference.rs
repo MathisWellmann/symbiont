@@ -1,3 +1,5 @@
+//! Module containing inference related functions.
+
 use std::env::var;
 
 use rig::{
@@ -9,6 +11,7 @@ use rig::{
     },
 };
 
+/// Initialize the agent using the environment variables.
 pub fn init_agent() -> crate::Result<Agent<CompletionModel>> {
     let api_key = var("API_KEY").unwrap_or_default();
     let base_url = var("BASE_URL").unwrap_or_default();
