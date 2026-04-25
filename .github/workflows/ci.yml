@@ -97,3 +97,17 @@ jobs:
             timeout 60s cargo run -p fizzbuzz-example || [ $? -eq 124 ]
             devenv processes down
           '
+      - name: rastrigin-example-smoke-test
+        env:
+          RUSTFLAGS: "-D warnings"
+        # Run the rastrigin example which evolves a function to match
+        # sample data via symbolic regression. Timeout after 120s — the
+        # example exits on its own once the formula is found or after
+        # max_rounds.
+        run: |
+          nix develop --command bash -c '
+            devenv up -d
+            devenv processes wait llama-server --timeout 120
+            timeout 120s cargo run -p rastrigin-example || [ $? -eq 124 ]
+            devenv processes down
+          '

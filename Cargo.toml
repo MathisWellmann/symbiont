@@ -2,6 +2,7 @@
 members = [
   "examples/counter",
   "examples/fizzbuzz",
+  "examples/rastrigin",
   "symbiont",
   "symbiont-macros",
 ]
