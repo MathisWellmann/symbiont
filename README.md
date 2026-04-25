@@ -1,7 +1,6 @@
-# Symbiont
-A Rust native Agent harness where models write type-safe function implementations
-as dynamic libraries that get hot-swapped by the harness to enable agentic code evolution.
-It enables fast-iteration cycles in agentic auto-research tasks such a function optimization or black-box parameter search.
+# Symbiont Agent Harness
+
+LLMs write native Rust functions that get compiled and hot-swapped into your running binary — bare-metal execution, zero interpreter overhead.
 
 ## How it works
 
@@ -20,38 +19,92 @@ flowchart LR
     style E fill:#1a1a2e,stroke:#e94560,color:#eee
 ```
 
-## Core highlights:
-- Agents express intent as type-safe Rust code.
-- Constrained code generation with harness-enforced rules.
-- In-place evolution of functions through [hot-reloading dylibs](https://github.com/rksm/hot-lib-reloader-rs)
-- Bare metal function execution performance (configurable optimization profile)
-- Plug-in Inference provider support, using [rig](https://github.com/0xPlaygrounds/rig)
+You declare function signatures with the `evolvable!` macro.
+At runtime, the harness prompts an LLM to implement them, then validates, compiles, and hot-swaps
+the resulting native code into the running process — no restart required.
+
+**Constrained generation** is what makes this reliable: the harness enforces that LLM output is valid Rust,
+matches the declared function signature, and compiles successfully.
+When any check fails, the specific error (parse failure, signature mismatch, or compiler diagnostics)
+is appended to the prompt and the LLM retries automatically until it produces correct code.
+
+## Quick start
+
+```rust
+symbiont::evolvable! {
+    fn step(counter: &mut usize) {
+        *counter += 1;  // default implementation, evolved by the LLM
+    }
+}
+
+#[tokio::main]
+async fn main() -> symbiont::Result<()> {
+    let runtime = symbiont::Runtime::init(SYMBIONT_DECLS).await?;
+    let agent = symbiont::inference::init_agent()?;
+    let fn_sigs = runtime.fn_sigs();
+    let base_prompt = format!(
+        "Give a concise implementation for this function signature: ```{}```, \
+        that increments the counter by a constant in the range (5..20). \
+        Code Only",
+        fn_sigs[0]
+    );
+
+    let mut counter = 0;
+    loop {
+        step(&mut counter);  // bare-metal: calls into the hot-loaded native dylib
+        println!("counter: {counter}");
+
+        if counter % 10 == 0 {
+            // LLM rewrites the function, harness validates + compiles + hot-swaps
+            runtime.evolve_with_backpressure(&agent, base_prompt).await?;
+            // New Agent written code is available next time `step` is called and executed natively.
+        }
+    }
+}
+```
+
+Set the following environment variables for your inference provider (any OpenAI-compatible API):
+
+```sh
+export API_KEY="your-api-key" # Can be left black for local inference providers like `llama-cpp` (if not configured)
+export BASE_URL="https://your-inference-host:port/v1"
+export MODEL="unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M" # Or any model of your choice.
+cargo run -p counter-example
+```
+
+## Core highlights
+
+- **Type-safe agentic code**: Agents express intent as Rust functions with enforced signatures.
+- **Constrained generation**: Parse errors, signature mismatches, and compiler diagnostics steer the LLM until it produces valid code.
+- **Hot-swap dylibs**: Functions are compiled to native shared libraries and swapped in-place via `libloading` — no process restart.
+- **Bare-metal performance**: Evolved functions run as native compiled code with configurable optimization profiles.
+- **Plug-in inference**: Any OpenAI-compatible provider via [rig](https://github.com/0xPlaygrounds/rig).
 
 ## Motivation
-Current generation agent harnesses such as [Agentica](https://github.com/symbolica-ai/ARC-AGI-3-Agents) achive SOTA
-on complex long-running tasks such as ARG-AGI-3.
-This is achieved by providing a persistent Python REPL that the Agent lives in and its able to spawn sub-agents too.
-This allows it to leverage the entire Python ecosystem worth of packages that the Agent has native support for
-without the need for MCP (Model Context Protocol).
-This is known as CodeMode.
-Agentica and similar agent harnesses require a dynamic interpreter and an interactive REPL,
-which Rust does not natvely offer due to its design decisions.
-Agentica uses Python, which has low performance and high Interpreter overhead, which becomes the major bottleneck for compute-heavy workloads,
-and fast agentic feedback cycles.
-If the Agent task is to optimize a well-typed function, it might take 10-100 times longer for it to find the correct solution given the slow nature of function evaluation.
 
-Symbionts (Agents built on `symbiont`) reach bare-metal performance by leveraging the excellent performance
-and memory-safety guarantees offered by the Rust compiler and its ecosystem.
+Current-generation agent harnesses such as [Agentica](https://github.com/symbolica-ai/ARC-AGI-3-Agents) achieve SOTA
+on complex long-running tasks like ARC-AGI-3 by providing a persistent Python REPL that the agent lives in. i
+This is known as **CodeMode** — it allows the agent to leverage the entire Python ecosystem natively, without MCP.
+
+However, Python's interpreter overhead becomes the bottleneck for compute-heavy workloads.
+If the agent's task is to optimize a well-typed function, evaluation in Python can be 10-100x slower than native execution,
+directly limiting how many iterations the agent can explore in a given time budget.
+
+Symbiont brings the same agentic code evolution paradigm to Rust.
+Agents write type-safe function bodies that get compiled to native code and hot-swapped into the running binary.
+The Rust compiler enforces memory safety and type correctness,
+while `symbiont`'s constrained generation loop ensures the LLM output always compiles before it reaches execution.
 
 ## Use cases
-- Auto-research workflows.
-- Typed Function Body implementation search.
-- Black-box optimization of inputs that produce the desired outputs.
-- Self evolving feature processing pipelines.
+
+- Auto-research workflows with native-speed evaluation.
+- Typed function body search (e.g., find an implementation that satisfies a test suite).
+- Black-box optimization of inputs that produce desired outputs, e.g. Parameter Search.
+- Self-evolving feature processing pipelines.
 - Agentic code evolution generally.
-- Do you even need more?
 
 ## License
+
 Copyright (C) 2026 MathisWellmann
 
 This program is free software: you can redistribute it and/or modify
