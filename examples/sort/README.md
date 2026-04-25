@@ -32,3 +32,6 @@ cargo run -p sort-example
 ## Solution
 
 ![Sort Example](sort-example.png)
+
+Here the solution contains `unsafe`, which could be prompted away or the Harness adds support for forbidding `unsafe`
+in the future if this is configured in `Runtime`. See `TODO.md`.

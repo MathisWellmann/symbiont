@@ -157,7 +157,7 @@ async fn main() -> symbiont::Result<()> {
         .with_line_number(true)
         .init();
 
-    let runtime = Runtime::init(SYMBIONT_DECLS).await?;
+    let runtime = Runtime::init(SYMBIONT_DECLS, symbiont::Profile::Debug).await?;
     let fn_sigs = runtime.fn_sigs();
     info!("fn_sigs: {fn_sigs:?}");
 

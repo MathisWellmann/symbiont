@@ -1,5 +1,8 @@
-- Support compiling lib with optimzation level.
+- Show multi-threading support.
 - Support non-trivial type definitions for any input and output types to the function.
 - Support multi function evolution.
 - Support external dependencies in lib.
 - Support shared externala dependencies across function boundary.
+- Support disallowing methods, crates or unsafe, enforced by the harness.
+- Proper eval pipeline to compare model performance across tasks.
+- Probably some more prompt engineering can improve results, built on top of eval.
