@@ -158,6 +158,23 @@ Benchmark: `cargo bench -p symbiont --bench dispatch_overhead`
 On reload, the runtime updates the atomic pointers and drops the old library.
 This is safe because the feedback loop contract guarantees no evolvable functions are executing during evolution — only one `.so` is loaded at any time.
 
+## Per-evolution timings
+
+A typical evolution cycle (LLM generates → validates → compiles) highly depends on:
+- The model being used
+- Size of the generated Rust code.
+- Optimization level for the compiled dylib.
+
+Example timings for `fizzbuzz-example` using `Qwen3.6-35B-A3B`:
+| Stage          | Time    |
+|----------------|---------|
+| LLM generation | 4852 ms |
+| Harness checks | 0 ms    |
+| Compilation    | 118 ms  |
+| Function Eval  | ~5ns    |
+
+The function evaluation pipeline should be built to keep these proportions in mind.
+
 ## Limitations
 
 These constraints arise from the binary/dylib interaction boundary. The harness mitigates most of them, but users should be aware:
