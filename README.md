@@ -65,8 +65,14 @@ async fn main() -> symbiont::Result<()> {
 }
 ```
 
-Set the following environment variables for your inference provider
-(any OpenAI-compatible API aka `/v1/chat/completions`):
+The example shows a basic counter function where the Agent evolves the implementation,
+based on a user-defined prompt.
+The compiled dylib (of the function) gets hot-swapped in the evaluation loop, achieving bare-metal performance.
+This is agentic code mode in action.
+The harness provides constrained generation and nudges the LLM prompt if necessary.
+
+
+Set the following environment variables for your inference provider, or local server.
 
 ```sh
 export API_KEY="your-api-key" # Can be left blank for local inference providers like `llama-cpp`.
@@ -75,13 +81,14 @@ export MODEL="unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M" # Or any model of your cho
 cargo run -p counter-example
 ```
 
+
 ## Core highlights
 
 - **Type-safe agentic code**: Agents express intent as Rust functions with enforced signatures.
 - **Constrained generation**: Parse errors, signature mismatches, and compiler diagnostics steer the LLM until it produces valid code.
 - **Hot-swap dylibs**: Functions are compiled to native shared libraries and swapped in-place via `libloading` — no process restart.
 - **Bare-metal performance**: Evolved functions run as native compiled code with configurable optimization profiles.
-- **Plug-in inference**: Any OpenAI-compatible provider via [rig](https://github.com/0xPlaygrounds/rig).
+- **Plug-in inference**: Any Inference provider via [rig](https://github.com/0xPlaygrounds/rig).
 
 ## Motivation
 

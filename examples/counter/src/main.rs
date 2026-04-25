@@ -1,5 +1,8 @@
-//! The example shows a basic function which gets agenticly evolved with a user-defined prompt
-//! and the compiled dylib gets hot-swapped in the hot-loop, achieving bare-metal performance.
+//! The example shows a basic counter function where the Agent evolves the implementation,
+//! based on a user-defined prompt.
+//! The compiled dylib (of the function) gets hot-swapped in the evaluation loop, achieving bare-metal performance.
+//! This is agentic code mode in action.
+//! The harness provides constrained generation and nudges the LLM prompt if necessary.
 
 use std::time::Duration;
 
@@ -17,7 +20,6 @@ symbiont::evolvable! {
     }
 }
 
-// TODO: the example should be more minimal.
 #[tokio::main]
 async fn main() -> symbiont::Result<()> {
     tracing_subscriber::fmt()
