@@ -19,7 +19,18 @@ use std::{
     },
 };
 
-use tracing::info;
+use minstant::Instant;
+use rig::{
+    agent::Agent,
+    completion::{
+        CompletionModel,
+        Prompt,
+    },
+};
+use tracing::{
+    info,
+    warn,
+};
 
 use crate::{
     EvolvableDecl,
@@ -128,13 +139,25 @@ impl Runtime {
         &self.fn_sigs
     }
 
-    /// Process an LLM response: parse, validate, compile, and hot-swap.
+    /// Generate LLM response, then parse, validate, compile, and hot-swap.
     ///
     /// The `llm_response` should contain a Rust code block (optionally markdown-fenced)
     /// with implementations matching the declared evolvable function signatures.
-    pub async fn evolve(&self, llm_response: &str) -> Result<()> {
+    async fn evolve<CompletionModelT>(
+        &self,
+        agent: &Agent<CompletionModelT>,
+        prompt: &str,
+    ) -> Result<()>
+    where
+        CompletionModelT: CompletionModel + 'static,
+    {
+        let t0 = Instant::now();
+
+        let llm_response = agent.prompt(prompt).await?;
+        info!("llm_response: {llm_response}");
+
         // Parse Rust from markdown fences
-        let mut ast = parse_rust_code(llm_response).map_err(|_| Error::CouldNotParseRust)?;
+        let mut ast = parse_rust_code(&llm_response).map_err(|_| Error::CouldNotParseRust)?;
 
         // Validate signatures match declarations
         validate_generated_ast(&mut ast, &self.fn_sigs)?;
@@ -172,7 +195,63 @@ impl Runtime {
             // guarantees no readers are executing code from the old library.
         }
 
-        info!("Hot-reloaded evolvable dylib (version {version})");
+        info!(
+            "Hot-reloaded evolvable dylib (version {version}). LLM generation, validation compilation, and swapping took {}ms",
+            t0.elapsed().as_millis()
+        );
+
+        Ok(())
+    }
+
+    // TODO: might want to rename this to `evolve`, and rename original `evolve` to something else. Backpressure should always be included in public method.
+    /// Process an LLM response: parse, validate, compile, and hot-swap.
+    ///
+    /// The `llm_response` should contain a Rust code block (optionally markdown-fenced)
+    /// with implementations matching the declared evolvable function signatures.
+    ///
+    /// If the constrained generation fails due to the LLM output,
+    /// steer it with some prompt change and try function evolution again until it succeeds.
+    pub async fn evolve_with_backpressure<CompletionModelT>(
+        &self,
+        agent: &Agent<CompletionModelT>,
+        base_prompt: &str,
+    ) -> Result<()>
+    where
+        CompletionModelT: CompletionModel + 'static,
+    {
+        let mut prompt = base_prompt.to_string();
+
+        while let Err(e) = self.evolve(agent, &prompt).await {
+            info!("Function evolution error: {e}");
+
+            prompt = base_prompt.to_string();
+
+            use Error::*;
+            match e {
+                    NoRustCode => prompt.push_str(
+                        "Your response did not contain a rust code block. Please try again and make sure its wrapped like this: ```CODE```",
+                    ),
+                    CouldNotParseRust => prompt.push_str(
+                        "Your response did not contain valid Rust code. Please try again",
+                    ),
+                    WriteLib(_) => todo!(),
+                    SignatureMismatch {
+                        name: _,
+                        expected,
+                        got,
+                    } => prompt.push_str(&format!(
+                        "Generated function signature miss-match. Expected ```{expected}```, Got ```{got}```"
+                    )),
+                    CompilationFailed(ref stderr) => prompt.push_str(&format!(
+                        "The generated code failed to compile. Compiler output:\n```\n{stderr}\n```\nPlease fix the compilation errors."
+                    )),
+                    e => {
+                        warn!("Unhandled error: {e}");
+                        return Err(e)
+                    },
+                }
+        }
+
         Ok(())
     }
 
