@@ -1,10 +1,11 @@
+# Symbiont Agent Harness
+
 <p align="center">
   <img src="assets/symbiont_logo_4a_440.png" alt="Symbiont Logo">
 </p>
 
-# Symbiont Agent Harness
 
-Agent harness for hot-reloading function evolution of Rust code.
+A model harness for enabling hot-reloading function evolution in Rust.
 
 LLMs write type-safe Rust functions that get natively compiled and hot-swapped into your running binary — bare-metal execution, zero interpreter overhead.
 
@@ -121,9 +122,16 @@ while `symbiont`'s constrained generation loop ensures the LLM output always com
 
 These constraints arise from the binary/dylib interaction boundary. The harness mitigates most of them, but users should be aware:
 
-- **Same toolchain required**: Rust has no stable ABI. The binary and dylib must be compiled with the same `rustc` version to guarantee matching calling conventions and memory layouts. The harness ensures this by compiling the dylib on the same machine with the same toolchain.
-- **Primitive types only**: The generated dylib has no dependencies, so evolvable function signatures are limited to `std` types (`usize`, `f64`, `&[u8]`, etc.). Custom types across the boundary will require shared dependency support (not yet implemented).
-- **`unsafe` at the boundary**: Dynamic symbol lookup is inherently `unsafe`. The harness validates function signatures against the `evolvable!` declaration and only loads code that parses, type-checks, and compiles — but the `extern "Rust"` pointer cast remains an unsafe invariant.
+- **Static function signatures**:
+  The LLM can only rewrite function *bodies* — the signature declared in `evolvable!` is fixed at compile time and enforced on every evolution.
+  This is by design (it's what makes constrained generation possible), but it means the agent cannot add parameters, change return types, or introduce new functions at runtime.
+  It would be UB to hot-swap a different function signature in, when the main binary expects a certain memory layout.
+- **Same toolchain required**:
+  Rust has no stable ABI. The binary and dylib must be compiled with the same `rustc` version to guarantee matching calling conventions and memory layouts. The harness ensures this by compiling the dylib on the same machine with the same toolchain.
+- **Primitive types only**:
+  The generated dylib has no dependencies, so evolvable function signatures are limited to `std` types (`usize`, `f64`, `&[u8]`, etc.). Custom types across the boundary will require shared dependency support (not yet implemented).
+- **`unsafe` at the boundary**:
+  Dynamic symbol lookup is inherently `unsafe`. The harness validates function signatures against the `evolvable!` declaration and only loads code that parses, type-checks, and compiles — but the `extern "Rust"` pointer cast remains an unsafe invariant.
 
 ## License
 
