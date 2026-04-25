@@ -7,7 +7,7 @@
 
 A model harness for enabling hot-reloading function evolution in Rust.
 
-LLMs write type-safe Rust functions that get natively compiled and hot-swapped into your running binary — bare-metal execution, zero interpreter overhead.
+LLMs write type-safe Rust function bodies that get compiled natively and hot-swapped into your running binary — bare-metal execution, zero interpreter overhead.
 
 ## How it works
 
