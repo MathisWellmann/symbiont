@@ -111,3 +111,16 @@ jobs:
             timeout 120s cargo run -p rastrigin-example || [ $? -eq 124 ]
             devenv processes down
           '
+      - name: sort-example-smoke-test
+        env:
+          RUSTFLAGS: "-D warnings"
+        # Run the sort example which evolves a sorting algorithm across
+        # multiple data distributions. The bubble sort default is slow,
+        # so allow 180s for the full evolution loop.
+        run: |
+          nix develop --command bash -c '
+            devenv up -d
+            devenv processes wait llama-server --timeout 120
+            timeout 180s cargo run -p sort-example || [ $? -eq 124 ]
+            devenv processes down
+          '

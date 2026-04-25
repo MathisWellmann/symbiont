@@ -322,10 +322,10 @@ impl Runtime {
                         expected,
                         got,
                     } => write!(prompt,
-                        "Generated function signature miss-match. Expected ```{expected}```, Got ```{got}```"
+                        " Generated function signature miss-match. Expected ```{expected}```, Got ```{got}```"
                     ).expect("Can write to prompt"),
                     CompilationFailed(ref stderr) => write!(prompt,
-                        "The generated code failed to compile. Compiler output:\n```\n{stderr}\n```\nPlease fix the compilation errors."
+                        " The generated code failed to compile. Compiler output:\n```\n{stderr}\n```\nPlease fix the compilation errors."
                     ).expect("Can write to prompt"),
                     e => {
                         warn!("Unhandled error: {e}");

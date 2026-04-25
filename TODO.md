@@ -1,2 +1,5 @@
-- Include type definitions for any input and output types to the function.
-- Try with external dependencies too.
+- Support compiling lib with optimzation level.
+- Support non-trivial type definitions for any input and output types to the function.
+- Support multi function evolution.
+- Support external dependencies in lib.
+- Support shared externala dependencies across function boundary.

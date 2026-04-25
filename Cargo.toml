@@ -3,6 +3,7 @@ members = [
   "examples/counter",
   "examples/fizzbuzz",
   "examples/rastrigin",
+  "examples/sort",
   "symbiont",
   "symbiont-macros",
 ]
@@ -192,6 +193,7 @@ ref_option_ref = "warn"
 
 [workspace.dependencies]
 rig-core = "0.35"
+romu = "0.8"
 tokio = { version = "1.0", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

@@ -1871,6 +1871,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "sort-example"
+version = "0.1.0"
+dependencies = [
+ "rig-core",
+ "romu",
+ "symbiont",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
