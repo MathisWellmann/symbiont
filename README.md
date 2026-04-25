@@ -138,8 +138,8 @@ Function pointers are cached in `AtomicPtr` statics after each load — callers 
 
 Benchmark: `cargo bench -p symbiont --bench dispatch_overhead`
 
-On reload, the runtime updates the atomic pointers and keeps the previous library alive so that any in-flight calls through old pointers remain valid.
-Memory is bounded to two loaded `.so` files at any time.
+On reload, the runtime updates the atomic pointers and drops the old library.
+This is safe because the feedback loop contract guarantees no evolvable functions are executing during evolution — only one `.so` is loaded at any time.
 
 ## Limitations
 
@@ -149,6 +149,10 @@ These constraints arise from the binary/dylib interaction boundary. The harness 
   The LLM can only rewrite function *bodies* — the signature declared in `evolvable!` is fixed at compile time and enforced on every evolution.
   This is by design (it's what makes constrained generation possible), but it means the agent cannot add parameters, change return types, or introduce new functions at runtime.
   It would be UB to hot-swap a different function signature in, when the main binary expects a certain memory layout.
+- **Sequential feedback loop**:
+  All evolvable function calls must have returned before `evolve()` is called. The old library is dropped on reload, so in-flight calls through stale pointers would be UB.
+  This matches the intended usage pattern (run functions, collect results, evolve, repeat) and is enforced with an assertion in debug builds at zero cost in release.
+  Multi-threading is possible, but requires extra care.
 - **Same toolchain required**:
   Rust has no stable ABI. The binary and dylib must be compiled with the same `rustc` version to guarantee matching calling conventions and memory layouts. The harness ensures this by compiling the dylib on the same machine with the same toolchain.
 - **Primitive types only**:
