@@ -46,3 +46,15 @@ pub use error::{
 };
 pub use runtime::Runtime;
 pub use symbiont_macros::evolvable;
+
+/// Internal module for macro-generated dispatch code.
+///
+/// Not part of the public API — used by `evolvable!` expansion.
+#[doc(hidden)]
+pub mod __internal {
+    #[cfg(debug_assertions)]
+    pub use crate::runtime::{
+        CallGuard,
+        enter_call,
+    };
+}
