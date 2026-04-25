@@ -9,6 +9,8 @@ readme = "../README.md"
 repository = "https://github.com/MathisWellmann/symbiont"
 version = "0.1.0"
 
+# TODO: workspace lints
+
 [dependencies]
 symbiont-macros = { path = "../symbiont-macros" }
 

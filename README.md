@@ -91,11 +91,18 @@ cargo run -p counter-example
 
 ## Core highlights
 
-- **Type-safe agentic code**: Agents express intent as Rust functions with enforced signatures.
-- **Constrained generation**: Parse errors, signature mismatches, and compiler diagnostics steer the LLM until it produces valid code.
-- **Hot-swap dylibs**: Functions are compiled to native shared libraries and swapped in-place via `libloading` — no process restart.
-- **Bare-metal performance**: Evolved functions run as native compiled code with configurable optimization profiles.
-- **Plug-in inference**: Any Inference provider via [rig](https://github.com/0xPlaygrounds/rig).
+- **Type-safe agentic code**:
+  Agents express intent as Rust functions with enforced signatures.
+- **Constrained generation**:
+  Parse errors, signature mismatches, and compiler diagnostics steer the LLM until it produces valid code.
+- **Hot-swap dylibs**:
+  Functions are compiled to native shared libraries and swapped in-place via `libloading` — no process restart.
+- **Bare-metal performance**:
+  Evolved functions run as native compiled code.
+  The dispatch overhead is **~1 ns per call** (a single atomic pointer load + indirect call).
+  The hot path is fully lock-free and multi-thread safe.
+- **Plug-in inference**:
+  Any Inference provider via [rig](https://github.com/0xPlaygrounds/rig).
 
 ## Motivation
 
@@ -119,6 +126,20 @@ while `symbiont`'s constrained generation loop ensures the LLM output always com
 - Black-box optimization of inputs that produce desired outputs, e.g. Parameter Search.
 - Self-evolving feature processing pipelines.
 - Agentic code evolution generally.
+
+## Dispatch overhead
+
+Function pointers are cached in `AtomicPtr` statics after each load — callers never touch a lock or perform a symbol lookup.
+
+|                       | Time per call |
+|-----------------------|---------------|
+| Direct function call  | 0.91 ns       |
+| `evolvable!` dispatch | 1.64 ns       |
+
+Benchmark: `cargo bench -p symbiont --bench dispatch_overhead`
+
+On reload, the runtime updates the atomic pointers and keeps the previous library alive so that any in-flight calls through old pointers remain valid.
+Memory is bounded to two loaded `.so` files at any time.
 
 ## Limitations
 

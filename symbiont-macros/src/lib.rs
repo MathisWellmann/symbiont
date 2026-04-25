@@ -181,9 +181,14 @@ pub fn evolvable(input: TokenStream) -> TokenStream {
         let vis = func.vis();
         let ident = &sig.ident;
         let fn_name_str = ident.to_string();
-        let fn_name_bytes = format!("{fn_name_str}\0");
         let signature_str = format_signature(sig);
         let default_source = build_default_source(func);
+
+        // Generate a unique static name for the cached function pointer
+        let static_name = syn::Ident::new(
+            &format!("__SYMBIONT_FN_{}", fn_name_str.to_uppercase()),
+            ident.span(),
+        );
 
         // Build the argument types and names for the extern fn type and call
         let mut arg_types = Vec::new();
@@ -210,30 +215,33 @@ pub fn evolvable(input: TokenStream) -> TokenStream {
             ReturnType::Type(_, ty) => quote! { #ty },
         };
 
-        // Build the EvolvableDecl entry
+        // Build the EvolvableDecl entry (with reference to the AtomicPtr static)
         decl_entries.push(quote! {
             ::symbiont::EvolvableDecl {
                 name: #fn_name_str,
                 signature: #signature_str,
                 default_source: #default_source,
+                fn_ptr: &#static_name,
             }
         });
 
-        // Build the dispatch wrapper function
+        // Build the per-function AtomicPtr static and lock-free dispatch wrapper
         let fn_inputs = &sig.inputs;
         let fn_output = &sig.output;
 
         wrapper_fns.push(quote! {
+            #[doc(hidden)]
+            static #static_name: ::std::sync::atomic::AtomicPtr<()> =
+                ::std::sync::atomic::AtomicPtr::new(::std::ptr::null_mut());
+
             #vis fn #ident(#fn_inputs) #fn_output {
-                let guard = ::symbiont::__internal::lib_read_lock();
-                let lib = guard.as_ref()
-                    .expect("symbiont runtime not initialized; call Runtime::init() first");
-                unsafe {
-                    let sym: ::symbiont::libloading::Symbol<unsafe extern "Rust" fn(#(#arg_types),*) -> #ret_ty> =
-                        lib.get(#fn_name_bytes.as_bytes())
-                            .expect(concat!("symbol '", #fn_name_str, "' not found in dylib"));
-                    sym(#(#arg_names),*)
-                }
+                let ptr = #static_name.load(::std::sync::atomic::Ordering::Acquire);
+                debug_assert!(
+                    !ptr.is_null(),
+                    concat!("symbiont: function '", #fn_name_str, "' not initialized; call Runtime::init() first")
+                );
+                let f: fn(#(#arg_types),*) -> #ret_ty = unsafe { ::std::mem::transmute(ptr) };
+                f(#(#arg_names),*)
             }
         });
     }

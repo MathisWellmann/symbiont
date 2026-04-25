@@ -44,17 +44,5 @@ pub use error::{
     Error,
     Result,
 };
-// Re-export libloading so macro-generated code can reference it
-// without the user adding it to their own Cargo.toml.
-#[doc(hidden)]
-pub use libloading;
 pub use runtime::Runtime;
 pub use symbiont_macros::evolvable;
-
-/// Internal module for macro-generated dispatch code.
-///
-/// Not part of the public API — used by `evolvable!` expansion.
-#[doc(hidden)]
-pub mod __internal {
-    pub use crate::runtime::lib_read_lock;
-}
