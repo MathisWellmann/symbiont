@@ -235,6 +235,11 @@ pub fn evolvable(input: TokenStream) -> TokenStream {
                 ::std::sync::atomic::AtomicPtr::new(::std::ptr::null_mut());
 
             #vis fn #ident(#fn_inputs) #fn_output {
+                // In debug builds, track this call so evolve() can assert
+                // no functions are in flight. Compiled away in release.
+                #[cfg(debug_assertions)]
+                let _call_guard = ::symbiont::__internal::enter_call();
+
                 let ptr = #static_name.load(::std::sync::atomic::Ordering::Acquire);
                 debug_assert!(
                     !ptr.is_null(),

@@ -1,7 +1,12 @@
 //! Benchmark comparing direct function calls vs `evolvable!` dispatch
 //! to measure the overhead of the RwLock + dlsym wrapper.
 
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{
+    Criterion,
+    black_box,
+    criterion_group,
+    criterion_main,
+};
 
 // Direct (baseline) — no indirection, just a regular function call.
 #[inline(never)]

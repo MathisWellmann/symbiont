@@ -47,14 +47,48 @@ use crate::{
 /// Singleton runtime instance.
 static RUNTIME: OnceLock<Runtime> = OnceLock::new();
 
+// ---------- debug-mode call counter ----------
+//
+// Tracks in-flight evolvable function calls so that `evolve()` can assert
+// none are running. Compiled away entirely in release builds — zero overhead.
+
+#[cfg(debug_assertions)]
+static IN_FLIGHT_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// RAII guard that decrements the in-flight call counter on drop.
+/// Only exists in debug builds.
+#[cfg(debug_assertions)]
+pub struct CallGuard;
+
+#[cfg(debug_assertions)]
+impl Drop for CallGuard {
+    fn drop(&mut self) {
+        IN_FLIGHT_CALLS.fetch_sub(1, Ordering::Release);
+    }
+}
+
+/// Increment the in-flight call counter and return a guard that decrements
+/// it on drop (including during unwind). Debug builds only.
+#[cfg(debug_assertions)]
+pub fn enter_call() -> CallGuard {
+    IN_FLIGHT_CALLS.fetch_add(1, Ordering::Acquire);
+    CallGuard
+}
+
+// -------------------------------------------------
+
 /// Manages the lifecycle of the temporary dylib crate: creation, compilation,
 /// loading, and hot-reloading.
 ///
 /// Function dispatch is lock-free: each evolvable function reads its cached
-/// pointer via a single `AtomicPtr::load`. Library lifetime is managed by
-/// keeping the current and previous libraries alive, which bounds memory
-/// to two loaded `.so` files at any time while guaranteeing that in-flight
-/// calls through the previous version's pointers remain valid.
+/// pointer via a single `AtomicPtr::load`.
+///
+/// # Contract
+///
+/// **All evolvable function calls must have returned before [`Runtime::evolve_with_backpressure`]
+/// is called.** This is the natural shape of the feedback loop — run functions,
+/// collect results, evolve, repeat. The contract is enforced with an assertion
+/// in debug builds and is zero-cost in release.
 pub struct Runtime {
     /// Path to the temporary dylib crate directory.
     crate_dir: PathBuf,
@@ -65,19 +99,13 @@ pub struct Runtime {
     version: AtomicU64,
     /// Function signatures for validation of LLM-generated code.
     fn_sigs: Vec<String>,
-    /// The currently loaded library and its predecessor.
-    /// Keeping two versions alive ensures that in-flight calls through
-    /// the previous version's function pointers don't segfault.
-    /// The Mutex is only taken during reload, never on the call hot-path.
-    libraries: Mutex<LibrarySlot>,
+    /// The currently loaded library.
+    /// Safe to replace because the caller guarantees no in-flight calls
+    /// during evolution. The Mutex is only taken during reload, never on
+    /// the hot path.
+    library: Mutex<Option<Library>>,
     /// Declarations (kept for fn_ptr updates on reload).
     decls: &'static [EvolvableDecl],
-}
-
-/// Holds the current and previous loaded libraries.
-struct LibrarySlot {
-    current: Option<Library>,
-    previous: Option<Library>,
 }
 
 /// Look up all declared symbols in `lib` and store their addresses
@@ -153,10 +181,7 @@ impl Runtime {
             so_path,
             version: AtomicU64::new(1),
             fn_sigs,
-            libraries: Mutex::new(LibrarySlot {
-                current: Some(lib),
-                previous: None,
-            }),
+            library: Mutex::new(Some(lib)),
             decls,
         };
 
@@ -173,8 +198,11 @@ impl Runtime {
 
     /// Generate LLM response, then parse, validate, compile, and hot-swap.
     ///
-    /// The `llm_response` should contain a Rust code block (optionally markdown-fenced)
-    /// with implementations matching the declared evolvable function signatures.
+    /// # Contract
+    ///
+    /// All evolvable function calls must have returned before this is called.
+    /// In debug builds this is enforced with an assertion; in release it is
+    /// the caller's responsibility.
     async fn evolve<CompletionModelT>(
         &self,
         agent: &Agent<CompletionModelT>,
@@ -183,6 +211,16 @@ impl Runtime {
     where
         CompletionModelT: CompletionModel + 'static,
     {
+        #[cfg(debug_assertions)]
+        {
+            let in_flight = IN_FLIGHT_CALLS.load(Ordering::Acquire);
+            assert!(
+                in_flight == 0,
+                "evolve() called while {in_flight} evolvable function(s) are still executing. \
+                 All callers must return before evolving — this is the feedback loop contract."
+            );
+        }
+
         let t0 = Instant::now();
 
         let llm_response = agent.prompt(prompt).await?;
@@ -220,21 +258,11 @@ impl Runtime {
         };
 
         // Update cached function pointers (atomic stores with Release ordering).
-        // After this point, new calls go through the new library.
         unsafe { update_fn_ptrs(&new_lib, self.decls)? };
 
-        // Rotate libraries: current becomes previous, new becomes current.
-        // The previous library is dropped here. This is safe because:
-        // - Compilation takes hundreds of ms to seconds
-        // - Any in-flight call through the previous version's pointers
-        //   completes in microseconds at most
-        // - By the time we reach this reload, all calls from two versions
-        //   ago have long since finished
-        {
-            let mut slot = self.libraries.lock().expect("libraries Mutex poisoned");
-            slot.previous = slot.current.take();
-            slot.current = Some(new_lib);
-        }
+        // Replace the library. Safe to drop the old one because the caller
+        // guarantees no evolvable functions are executing (feedback loop contract).
+        *self.library.lock().expect("library Mutex poisoned") = Some(new_lib);
 
         info!(
             "Hot-reloaded evolvable dylib (version {version}). LLM generation, validation, compilation, and swapping took {}ms",
@@ -245,13 +273,17 @@ impl Runtime {
     }
 
     // TODO: might want to rename this to `evolve`, and rename original `evolve` to something else. Backpressure should always be included in public method.
-    /// Process an LLM response: parse, validate, compile, and hot-swap.
+    /// Prompt the LLM, validate the response, compile, and hot-swap.
     ///
-    /// The `llm_response` should contain a Rust code block (optionally markdown-fenced)
-    /// with implementations matching the declared evolvable function signatures.
+    /// If the constrained generation fails (parse error, signature mismatch,
+    /// compilation failure), the error is appended to the prompt and the LLM
+    /// retries until it produces valid code.
     ///
-    /// If the constrained generation fails due to the LLM output,
-    /// steer it with some prompt change and try function evolution again until it succeeds.
+    /// # Contract
+    ///
+    /// All evolvable function calls must have returned before this is called.
+    /// This is the natural shape of the feedback loop: run functions, collect
+    /// results, evolve, repeat.
     pub async fn evolve_with_backpressure<CompletionModelT>(
         &self,
         agent: &Agent<CompletionModelT>,
