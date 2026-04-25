@@ -10,10 +10,6 @@
 {pkgs, ...}: let
   port = 8231;
 in {
-  env.BASE_URL = "http://127.0.0.1:${toString port}/v1";
-  env.API_KEY = "";
-  env.MODEL = "google/gemma-4-E2B-it";
-
   packages = [
     pkgs.llama-cpp
   ];

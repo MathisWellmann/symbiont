@@ -78,16 +78,7 @@ The compiled dylib (of the function) gets hot-swapped in the evaluation loop, ac
 This is agentic code mode in action.
 The harness provides constrained generation and nudges the LLM prompt if necessary.
 
-
-Set the following environment variables for your inference provider, or local server.
-
-```sh
-export API_KEY="your-api-key" # Can be left blank for local inference providers like `llama-cpp`.
-export BASE_URL="http://your-inference-host:port/v1"
-export MODEL="unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M" # Or any model of your choice.
-cargo run -p counter-example
-```
-
+See [Development setup] for how to get started.
 
 ## Core highlights
 
@@ -126,6 +117,31 @@ while `symbiont`'s constrained generation loop ensures the LLM output always com
 - Black-box optimization of inputs that produce desired outputs, e.g. Parameter Search.
 - Self-evolving feature processing pipelines.
 - Agentic code evolution generally.
+
+## Development setup
+
+The project uses [Nix](https://nixos.org/) for reproducible builds and [devenv](https://devenv.sh/) to manage a local inference server.
+
+**Prerequisites**: Nix with flakes enabled.
+
+Setup your `.env` file like this for the next steps (or use your desired inference provider):
+```sh
+export API_KEY=""
+export BASE_URL="http://127.0.0.1:8321/v1"
+export MODEL="google/gemma-4-E2B-it"
+```
+
+Then execute the following:
+```sh
+# Enter the development shell (provides Rust nightly, cargo tools, formatters)
+nix develop
+
+# Start a local llama-cpp server with gemma-4-E2B-it (auto-downloads on first run)
+devenv up
+
+# In another terminal, run the counter example
+cargo run -p counter-example
+```
 
 ## Dispatch overhead
 
