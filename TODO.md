@@ -2,3 +2,4 @@
 - Include function doc comments for more context.
 - Include type definitions for any input and output types to the function.
 - Add metrics like compilation time, tokens-in tokens-out, num evolutions.
+- Benchmark the locking overhead, make sure the function invocation itself does not have to aquire a lock with every call.

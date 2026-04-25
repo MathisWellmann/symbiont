@@ -1,6 +1,8 @@
 # Symbiont Agent Harness
 
-LLMs write native Rust functions that get compiled and hot-swapped into your running binary — bare-metal execution, zero interpreter overhead.
+Agent harness for hot-reloading function evolution of Rust code.
+
+LLMs write type-safe Rust functions that get natively compiled and hot-swapped into your running binary — bare-metal execution, zero interpreter overhead.
 
 ## How it works
 
@@ -63,11 +65,12 @@ async fn main() -> symbiont::Result<()> {
 }
 ```
 
-Set the following environment variables for your inference provider (any OpenAI-compatible API):
+Set the following environment variables for your inference provider
+(any OpenAI-compatible API aka `/v1/chat/completions`):
 
 ```sh
-export API_KEY="your-api-key" # Can be left black for local inference providers like `llama-cpp` (if not configured)
-export BASE_URL="https://your-inference-host:port/v1"
+export API_KEY="your-api-key" # Can be left blank for local inference providers like `llama-cpp`.
+export BASE_URL="http://your-inference-host:port/v1"
 export MODEL="unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M" # Or any model of your choice.
 cargo run -p counter-example
 ```
@@ -82,15 +85,15 @@ cargo run -p counter-example
 
 ## Motivation
 
-Current-generation agent harnesses such as [Agentica](https://github.com/symbolica-ai/ARC-AGI-3-Agents) achieve SOTA
-on complex long-running tasks like ARC-AGI-3 by providing a persistent Python REPL that the agent lives in. i
+Current-generation Agent harnesses such as [Agentica](https://github.com/symbolica-ai/ARC-AGI-3-Agents) achieve SOTA
+on complex long-running tasks like ARC-AGI-3 by providing a persistent Python REPL that the agent lives in.
 This is known as **CodeMode** — it allows the agent to leverage the entire Python ecosystem natively, without MCP.
 
 However, Python's interpreter overhead becomes the bottleneck for compute-heavy workloads.
 If the agent's task is to optimize a well-typed function, evaluation in Python can be 10-100x slower than native execution,
 directly limiting how many iterations the agent can explore in a given time budget.
 
-Symbiont brings the same agentic code evolution paradigm to Rust.
+Symbiont brings a similar agentic code evolution paradigm to Rust.
 Agents write type-safe function bodies that get compiled to native code and hot-swapped into the running binary.
 The Rust compiler enforces memory safety and type correctness,
 while `symbiont`'s constrained generation loop ensures the LLM output always compiles before it reaches execution.
@@ -102,6 +105,14 @@ while `symbiont`'s constrained generation loop ensures the LLM output always com
 - Black-box optimization of inputs that produce desired outputs, e.g. Parameter Search.
 - Self-evolving feature processing pipelines.
 - Agentic code evolution generally.
+
+## Limitations
+
+These constraints arise from the binary/dylib interaction boundary. The harness mitigates most of them, but users should be aware:
+
+- **Same toolchain required**: Rust has no stable ABI. The binary and dylib must be compiled with the same `rustc` version to guarantee matching calling conventions and memory layouts. The harness ensures this by compiling the dylib on the same machine with the same toolchain.
+- **Primitive types only**: The generated dylib has no dependencies, so evolvable function signatures are limited to `std` types (`usize`, `f64`, `&[u8]`, etc.). Custom types across the boundary will require shared dependency support (not yet implemented).
+- **`unsafe` at the boundary**: Dynamic symbol lookup is inherently `unsafe`. The harness validates function signatures against the `evolvable!` declaration and only loads code that parses, type-checks, and compiles — but the `extern "Rust"` pointer cast remains an unsafe invariant.
 
 ## License
 
