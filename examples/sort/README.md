@@ -22,6 +22,9 @@ rewriting from scratch.
 
 This may be highly useful in the search for a sorting algorithm, tuned for a specific input distribution.
 
+Also showcases `symbiont::catch_unwind` to catch out-of-bounds panics in Agent code,
+which is used to improve the next generation of LLM code.
+
 ## Running
 
 ```bash
@@ -31,7 +34,12 @@ cargo run -p sort-example
 
 ## Solution
 
+Running with `Profile::Debug`, set in `Runtime`:
+
 ![Sort Example](sort-example.png)
 
 Here the solution contains `unsafe`, which could be prompted away or the Harness adds support for forbidding `unsafe`
 in the future if this is configured in `Runtime`. See `TODO.md`.
+
+Running with `Profile::Release` set in `Runtimie` and compiling Harness with `--release` too, for more evaluation performance:
+

@@ -18,13 +18,17 @@ use std::{
         Mutex,
         OnceLock,
         atomic::{
+            AtomicPtr,
             AtomicU64,
             Ordering,
         },
     },
 };
 
-use libloading::Library;
+use libloading::{
+    Library,
+    Symbol,
+};
 use minstant::Instant;
 use rig::{
     agent::Agent,
@@ -49,11 +53,19 @@ use crate::{
         Result,
     },
     parser::parse_rust_code,
+    unwind::{
+        PANIC_PREAMBLE,
+        wrap_bodies_in_catch_unwind,
+    },
     validation::validate_generated_ast,
 };
 
 /// Singleton runtime instance.
 static RUNTIME: OnceLock<Runtime> = OnceLock::new();
+
+/// Cached pointer to the dylib's `__symbiont_take_panic` function.
+/// Updated on each reload alongside the evolvable function pointers.
+static TAKE_PANIC_PTR: AtomicPtr<()> = AtomicPtr::new(std::ptr::null_mut());
 
 // ---------- debug-mode call counter ----------
 //
@@ -129,12 +141,21 @@ unsafe fn update_fn_ptrs(lib: &Library, decls: &[EvolvableDecl]) -> Result<()> {
     for decl in decls {
         let c_name =
             CString::new(decl.name).expect("function name must not contain interior NUL bytes");
-        let sym: libloading::Symbol<*const ()> = unsafe {
+        let sym: Symbol<*const ()> = unsafe {
             lib.get(c_name.as_bytes_with_nul())
                 .map_err(|e| Error::DylibLoad(format!("symbol '{}' not found: {e}", decl.name)))?
         };
         decl.fn_ptr.store(*sym as *mut (), Ordering::Release);
     }
+
+    // Resolve the panic-retrieval symbol.
+    let panic_sym: Symbol<*const ()> = unsafe {
+        lib.get(b"__symbiont_take_panic\0").map_err(|e| {
+            Error::DylibLoad(format!("symbol '__symbiont_take_panic' not found: {e}"))
+        })?
+    };
+    TAKE_PANIC_PTR.store(*panic_sym as *mut (), Ordering::Release);
+
     Ok(())
 }
 
@@ -252,9 +273,12 @@ impl Runtime {
         // Validate signatures match declarations
         validate_generated_ast(&mut ast, &self.fn_sigs)?;
 
-        // Write validated AST to temp crate's lib.rs
+        // Wrap function bodies in catch_unwind so panics stay inside the dylib.
+        wrap_bodies_in_catch_unwind(&mut ast);
+
+        // Write validated AST to temp crate's lib.rs (preamble + LLM code).
         let lib_rs_path = self.crate_dir.join("src").join("lib.rs");
-        let formatted = prettyplease::unparse(&ast);
+        let formatted = format!("{PANIC_PREAMBLE}\n{}", prettyplease::unparse(&ast));
         std::fs::write(&lib_rs_path, &formatted)
             .map_err(|e| Error::WriteLib(format!("Failed to write lib.rs: {e}")))?;
         info!("Wrote evolved lib.rs to {}", lib_rs_path.display());
@@ -354,6 +378,29 @@ impl Runtime {
     pub fn crate_dir(&self) -> &Path {
         &self.crate_dir
     }
+
+    /// Retrieve and clear the last panic message from the loaded dylib.
+    ///
+    /// Returns `Some(message)` if the most recent evolvable function call
+    /// panicked, `None` otherwise. The stored message is cleared on read.
+    ///
+    /// Call this after each evolvable function invocation to detect panics
+    /// that were caught inside the dylib.
+    pub fn take_panic(&self) -> Option<String> {
+        let ptr = TAKE_PANIC_PTR.load(Ordering::Acquire);
+        if ptr.is_null() {
+            return None;
+        }
+        // Signature: unsafe fn __symbiont_take_panic(buf: *mut u8, buf_len: usize) -> usize
+        let take_panic: unsafe fn(*mut u8, usize) -> usize = unsafe { std::mem::transmute(ptr) };
+        let mut buf = [0u8; 512];
+        let len = unsafe { take_panic(buf.as_mut_ptr(), buf.len()) };
+        if len == 0 {
+            None
+        } else {
+            Some(String::from_utf8_lossy(&buf[..len]).into_owned())
+        }
+    }
 }
 
 fn generate_cargo_toml() -> String {
@@ -365,17 +412,26 @@ edition = "2024"
 [lib]
 crate-type = ["dylib"]
 
+# Ensure panics unwind rather than abort so that `symbiont::catch_panic`
+# can intercept them across the dylib boundary.
+[profile.dev]
+panic = "unwind"
+
+[profile.release]
+panic = "unwind"
+
 [dependencies]
 "#
     .to_string()
 }
 
 fn generate_lib_rs(decls: &[EvolvableDecl]) -> String {
-    decls
-        .iter()
-        .map(|d| d.default_source)
-        .collect::<Vec<_>>()
-        .join("\n\n")
+    let mut src = PANIC_PREAMBLE.to_string();
+    for d in decls {
+        src.push_str(d.default_source);
+        src.push_str("\n\n");
+    }
+    src
 }
 
 fn dylib_extension() -> &'static str {

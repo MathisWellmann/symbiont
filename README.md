@@ -93,9 +93,12 @@ See the [Development setup](#development-setup) section and the `examples/` dire
   The dispatch overhead is **~1 ns per call** (a single atomic pointer load + indirect call).
   The hot path is fully lock-free and multi-thread safe.
 - **Plug-in inference**:
-  Any Inference provider via [rig](https://github.com/0xPlaygrounds/rig).
+  Any Inference provider is supported via [rig](https://github.com/0xPlaygrounds/rig).
 - **Tiny Core**:
   Only ~1000 LOC for the Agent harness and constrained generation part.
+- **Catches Agent Code Panics***
+  Any LLM code that generate a runtime panic will be caught using `catch_unwind`, and the panic message is used
+  to provide backpressure in the prompt. See [unwind.rs](symbiont/src/unwind.rs) for details.
 
 ## Motivation
 
