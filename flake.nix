@@ -51,6 +51,7 @@
       cargo-watch
       taplo # Toml toolkit with formatter
       yamlfmt
+      mermaid-cli
     ];
     nix_tools = with pkgs; [
       alejandra # Nix code formatter

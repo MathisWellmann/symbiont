@@ -3,6 +3,23 @@ A Rust native Agent harness where models write type-safe function implementation
 as dynamic libraries that get hot-swapped by the harness to enable agentic code evolution.
 It enables fast-iteration cycles in agentic auto-research tasks such a function optimization or black-box parameter search.
 
+## How it works
+
+```mermaid
+flowchart LR
+    A["LLM writes\nRust function"] --> B["Constrained\nGeneration"]
+    B -->|"validate + compile"| C["Native .so"]
+    C -->|"hot-swap"| D["Running\nBinary"]
+    D -->|"bare-metal\nexecution"| E["Evaluate"]
+    E -->|"next iteration"| A
+
+    style A fill:#1a1a2e,stroke:#e94560,color:#eee
+    style B fill:#16213e,stroke:#e94560,color:#eee
+    style C fill:#0f3460,stroke:#e94560,color:#eee
+    style D fill:#0f3460,stroke:#e94560,color:#eee
+    style E fill:#1a1a2e,stroke:#e94560,color:#eee
+```
+
 ## Core highlights:
 - Agents express intent as type-safe Rust code.
 - Constrained code generation with harness-enforced rules.
