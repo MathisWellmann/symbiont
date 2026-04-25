@@ -50,8 +50,8 @@ struct Sample {
 }
 
 const SAMPLES_PER_AXIS: usize = 100;
-const DOMAIN_MIN: f64 = -5.12;
-const DOMAIN_MAX: f64 = 5.12;
+const DOMAIN_MIN: f64 = -5.0;
+const DOMAIN_MAX: f64 = 5.0;
 
 /// Sweep x and y across the Rastrigin domain [-5.12, 5.12] with
 /// `SAMPLES_PER_AXIS` evenly spaced values per axis (100 x 100 = 10 000 points).
