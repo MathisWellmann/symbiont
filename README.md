@@ -160,20 +160,21 @@ This is safe because the feedback loop contract guarantees no evolvable function
 
 ## Per-evolution timings
 
-A typical evolution cycle (LLM generates → validates → compiles) highly depends on:
-- The model being used
+A typical evolution cycle (LLM inference → constrained generation → compilation -> fn evaluation) highly depends on:
+- The model being used (Inference latency)
 - Size of the generated Rust code.
 - Optimization level for the compiled dylib.
 
 Example timings for `fizzbuzz-example` using `Qwen3.6-35B-A3B`:
 | Stage          | Time    |
 |----------------|---------|
-| LLM generation | 4852 ms |
+| LLM inference  | 4852 ms |
 | Harness checks | 0 ms    |
 | Compilation    | 118 ms  |
 | Function Eval  | ~5ns    |
 
 The function evaluation pipeline should be built to keep these proportions in mind.
+The `fizzbuzz-example` can be oneshot and function evaluation is super cheap, so its not representative, just a toy example.
 
 ## Limitations
 

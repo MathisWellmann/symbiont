@@ -1410,6 +1410,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "rastrigin-example"
+version = "0.1.0"
+dependencies = [
+ "rig-core",
+ "symbiont",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "rayon"
 version = "1.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
