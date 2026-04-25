@@ -56,6 +56,20 @@ jobs:
         env:
           RUSTFLAGS: "-D warnings" # Make all warnings deny.
         run: nix develop --command cargo bench --no-run # Just to make sure it compiles
+      - name: cargo-fmt
+        run: nix develop --command cargo fmt --check
+      - name: taplo
+        run: nix develop --command taplo fmt --check
+      - name: cargo-doc
+        run: nix develop --command cargo doc
+  integration-tests:
+    # Target self-hosted runner by label
+    runs-on: [nixos]
+    # SECURITY: Require manual approval for external PRs
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    steps:
+      - name: checkout-code
+        uses: actions/checkout@v4
       - name: counter-example-smoke-test
         env:
           RUSTFLAGS: "-D warnings"
@@ -64,15 +78,9 @@ jobs:
         # compilation, loading, dispatch, LLM evolution, and hot-swap.
         # Exit code 124 = timeout killed the process (success).
         run: |
-          devenv up -d
-          devenv processes wait llama-server --timeout 120
           nix develop --command bash -c '
+            devenv up -d
+            devenv processes wait llama-server --timeout 120
             timeout 30s cargo run -p counter-example || [ $? -eq 124 ]
+            devenv processes down
           '
-          devenv processes down
-      - name: cargo-fmt
-        run: nix develop --command cargo fmt --check
-      - name: taplo
-        run: nix develop --command taplo fmt --check
-      - name: cargo-doc
-        run: nix develop --command cargo doc
