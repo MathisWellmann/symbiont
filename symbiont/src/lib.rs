@@ -15,7 +15,7 @@
 //!
 //! #[tokio::main]
 //! async fn main() -> symbiont::Result<()> {
-//!     let runtime = symbiont::Runtime::init(SYMBIONT_DECLS).await?;
+//!     let runtime = symbiont::Runtime::init(SYMBIONT_DECLS, symbiont::Profile::Debug).await?;
 //!
 //!     let mut counter = 0;
 //!     loop {
@@ -39,6 +39,7 @@ mod validation;
 
 // Re-export the proc macro.
 // Re-export key types.
+pub use compiler::Profile;
 pub use decl::EvolvableDecl;
 pub use error::{
     Error,
