@@ -102,6 +102,8 @@ struct BenchResult {
     name: &'static str,
     median: Duration,
     correct: bool,
+    /// If the function panicked, the panic message.
+    panic: Option<String>,
 }
 
 /// Generate fixed test data for each distribution (same data every round).
@@ -119,28 +121,41 @@ fn prepare_benchmarks(rng: &Rng) -> Vec<DistBench> {
 }
 
 /// Benchmark the current `sort` implementation on all distributions.
-fn run_benchmarks(benches: &[DistBench]) -> Vec<BenchResult> {
+///
+/// Panics in the evolvable function are caught inside the dylib and
+/// retrieved via [`symbiont::catch_panic`] so a bad evolution round
+/// doesn't crash the harness.
+fn run_benchmarks(runtime: &Runtime, benches: &[DistBench]) -> Vec<BenchResult> {
     Vec::from_iter(benches.iter().map(|b| {
         let mut times = Vec::with_capacity(BENCH_RUNS);
         let mut correct = true;
+        let mut panic_msg: Option<String> = None;
 
         for _ in 0..BENCH_RUNS {
             let mut data = b.template.clone();
             let start = Instant::now();
-            sort(&mut data, ARRAY_LEN);
-            let elapsed = start.elapsed();
-            times.push(elapsed);
-
-            if data != b.reference {
-                correct = false;
+            match symbiont::catch_panic(runtime, || sort(&mut data, ARRAY_LEN)) {
+                Ok(()) => {
+                    let elapsed = start.elapsed();
+                    times.push(elapsed);
+                    if data != b.reference {
+                        correct = false;
+                    }
+                }
+                Err(msg) => {
+                    correct = false;
+                    panic_msg = Some(msg);
+                    break;
+                }
             }
         }
 
         times.sort();
         BenchResult {
             name: b.name,
-            median: times[BENCH_RUNS / 2],
+            median: times.get(times.len() / 2).copied().unwrap_or_default(),
             correct,
+            panic: panic_msg,
         }
     }))
 }
@@ -184,6 +199,13 @@ fn format_report(results: &[BenchResult]) -> String {
         );
     }
 
+    for r in results
+        .iter()
+        .filter_map(|r| r.panic.as_ref().map(|p| (r.name, p)))
+    {
+        report.push_str(&format!("\nPANIC on '{}': {}\n", r.0, r.1));
+    }
+
     report
 }
 
@@ -216,7 +238,7 @@ async fn main() -> symbiont::Result<()> {
 
     // -- Round 0: benchmark the default bubble sort ----------------------
     println!("\n=== Round 0: default implementation (bubble sort) ===");
-    let results = run_benchmarks(&benches);
+    let results = run_benchmarks(runtime, &benches);
     let mut report = format_report(&results);
     println!("{report}");
 
@@ -263,7 +285,7 @@ async fn main() -> symbiont::Result<()> {
         prev_code = std::fs::read_to_string(runtime.crate_dir().join("src/lib.rs"))
             .expect("failed to read generated lib.rs");
 
-        let results = run_benchmarks(&benches);
+        let results = run_benchmarks(runtime, &benches);
         let new_report = format_report(&results);
         println!("{new_report}");
 
