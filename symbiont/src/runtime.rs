@@ -227,10 +227,11 @@ impl Runtime {
         }
 
         let t0 = Instant::now();
-
         let llm_response = agent.prompt(prompt).await?;
+        let llm_time = t0.elapsed().as_millis();
         info!("llm_response: {llm_response}");
 
+        let t0 = Instant::now();
         // Parse Rust from markdown fences
         let mut ast = parse_rust_code(&llm_response).map_err(|_| Error::CouldNotParseRust)?;
 
@@ -243,9 +244,12 @@ impl Runtime {
         std::fs::write(&lib_rs_path, &formatted)
             .map_err(|e| Error::WriteLib(format!("Failed to write lib.rs: {e}")))?;
         info!("Wrote evolved lib.rs to {}", lib_rs_path.display());
+        let validation_time = t0.elapsed().as_millis();
 
         // Recompile
+        let t0 = Instant::now();
         compile_dylib(&self.crate_dir).await?;
+        let compile_time = t0.elapsed().as_millis();
 
         // Copy .so to versioned path to defeat dlopen caching
         let version = self.version.fetch_add(1, Ordering::SeqCst);
@@ -270,8 +274,7 @@ impl Runtime {
         *self.library.lock().expect("library Mutex poisoned") = Some(new_lib);
 
         info!(
-            "Hot-reloaded evolvable dylib (version {version}). LLM generation, validation, compilation, and swapping took {}ms",
-            t0.elapsed().as_millis()
+            "Hot-reloaded evolvable dylib (version {version}). Timings: LLM generation: {llm_time}ms, validation: {validation_time}ms, compilation: {compile_time}ms.",
         );
 
         Ok(())
