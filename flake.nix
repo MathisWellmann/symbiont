@@ -52,6 +52,7 @@
       taplo # Toml toolkit with formatter
       yamlfmt
       mermaid-cli
+      devenv
     ];
     nix_tools = with pkgs; [
       alejandra # Nix code formatter
