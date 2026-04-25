@@ -226,6 +226,7 @@ impl Runtime {
             );
         }
 
+        info!("prompt: {prompt}");
         let t0 = Instant::now();
         let llm_response = agent.prompt(prompt).await?;
         let llm_time = t0.elapsed().as_millis();
@@ -303,7 +304,7 @@ impl Runtime {
         let mut prompt = base_prompt.to_string();
 
         while let Err(e) = self.evolve(agent, &prompt).await {
-            info!("Function evolution error: {e}");
+            info!("Function evolution error: {e}.\nSelf-healing from error...");
 
             prompt = base_prompt.to_string();
 

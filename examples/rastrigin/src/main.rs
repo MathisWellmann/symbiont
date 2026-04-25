@@ -20,6 +20,7 @@
 
 use std::f64::consts::PI;
 
+use romu::Rng;
 use symbiont::Runtime;
 use tracing::{
     info,
@@ -53,8 +54,8 @@ const SAMPLES_PER_AXIS: usize = 100;
 const DOMAIN_MIN: f64 = -5.0;
 const DOMAIN_MAX: f64 = 5.0;
 
-/// Sweep x and y across the Rastrigin domain [-5.12, 5.12] with
-/// `SAMPLES_PER_AXIS` evenly spaced values per axis (100 x 100 = 10 000 points).
+/// Sweep x and y across the domain with `SAMPLES_PER_AXIS` evenly spaced
+/// values per axis (100 x 100 = 10 000 points).
 fn build_samples() -> Vec<Sample> {
     let mut samples = Vec::with_capacity(SAMPLES_PER_AXIS * SAMPLES_PER_AXIS);
     for xi in 0..SAMPLES_PER_AXIS {
@@ -120,17 +121,31 @@ fn evaluate(samples: &[Sample]) -> (f64, String) {
     (mse, report)
 }
 
-/// Format a representative subset of the sample data as a table the LLM
-/// can reason about. We show a sparse grid (every 10th index per axis)
-/// rather than all 10 000 points.
+/// Number of randomly sampled points shown to the LLM each round.
+const PROMPT_SAMPLES: usize = 50;
+
+/// Pick a fresh random subset of the evaluation grid and format it as a
+/// table the LLM can reason about. Re-sampling every round ensures the
+/// LLM sees different data each iteration.
 fn sample_table(samples: &[Sample]) -> String {
+    use std::collections::HashSet;
+
+    let rng = Rng::new();
+    let mut chosen = HashSet::with_capacity(PROMPT_SAMPLES);
+    while chosen.len() < PROMPT_SAMPLES {
+        chosen.insert(rng.mod_usize(samples.len()));
+    }
+
+    let mut indices = Vec::<usize>::from_iter(chosen.into_iter());
+    indices.sort_unstable();
+
     let mut table = String::from("| x | y | f(x,y) |\n|---|---|---|\n");
-    let step = SAMPLES_PER_AXIS / 10;
-    for xi in (0..SAMPLES_PER_AXIS).step_by(step) {
-        for yi in (0..SAMPLES_PER_AXIS).step_by(step) {
-            let s = &samples[xi * SAMPLES_PER_AXIS + yi];
-            table.push_str(&format!("| {} | {} | {:.6} |\n", s.x, s.y, s.expected));
-        }
+    for i in indices {
+        let s = &samples[i];
+        table.push_str(&format!(
+            "| {:.4} | {:.4} | {:.4} |\n",
+            s.x, s.y, s.expected
+        ));
     }
     table
 }
@@ -148,7 +163,6 @@ async fn main() -> symbiont::Result<()> {
 
     let agent = symbiont::inference::init_agent()?;
     let samples = build_samples();
-    let data_table = sample_table(&samples);
 
     // Convergence threshold: MSE < 1e-10 means the formula is exact
     // (not just numerically close).
@@ -170,6 +184,9 @@ async fn main() -> symbiont::Result<()> {
 
     for round in 1..=max_rounds {
         println!("\n=== Round {round}: evolving via LLM ===");
+
+        // Fresh random subset each round so the LLM sees new evidence.
+        let data_table = sample_table(&samples);
 
         let prompt = format!(
             "Implement this function so that it matches the sample data exactly:\n\
