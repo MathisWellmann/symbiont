@@ -164,6 +164,25 @@ section {
   font-size: 0.85rem;
   line-height: 1.7;
 }
+.code-section .video-demo {
+  margin-top: 2rem;
+}
+.code-section .video-demo p {
+  color: #8b949e;
+  font-size: 0.9rem;
+  margin-bottom: 0.75rem;
+  text-align: center;
+}
+.code-section .video-demo .tagline-below {
+  font-size: 1.3rem;
+  color: #e6edf3;
+  margin-top: 1.5rem;
+}
+.code-section .video-demo video {
+  width: 100%;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+}
 
 .features h2 {
   text-align: center;
@@ -201,9 +220,9 @@ section {
 }
 .benchmarks .bench-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1fr 1fr 1fr;
   gap: 1.5rem;
-  max-width: 700px;
+  max-width: 900px;
   margin: 0 auto;
 }
 @media (max-width: 600px) {

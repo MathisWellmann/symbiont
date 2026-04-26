@@ -144,6 +144,7 @@
       <pre><code><span style="color:#FF6B35">symbiont::evolvable!</span> {
     <span style="color:#FF6B35">fn</span> <span style="color:#4ECDC4">step</span>(counter: &amp;<span style="color:#FF6B35">mut</span> usize) {
         *counter += <span style="color:#F7C948">1</span>;  <span style="color:#8b949e">// default impl, evolved by the LLM</span>
+        <span style="color:#4ECDC4">println!</span>(<span style="color:#F7C948">"doing stuff in iteration {}"</span>, counter);
     }
 }
 
@@ -162,12 +163,20 @@
     <span style="color:#FF6B35">let mut</span> counter = <span style="color:#F7C948">0</span>;
     <span style="color:#FF6B35">loop</span> {
         step(&amp;<span style="color:#FF6B35">mut</span> counter);  <span style="color:#8b949e">// bare-metal: native dylib call</span>
+        <span style="color:#4ECDC4">println!</span>(<span style="color:#F7C948">"counter: {counter}"</span>);
 
         <span style="color:#8b949e">// LLM rewrites the fn, harness validates + compiles + hot-swaps</span>
         runtime.evolve(&amp;agent, &amp;prompt).<span style="color:#FF6B35">await</span>?;
         <span style="color:#8b949e">// `step` function was updated and new Agent code runs in the next loop iteration</span>
     }
 }</code></pre>
+      <div class="video-demo">
+        <p>Similar code to the above can be run wth <code>cargo run --bin counter-example</code> in the repo to showcase the function evolution.<br>Here the function is evolved every 5 seconds.</p>
+        <video autoplay muted loop playsinline>
+          <source src="/symbiont-counter-example.mp4" type="video/mp4">
+        </video>
+        <p class="tagline-below">Now that you grok the core concept, a whole new world of opportunity opens up...</p>
+      </div>
     </div>
   </section>
 
@@ -178,7 +187,7 @@
       <div class="grid">
         <div class="card">
           <h3>Type-safe agentic code</h3>
-          <p>Agents express intent as Rust functions with
+          <p>LLms express intent as Rust functions with
              enforced signatures. The compiler is the guardrail.</p>
         </div>
         <div class="card">
@@ -218,13 +227,18 @@
       <div class="bench-grid">
         <div class="bench-card">
           <h3>Dispatch overhead</h3>
-          <div class="value">~1.6</div>
-          <div class="unit">ns per call</div>
+          <div class="value">~1ns</div>
+          <div class="unit">per function call</div>
         </div>
         <div class="bench-card">
           <h3>Compilation</h3>
-          <div class="value">~120</div>
-          <div class="unit">ms per evolution</div>
+          <div class="value">~120ms</div>
+          <div class="unit">per evolution, depending on Agent code.</div>
+        </div>
+        <div class="bench-card">
+          <h3>Inference latency</h3>
+          <div class="value">Seconds</div>
+          <div class="unit">depends on model and hardware of your choice</div>
         </div>
       </div>
     </div>
@@ -252,7 +266,7 @@
           <div class="caption">
             <h3>Rastrigin &mdash; Symbolic regression</h3>
             <p>Reverse-engineer the 2-D Rastrigin function from
-               sample data. Exact formula found in 2 rounds.</p>
+               sample data. LLM only sees sample points and deltas. Exact formula found in 2 rounds.</p>
           </div>
         </div>
         <div class="example">

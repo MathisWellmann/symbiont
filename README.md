@@ -41,6 +41,7 @@ is appended to the prompt and the LLM retries automatically until it produces co
 symbiont::evolvable! {
     fn step(counter: &mut usize) {
         *counter += 1;  // default implementation, evolved by the LLM
+        println!("doing stuff in iteration {}", counter);
     }
 }
 
