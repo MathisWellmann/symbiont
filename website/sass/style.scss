@@ -28,6 +28,7 @@ body {
   color: $text;
   line-height: 1.6;
   -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
 }
 
 a {
@@ -61,6 +62,7 @@ section {
 
   .logo {
     width: 500px;
+    max-width: 100%;
     height: auto;
     margin-bottom: 1.5rem;
   }
