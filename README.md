@@ -52,7 +52,7 @@ async fn main() -> symbiont::Result<()> {
     let base_prompt = format!(
         "Give a concise implementation for this function signature: ```{}```, \
         that increments the counter by a constant in the range (5..20). \
-        Code Only",
+        Give Rust Code Only.",
         fn_sigs[0]
     );
 
