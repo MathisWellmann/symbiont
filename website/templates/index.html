@@ -156,7 +156,7 @@
         step(&amp;<span style="color:#FF6B35">mut</span> counter);  <span style="color:#8b949e">// bare-metal: native dylib call</span>
 
         <span style="color:#8b949e">// LLM rewrites the fn, harness validates + compiles + hot-swaps</span>
-        runtime.evolve_with_backpressure(&amp;agent, &amp;prompt).<span style="color:#FF6B35">await</span>?;
+        runtime.evolve(&amp;agent, &amp;prompt).<span style="color:#FF6B35">await</span>?;
         <span style="color:#8b949e">// `step` function was updated and new Agent code runs in the next loop iteration</span>
     }
 }</code></pre>

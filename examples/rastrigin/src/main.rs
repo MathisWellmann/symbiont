@@ -202,7 +202,7 @@ async fn main() -> symbiont::Result<()> {
         info!("Evolution prompt:\n{prompt}");
 
         runtime
-            .evolve_with_backpressure(&agent, &prompt)
+            .evolve(&agent, &prompt)
             .await
             .expect("evolution should succeed");
 

@@ -106,7 +106,7 @@ pub fn enter_call() -> CallGuard {
 ///
 /// # Contract
 ///
-/// **All evolvable function calls must have returned before [`Runtime::evolve_with_backpressure`]
+/// **All evolvable function calls must have returned before [`Runtime::evolve`]
 /// is called.** This is the natural shape of the feedback loop — run functions,
 /// collect results, evolve, repeat. The contract is enforced with an assertion
 /// in debug builds and is zero-cost in release.
@@ -237,13 +237,14 @@ impl Runtime {
     }
 
     /// Generate LLM response, then parse, validate, compile, and hot-swap.
+    /// It does not catch validation errors and feed it back to the LLM, allowing the user to customize prompting behaviour.
     ///
     /// # Contract
     ///
     /// All evolvable function calls must have returned before this is called.
     /// In debug builds this is enforced with an assertion; in release it is
     /// the caller's responsibility.
-    async fn evolve<CompletionModelT>(
+    async fn evolve_no_backpressure<CompletionModelT>(
         &self,
         agent: &Agent<CompletionModelT>,
         prompt: &str,
@@ -325,7 +326,6 @@ impl Runtime {
         Ok(())
     }
 
-    // TODO: might want to rename this to `evolve`, and rename original `evolve` to something else. Backpressure should always be included in public method.
     /// Prompt the LLM, validate the response, compile, and hot-swap.
     ///
     /// If the constrained generation fails (parse error, signature mismatch,
@@ -337,7 +337,7 @@ impl Runtime {
     /// All evolvable function calls must have returned before this is called.
     /// This is the natural shape of the feedback loop: run functions, collect
     /// results, evolve, repeat.
-    pub async fn evolve_with_backpressure<CompletionModelT>(
+    pub async fn evolve<CompletionModelT>(
         &self,
         agent: &Agent<CompletionModelT>,
         base_prompt: &str,
@@ -347,7 +347,7 @@ impl Runtime {
     {
         let mut prompt = base_prompt.to_string();
 
-        while let Err(e) = self.evolve(agent, &prompt).await {
+        while let Err(e) = self.evolve_no_backpressure(agent, &prompt).await {
             info!("Function evolution error: {e}.\nSelf-healing from error...");
 
             prompt = base_prompt.to_string();

@@ -54,7 +54,7 @@ async fn main() -> symbiont::Result<()> {
             info!("base_prompt: {base_prompt}");
 
             runtime
-                .evolve_with_backpressure(&agent, &base_prompt)
+                .evolve(&agent, &base_prompt)
                 .await
                 .expect("Can successfully evolve");
             info!(
