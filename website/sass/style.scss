@@ -160,38 +160,25 @@ section {
 .flow {
   text-align: center;
 
-  h2 { margin-bottom: 2rem; }
+  h2 { margin-bottom: 1.5rem; }
 
-  .flow-steps {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 0.4rem;
-    flex-wrap: wrap;
+  .flow-diagram {
     margin-bottom: 2rem;
   }
 
-  .step {
-    background: $bg-card;
-    border: 1px solid $border;
-    border-radius: 8px;
-    padding: 1rem 1.2rem;
-    font-size: 0.85rem;
-    min-width: 120px;
-
-    strong { display: block; color: $orange; margin-bottom: 0.25rem; }
-  }
-
-  .arrow {
-    color: $text-muted;
-    font-size: 1.4rem;
+  .flow-svg {
+    max-width: 600px;
+    width: 100%;
+    height: auto;
+    filter: drop-shadow(0 0 20px rgba(0, 0, 0, 0.3));
   }
 
   p {
     color: $text-muted;
-    max-width: 680px;
+    max-width: 640px;
     margin: 0 auto;
     font-size: 0.95rem;
+    line-height: 1.6;
   }
 }
 

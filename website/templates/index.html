@@ -38,23 +38,89 @@
   <section class="flow">
     <div class="container">
       <h2>How it works</h2>
-      <div class="flow-steps">
-        <div class="step"><strong>LLM</strong>writes Rust fn</div>
-        <span class="arrow">&rarr;</span>
-        <div class="step"><strong>Validate</strong>parse + signature</div>
-        <span class="arrow">&rarr;</span>
-        <div class="step"><strong>Compile</strong>native .so</div>
-        <span class="arrow">&rarr;</span>
-        <div class="step"><strong>Hot-swap</strong>into binary</div>
-        <span class="arrow">&rarr;</span>
-        <div class="step"><strong>Evaluate</strong>bare-metal</div>
-        <span class="arrow">&circlearrowleft;</span>
+      <div class="flow-diagram">
+        <svg viewBox="0 0 600 480" class="flow-svg" role="img" aria-label="Circular evolution loop diagram">
+          <defs>
+            <marker id="ah" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+              <polygon points="0 0, 7 2.5, 0 5" fill="#8b949e"/>
+            </marker>
+          </defs>
+
+          <!-- Outer circular arrow path (clockwise) -->
+          <path d="M 300 80 A 160 160 0 1 1 299 80" fill="none" stroke="#30363d" stroke-width="1" stroke-dasharray="4 6" opacity="0.5"/>
+
+          <!-- Arrow: User → LLM (top-right) -->
+          <line x1="335" y1="85" x2="420" y2="118" stroke="#8b949e" stroke-width="1.5" marker-end="url(#ah)"/>
+
+          <!-- Arrow: LLM → Validate (right) -->
+          <path d="M 500 180 A 100 100 0 0 1 500 280" fill="none" stroke="#8b949e" stroke-width="1.5" marker-end="url(#ah)"/>
+
+          <!-- Arrow: Validate → Compile (bottom-right) -->
+          <path d="M 465 365 A 100 100 0 0 1 375 405" fill="none" stroke="#8b949e" stroke-width="1.5" marker-end="url(#ah)"/>
+
+          <!-- Arrow: Compile → Hot-swap (bottom) -->
+          <line x1="330" y1="415" x2="270" y2="415" stroke="#8b949e" stroke-width="1.5" marker-end="url(#ah)"/>
+
+          <!-- Arrow: Hot-swap → Evaluate (bottom-left) -->
+          <path d="M 225 405 A 100 100 0 0 1 135 365" fill="none" stroke="#8b949e" stroke-width="1.5" marker-end="url(#ah)"/>
+
+          <!-- Arrow: Evaluate → Harness (left) -->
+          <path d="M 100 300 A 100 100 0 0 1 100 200" fill="none" stroke="#8b949e" stroke-width="1.5" marker-end="url(#ah)"/>
+
+          <!-- Arrow: Harness → LLM (left, feedback) -->
+          <path d="M 115 155 A 100 100 0 0 1 175 120" fill="none" stroke="#8b949e" stroke-width="1.5" marker-end="url(#ah)"/>
+          <path d="M 215 100 A 100 100 0 0 1 260 85" fill="none" stroke="#8b949e" stroke-width="1.5" marker-end="url(#ah)"/>
+
+          <!-- Feedback label -->
+          <text x="130" y="108" text-anchor="middle" fill="#FF6B35" font-size="8" font-weight="600">PROMPT STEERING</text>
+
+          <!-- Node: User (entry) — top -->
+          <rect x="260" y="40" width="80" height="38" rx="19" fill="#FF6B35" opacity="0.12" stroke="#FF6B35" stroke-width="1.5"/>
+          <text x="300" y="57" text-anchor="middle" fill="#FF6B35" font-size="10" font-weight="700">USER</text>
+          <text x="300" y="71" text-anchor="middle" fill="#e6edf3" font-size="8">specify signature</text>
+
+          <!-- Node: LLM — top-right -->
+          <rect x="420" y="130" width="95" height="40" rx="8" fill="#F7C948" opacity="0.1" stroke="#F7C948" stroke-width="1.5"/>
+          <text x="467" y="148" text-anchor="middle" fill="#F7C948" font-size="11" font-weight="700">LLM</text>
+          <text x="467" y="162" text-anchor="middle" fill="#e6edf3" font-size="8">generate body</text>
+
+          <!-- Node: Validate — right -->
+          <rect x="455" y="290" width="100" height="40" rx="8" fill="#4ECDC4" opacity="0.1" stroke="#4ECDC4" stroke-width="1.5"/>
+          <text x="505" y="308" text-anchor="middle" fill="#4ECDC4" font-size="10" font-weight="700">VALIDATE</text>
+          <text x="505" y="322" text-anchor="middle" fill="#e6edf3" font-size="8">parse + signature</text>
+
+          <!-- Node: Compile — bottom-right -->
+          <rect x="380" y="410" width="100" height="40" rx="8" fill="#4ECDC4" opacity="0.1" stroke="#4ECDC4" stroke-width="1.5"/>
+          <text x="430" y="428" text-anchor="middle" fill="#4ECDC4" font-size="10" font-weight="700">COMPILE</text>
+          <text x="430" y="442" text-anchor="middle" fill="#e6edf3" font-size="8">native .so</text>
+
+          <!-- Node: Hot-swap — bottom -->
+          <rect x="240" y="410" width="110" height="40" rx="8" fill="#4ECDC4" opacity="0.1" stroke="#4ECDC4" stroke-width="1.5"/>
+          <text x="295" y="428" text-anchor="middle" fill="#4ECDC4" font-size="10" font-weight="700">HOT-SWAP</text>
+          <text x="295" y="442" text-anchor="middle" fill="#e6edf3" font-size="8">in-place</text>
+
+          <!-- Node: Evaluate — bottom-left -->
+          <rect x="90" y="410" width="110" height="40" rx="8" fill="#4ECDC4" opacity="0.1" stroke="#4ECDC4" stroke-width="1.5"/>
+          <text x="145" y="428" text-anchor="middle" fill="#4ECDC4" font-size="10" font-weight="700">EVALUATE</text>
+          <text x="145" y="442" text-anchor="middle" fill="#e6edf3" font-size="8">against metric</text>
+
+          <!-- Node: Harness — left -->
+          <rect x="40" y="290" width="110" height="40" rx="8" fill="#FF6B35" opacity="0.1" stroke="#FF6B35" stroke-width="1.5"/>
+          <text x="95" y="308" text-anchor="middle" fill="#FF6B35" font-size="10" font-weight="700">HARNESS</text>
+          <text x="95" y="322" text-anchor="middle" fill="#e6edf3" font-size="8">catch panics, errors</text>
+
+          <!-- Center label -->
+          <text x="300" y="240" text-anchor="middle" fill="#e6edf3" font-size="13" font-weight="700">evolution loop</text>
+          <text x="300" y="258" text-anchor="middle" fill="#8b949e" font-size="8">constrained generation</text>
+        </svg>
       </div>
       <p>
-        <strong>Constrained generation</strong> makes this reliable:
-        parse errors, signature mismatches, and compiler diagnostics
-        are fed back to the LLM automatically until it produces valid,
-        compilable code.
+        You define the <strong>function signature</strong> and the harness
+        enters a tight evolution loop: the LLM writes the body,
+        the harness validates and compiles it natively, hot-swaps
+        the dylib in-place, then evaluates against your metric.
+        Diagnostics and failures are fed back as <strong>prompt steering</strong>
+        — unconstrained generation, but bare-metal execution.
       </p>
     </div>
   </section>

@@ -132,38 +132,23 @@ section {
   text-align: center;
 }
 .flow h2 {
+  margin-bottom: 1.5rem;
+}
+.flow .flow-diagram {
   margin-bottom: 2rem;
 }
-.flow .flow-steps {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.4rem;
-  flex-wrap: wrap;
-  margin-bottom: 2rem;
-}
-.flow .step {
-  background: #161b22;
-  border: 1px solid #30363d;
-  border-radius: 8px;
-  padding: 1rem 1.2rem;
-  font-size: 0.85rem;
-  min-width: 120px;
-}
-.flow .step strong {
-  display: block;
-  color: #FF6B35;
-  margin-bottom: 0.25rem;
-}
-.flow .arrow {
-  color: #8b949e;
-  font-size: 1.4rem;
+.flow .flow-svg {
+  max-width: 600px;
+  width: 100%;
+  height: auto;
+  filter: drop-shadow(0 0 20px rgba(0, 0, 0, 0.3));
 }
 .flow p {
   color: #8b949e;
-  max-width: 680px;
+  max-width: 640px;
   margin: 0 auto;
   font-size: 0.95rem;
+  line-height: 1.6;
 }
 
 .code-section h2 {
