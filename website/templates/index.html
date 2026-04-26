@@ -143,7 +143,8 @@
       <h2>Quick Start</h2>
       <pre><code><span style="color:#FF6B35">symbiont::evolvable!</span> {
     <span style="color:#FF6B35">fn</span> <span style="color:#4ECDC4">step</span>(counter: &amp;<span style="color:#FF6B35">mut</span> usize) {
-        *counter += <span style="color:#F7C948">1</span>;  <span style="color:#8b949e">// default impl, evolved by the LLM</span>
+        <span style="color:#8b949e">// Default body will be entrely evolved by the Agent</span>
+        *counter += <span style="color:#F7C948">1</span>;
         <span style="color:#4ECDC4">println!</span>(<span style="color:#F7C948">"doing stuff in iteration {}"</span>, counter);
     }
 }
@@ -171,7 +172,7 @@
     }
 }</code></pre>
       <div class="video-demo">
-        <p>Similar code to the above can be run wth <code>cargo run --bin counter-example</code> in the repo to showcase the function evolution.<br>Here the function is evolved every 5 seconds.</p>
+        <p>Similar code to the above can be run with <code>cargo run --bin counter-example</code> in the repo to showcase the function evolution.<br>Here the function is evolved every 5 seconds.</p>
         <video autoplay muted loop playsinline>
           <source src="/symbiont-counter-example.mp4" type="video/mp4">
         </video>
@@ -249,7 +250,7 @@
     <div class="container">
       <h2>Examples</h2>
       <div class="gallery">
-        <div class="example">
+        <a href="https://github.com/MathisWellmann/symbiont/tree/main/examples/fizzbuzz" class="example">
           <img src="/img/fizzbuzz-example.png"
                alt="FizzBuzz example output"
                loading="lazy">
@@ -258,8 +259,8 @@
             <p>The LLM evolves a function to satisfy a test suite.
                Solved in 1 evolution round.</p>
           </div>
-        </div>
-        <div class="example">
+        </a>
+        <a href="https://github.com/MathisWellmann/symbiont/tree/main/examples/rastrigin" class="example">
           <img src="/img/rastrigin-example.png"
                alt="Rastrigin symbolic regression"
                loading="lazy">
@@ -268,27 +269,27 @@
             <p>Reverse-engineer the 2-D Rastrigin function from
                sample data. LLM only sees sample points and deltas. Exact formula found in 2 rounds.</p>
           </div>
-        </div>
-        <div class="example">
+        </a>
+        <a href="https://github.com/MathisWellmann/symbiont/tree/main/examples/sort" class="example">
           <img src="/img/sort-example.png"
                alt="Sort benchmark evolution"
                loading="lazy">
           <div class="caption">
             <h3>Sort &mdash; Performance optimization</h3>
             <p>Evolve a sorting algorithm from scratch. Bubble sort
-               to optimized quicksort &mdash; 1000x improvement.</p>
+               to custom, optimized implementation &mdash; 1000x improvement.</p>
           </div>
-        </div>
-        <div class="example">
+        </a>
+        <a href="https://github.com/MathisWellmann/symbiont/tree/main/examples/counter" class="example">
           <img src="/img/counter-example.png"
                alt="Counter hot-reload"
                loading="lazy">
           <div class="caption">
             <h3>Counter &mdash; Basic hot-reload</h3>
             <p>The simplest example: a counter function hot-swapped
-               every 10 seconds with a new LLM implementation.</p>
+               every 5 seconds with a new LLM implementation.</p>
           </div>
-        </div>
+        </a>
       </div>
     </div>
   </section>

@@ -40,7 +40,8 @@ is appended to the prompt and the LLM retries automatically until it produces co
 ```rust
 symbiont::evolvable! {
     fn step(counter: &mut usize) {
-        *counter += 1;  // default implementation, evolved by the LLM
+        // default implementation body, entirely evolved by the LLM
+        *counter += 1;
         println!("doing stuff in iteration {}", counter);
     }
 }
@@ -101,7 +102,7 @@ See the [Development setup](#development-setup) section and the `examples/` dire
   Any Inference provider is supported via [rig](https://github.com/0xPlaygrounds/rig).
 - **Tiny Core**:
   Only ~1000 LOC for the Agent harness and constrained generation part.
-- **Catches Agent Code Panics***
+- **Catches Agent Code Panics**
   Any LLM code that generate a runtime panic will be caught using `catch_unwind`, and the panic message is used
   to provide backpressure in the prompt. See [unwind.rs](symbiont/src/unwind.rs) for details.
 
