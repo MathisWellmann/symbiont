@@ -53,6 +53,7 @@
       yamlfmt
       mermaid-cli
       devenv
+      zola
     ];
     nix_tools = with pkgs; [
       alejandra # Nix code formatter

@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ config.title }} &mdash; {{ config.description }}</title>
+  <meta name="description" content="{{ config.description }}">
+  <link rel="stylesheet" href="/style.css">
+  <link rel="icon" href="/img/logo.svg" type="image/svg+xml">
+</head>
+<body>
+
+  <!-- Hero -->
+  <section class="hero">
+    <div class="container">
+      <img src="/img/logo.svg" alt="symbiont.rs logo" class="logo">
+      <p class="tagline">
+        LLMs write type-safe Rust function bodies that get compiled
+        natively and hot-swapped into your running binary &mdash;
+        bare-metal execution, zero interpreter overhead.
+      </p>
+      <div class="cta">
+        <a href="{{ config.extra.github_url }}" class="primary">GitHub</a>
+        <a href="#quickstart" class="secondary">Quick Start</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- How it works -->
+  <section class="flow">
+    <div class="container">
+      <h2>How it works</h2>
+      <div class="flow-steps">
+        <div class="step"><strong>LLM</strong>writes Rust fn</div>
+        <span class="arrow">&rarr;</span>
+        <div class="step"><strong>Validate</strong>parse + signature</div>
+        <span class="arrow">&rarr;</span>
+        <div class="step"><strong>Compile</strong>native .so</div>
+        <span class="arrow">&rarr;</span>
+        <div class="step"><strong>Hot-swap</strong>into binary</div>
+        <span class="arrow">&rarr;</span>
+        <div class="step"><strong>Evaluate</strong>bare-metal</div>
+        <span class="arrow">&circlearrowleft;</span>
+      </div>
+      <p>
+        <strong>Constrained generation</strong> makes this reliable:
+        parse errors, signature mismatches, and compiler diagnostics
+        are fed back to the LLM automatically until it produces valid,
+        compilable code.
+      </p>
+    </div>
+  </section>
+
+  <!-- Quick start -->
+  <section class="code-section" id="quickstart">
+    <div class="container">
+      <h2>Quick Start</h2>
+      <pre><code><span style="color:#FF6B35">symbiont::evolvable!</span> {
+    <span style="color:#FF6B35">fn</span> <span style="color:#4ECDC4">step</span>(counter: &amp;<span style="color:#FF6B35">mut</span> usize) {
+        *counter += <span style="color:#F7C948">1</span>;  <span style="color:#8b949e">// default impl, evolved by the LLM</span>
+    }
+}
+
+<span style="color:#8b949e">#[tokio::main]</span>
+<span style="color:#FF6B35">async fn</span> <span style="color:#4ECDC4">main</span>() -&gt; symbiont::Result&lt;()&gt; {
+    <span style="color:#FF6B35">let</span> runtime = symbiont::Runtime::init(SYMBIONT_DECLS, Profile::Debug).<span style="color:#FF6B35">await</span>?;
+    <span style="color:#FF6B35">let</span> agent = symbiont::inference::init_agent()?;
+
+    <span style="color:#FF6B35">loop</span> {
+        step(&amp;<span style="color:#FF6B35">mut</span> counter);  <span style="color:#8b949e">// bare-metal: native dylib call</span>
+
+        <span style="color:#8b949e">// LLM rewrites the fn, harness validates + compiles + hot-swaps</span>
+        runtime.evolve_with_backpressure(&amp;agent, &amp;prompt).<span style="color:#FF6B35">await</span>?;
+    }
+}</code></pre>
+    </div>
+  </section>
+
+  <!-- Features -->
+  <section class="features">
+    <div class="container">
+      <h2>Core Highlights</h2>
+      <div class="grid">
+        <div class="card">
+          <h3>Type-safe agentic code</h3>
+          <p>Agents express intent as Rust functions with
+             enforced signatures. The compiler is the guardrail.</p>
+        </div>
+        <div class="card">
+          <h3>Constrained generation</h3>
+          <p>Parse errors, signature mismatches, and compiler
+             diagnostics steer the LLM until it produces valid code.</p>
+        </div>
+        <div class="card">
+          <h3>Hot-swap dylibs</h3>
+          <p>Functions compile to native shared libraries and swap
+             in-place via libloading &mdash; no process restart.</p>
+        </div>
+        <div class="card">
+          <h3>Bare-metal performance</h3>
+          <p>~1 ns dispatch overhead. Lock-free hot path via
+             AtomicPtr. Multi-thread safe.</p>
+        </div>
+        <div class="card">
+          <h3>Panic catching</h3>
+          <p>Runtime panics in LLM code are caught inside the dylib
+             and fed back as prompt context automatically.</p>
+        </div>
+        <div class="card">
+          <h3>Plug-in inference</h3>
+          <p>Any OpenAI-compatible provider via
+             <a href="https://github.com/0xPlaygrounds/rig">rig</a>.
+             Local or cloud.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Benchmarks -->
+  <section class="benchmarks">
+    <div class="container">
+      <h2>Performance</h2>
+      <div class="bench-grid">
+        <div class="bench-card">
+          <h3>Dispatch overhead</h3>
+          <div class="value">~1.6</div>
+          <div class="unit">ns per call</div>
+        </div>
+        <div class="bench-card">
+          <h3>Compilation</h3>
+          <div class="value">~120</div>
+          <div class="unit">ms per evolution</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Examples -->
+  <section class="examples">
+    <div class="container">
+      <h2>Examples</h2>
+      <div class="gallery">
+        <div class="example">
+          <img src="/img/fizzbuzz-example.png"
+               alt="FizzBuzz example output"
+               loading="lazy">
+          <div class="caption">
+            <h3>FizzBuzz &mdash; Test-driven evolution</h3>
+            <p>The LLM evolves a function to satisfy a test suite.
+               Solved in 1 evolution round.</p>
+          </div>
+        </div>
+        <div class="example">
+          <img src="/img/rastrigin-example.png"
+               alt="Rastrigin symbolic regression"
+               loading="lazy">
+          <div class="caption">
+            <h3>Rastrigin &mdash; Symbolic regression</h3>
+            <p>Reverse-engineer the 2-D Rastrigin function from
+               sample data. Exact formula found in 2 rounds.</p>
+          </div>
+        </div>
+        <div class="example">
+          <img src="/img/sort-example.png"
+               alt="Sort benchmark evolution"
+               loading="lazy">
+          <div class="caption">
+            <h3>Sort &mdash; Performance optimization</h3>
+            <p>Evolve a sorting algorithm from scratch. Bubble sort
+               to optimized quicksort &mdash; 1000x improvement.</p>
+          </div>
+        </div>
+        <div class="example">
+          <img src="/img/counter-example.png"
+               alt="Counter hot-reload"
+               loading="lazy">
+          <div class="caption">
+            <h3>Counter &mdash; Basic hot-reload</h3>
+            <p>The simplest example: a counter function hot-swapped
+               every 10 seconds with a new LLM implementation.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer>
+    <div class="container">
+      <div class="links">
+        <a href="{{ config.extra.github_url }}">GitHub</a>
+        <a href="https://crates.io/crates/symbiont">crates.io</a>
+        <a href="{{ config.extra.github_url }}/blob/main/README.md">Docs</a>
+      </div>
+      <p>MPL-2.0 &middot; Built with
+         <a href="https://www.getzola.org">Zola</a></p>
+    </div>
+  </footer>
+
+</body>
+</html>

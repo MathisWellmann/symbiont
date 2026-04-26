@@ -1,0 +1,325 @@
+// Colors from the logo SVG
+$orange: #FF6B35;
+$gold: #F7C948;
+$teal: #4ECDC4;
+$dark-teal: #00897B;
+$bg: #0d1117;
+$bg-card: #161b22;
+$bg-card-hover: #1c2333;
+$border: #30363d;
+$text: #e6edf3;
+$text-muted: #8b949e;
+$code-bg: #0d1117;
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
+    Helvetica, Arial, sans-serif;
+  background: $bg;
+  color: $text;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: $teal;
+  text-decoration: none;
+  &:hover { text-decoration: underline; }
+}
+
+code, pre {
+  font-family: "JetBrains Mono", "Fira Code", "SF Mono",
+    Consolas, monospace;
+}
+
+// --- Layout ---
+
+.container {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 0 1.5rem;
+}
+
+section {
+  padding: 5rem 0;
+}
+
+// --- Hero ---
+
+.hero {
+  text-align: center;
+  padding: 6rem 0 4rem;
+
+  .logo {
+    width: 500px;
+    height: auto;
+    margin-bottom: 1.5rem;
+  }
+
+  h1 {
+    font-family: monospace;
+    font-size: 2.6rem;
+    font-weight: 700;
+    margin-bottom: 0.5rem;
+
+    .rs { color: $orange; }
+  }
+
+  .tagline {
+    font-size: 1.15rem;
+    color: $text-muted;
+    max-width: 600px;
+    margin: 0 auto 2rem;
+  }
+
+  .cta {
+    display: inline-flex;
+    gap: 1rem;
+    flex-wrap: wrap;
+    justify-content: center;
+
+    a {
+      display: inline-block;
+      padding: 0.7rem 1.6rem;
+      border-radius: 6px;
+      font-weight: 600;
+      font-size: 0.95rem;
+      transition: background 0.2s;
+    }
+
+    .primary {
+      background: $orange;
+      color: #fff;
+      &:hover {
+        background: darken($orange, 8%);
+        text-decoration: none;
+      }
+    }
+
+    .secondary {
+      background: $bg-card;
+      border: 1px solid $border;
+      color: $text;
+      &:hover {
+        background: $bg-card-hover;
+        text-decoration: none;
+      }
+    }
+  }
+}
+
+// --- How it works (flow) ---
+
+.flow {
+  text-align: center;
+
+  h2 { margin-bottom: 2rem; }
+
+  .flow-steps {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+    margin-bottom: 2rem;
+  }
+
+  .step {
+    background: $bg-card;
+    border: 1px solid $border;
+    border-radius: 8px;
+    padding: 1rem 1.2rem;
+    font-size: 0.85rem;
+    min-width: 120px;
+
+    strong { display: block; color: $orange; margin-bottom: 0.25rem; }
+  }
+
+  .arrow {
+    color: $text-muted;
+    font-size: 1.4rem;
+  }
+
+  p {
+    color: $text-muted;
+    max-width: 680px;
+    margin: 0 auto;
+    font-size: 0.95rem;
+  }
+}
+
+// --- Code block ---
+
+.code-section {
+  h2 { text-align: center; margin-bottom: 2rem; }
+
+  pre {
+    background: $code-bg;
+    border: 1px solid $border;
+    border-radius: 8px;
+    padding: 1.5rem;
+    overflow-x: auto;
+    font-size: 0.85rem;
+    line-height: 1.7;
+  }
+}
+
+// --- Features ---
+
+.features {
+  h2 { text-align: center; margin-bottom: 2.5rem; }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(270px, 1fr));
+    gap: 1.2rem;
+  }
+
+  .card {
+    background: $bg-card;
+    border: 1px solid $border;
+    border-radius: 8px;
+    padding: 1.5rem;
+    transition: border-color 0.2s;
+
+    &:hover { border-color: $teal; }
+
+    h3 {
+      font-size: 1rem;
+      margin-bottom: 0.4rem;
+      color: $orange;
+    }
+
+    p {
+      font-size: 0.9rem;
+      color: $text-muted;
+      line-height: 1.5;
+    }
+  }
+}
+
+// --- Benchmarks ---
+
+.benchmarks {
+  h2 { text-align: center; margin-bottom: 2rem; }
+
+  .bench-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1.5rem;
+    max-width: 700px;
+    margin: 0 auto;
+
+    @media (max-width: 600px) {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  .bench-card {
+    background: $bg-card;
+    border: 1px solid $border;
+    border-radius: 8px;
+    padding: 1.5rem;
+    text-align: center;
+
+    h3 {
+      font-size: 0.85rem;
+      color: $text-muted;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-bottom: 0.5rem;
+    }
+
+    .value {
+      font-family: monospace;
+      font-size: 2rem;
+      font-weight: 700;
+      color: $teal;
+    }
+
+    .unit {
+      font-size: 0.85rem;
+      color: $text-muted;
+    }
+  }
+}
+
+// --- Examples gallery ---
+
+.examples {
+  h2 { text-align: center; margin-bottom: 2.5rem; }
+
+  .gallery {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+    gap: 1.5rem;
+
+    @media (max-width: 500px) {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  .example {
+    background: $bg-card;
+    border: 1px solid $border;
+    border-radius: 8px;
+    overflow: hidden;
+    transition: border-color 0.2s;
+
+    &:hover { border-color: $orange; }
+
+    img {
+      width: 100%;
+      display: block;
+    }
+
+    .caption {
+      padding: 1rem 1.2rem;
+
+      h3 {
+        font-size: 1rem;
+        margin-bottom: 0.3rem;
+      }
+
+      p {
+        font-size: 0.85rem;
+        color: $text-muted;
+      }
+    }
+  }
+}
+
+// --- Footer ---
+
+footer {
+  border-top: 1px solid $border;
+  padding: 2.5rem 0;
+  text-align: center;
+  color: $text-muted;
+  font-size: 0.85rem;
+
+  a { color: $teal; }
+
+  .links {
+    display: flex;
+    gap: 1.5rem;
+    justify-content: center;
+    margin-bottom: 0.75rem;
+  }
+}
+
+// --- Section titles ---
+
+h2 {
+  font-size: 1.6rem;
+  font-weight: 700;
+}
