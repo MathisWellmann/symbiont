@@ -1,6 +1,6 @@
 [package]
 authors = ["MathisWellmann <wellmannmathis@gmail.com>"]
-categories = ["ai"]
+categories = ["artificial-intelligence"]
 description = "Proc macros for symbiont hot-reloadable function declarations."
 edition = "2024"
 keywords = ["agent", "dylib", "dynamic", "harness", "llm"]
