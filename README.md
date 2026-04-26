@@ -1,7 +1,7 @@
 # Symbiont Agent Harness
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/MathisWellmann/symbiont/main/assets/logo.svg" alt="Symbiont Logo">
+  <img src="https://github.com/MathisWellmann/symbiont/blob/main/assets/logo.svg" alt="Symbiont Logo">
 </p>
 
 
