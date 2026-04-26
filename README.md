@@ -64,7 +64,7 @@ async fn main() -> symbiont::Result<()> {
 
         if last_evolution.elapsed() >= std::time::Duration::from_secs(10) {
             // LLM rewrites the function, harness validates + compiles + hot-swaps
-            runtime.evolve_with_backpressure(&agent, &base_prompt).await?;
+            runtime.evolve(&agent, &base_prompt).await?;
             last_evolution = std::time::Instant::now();
             // New Agent written code is available next time `step` is called and executed natively.
         }
