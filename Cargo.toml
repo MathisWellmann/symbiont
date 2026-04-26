@@ -5,6 +5,7 @@ members = [
   "examples/fizzbuzz",
   "examples/rastrigin",
   "examples/sort",
+  "examples/tictactoe",
   "symbiont",
   "symbiont-macros",
 ]

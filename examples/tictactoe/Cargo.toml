@@ -1,0 +1,17 @@
+[package]
+edition = "2024"
+license = "MPL-2.0"
+name = "tictactoe-example"
+publish = false
+version = "0.1.0"
+
+[lints]
+workspace = true
+
+[dependencies]
+symbiont = { path = "../../symbiont" }
+
+romu.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

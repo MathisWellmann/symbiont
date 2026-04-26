@@ -129,6 +129,8 @@ while `symbiont`'s constrained generation loop ensures the LLM output always com
   - See [rastrigin-example](examples/rastrigin/src/main.rs)
 - Performance Optimization under functional equivalence
   - See [sort-example](examples/sort/src/main.rs)
+- Game AI / strategic reasoning through evolved code
+  - See [tictactoe-example](examples/tictactoe/src/main.rs)
 - Auto-research workflows with native-speed evaluation.
 - Black-box optimization of inputs that produce desired outputs, e.g. Parameter Search.
 - Self-evolving feature processing pipelines.
