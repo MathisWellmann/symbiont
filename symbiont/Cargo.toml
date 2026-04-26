@@ -3,6 +3,7 @@ authors = ["MathisWellmann <wellmannmathis@gmail.com>"]
 categories = ["ai"]
 description = "Agent harness for hot-reloadable function evolution in Rust."
 edition = "2024"
+exclude = ["modules/"]
 keywords = ["agent", "dylib", "dynamic", "harness", "llm"]
 license = "MPL-2.0"
 name = "symbiont"
@@ -14,7 +15,7 @@ version = "0.1.0"
 workspace = true
 
 [dependencies]
-symbiont-macros = { path = "../symbiont-macros" }
+symbiont-macros = { version = "0.1.0", path = "../symbiont-macros" }
 
 rig-core.workspace = true
 tokio.workspace = true

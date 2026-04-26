@@ -1,32 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
-//! Symbiont: Agent harness for hot-reloadable function evolution in Rust.
-//!
-//! Declare functions with [`evolvable!`] and let an LLM rewrite their
-//! implementations at runtime. The library manages a temporary dylib crate,
-//! compilation, loading, and hot-swapping transparently.
-//!
-//! # Example
-//!
-//! ```rust,ignore
-//! symbiont::evolvable! {
-//!     fn step(counter: &mut usize) {
-//!         *counter += 1;
-//!     }
-//! }
-//!
-//! #[tokio::main]
-//! async fn main() -> symbiont::Result<()> {
-//!     let runtime = symbiont::Runtime::init(SYMBIONT_DECLS, symbiont::Profile::Debug).await?;
-//!
-//!     let mut counter = 0;
-//!     loop {
-//!         step(&mut counter);
-//!         println!("counter: {counter}");
-//!         std::thread::sleep(std::time::Duration::from_secs(1));
-//!         // TODO: show the actual function evolution once the API is nicer.
-//!     }
-//! }
-//! ```
+#![doc(
+    html_logo_url = "https://raw.githubusercontent.com/MathisWellmann/symbiont/main/assets/logo.svg"
+)]
+#![doc = include_str!("../../README.md")]
 
 pub mod error;
 pub mod inference;

@@ -1,9 +1,12 @@
 [package]
 authors = ["MathisWellmann <wellmannmathis@gmail.com>"]
+categories = ["ai"]
 description = "Proc macros for symbiont hot-reloadable function declarations."
 edition = "2024"
+keywords = ["agent", "dylib", "dynamic", "harness", "llm"]
 license = "MPL-2.0"
 name = "symbiont-macros"
+repository = "https://github.com/MathisWellmann/symbiont"
 version = "0.1.0"
 
 [lints]

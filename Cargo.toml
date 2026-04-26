@@ -1,4 +1,5 @@
 [workspace]
+exclude = ["assets", "website"]
 members = [
   "examples/counter",
   "examples/fizzbuzz",

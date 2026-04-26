@@ -1,7 +1,7 @@
 # Symbiont Agent Harness
 
 <p align="center">
-  <img src="assets/symbiont_logo_4a_440.png" alt="Symbiont Logo">
+  <img src="https://raw.githubusercontent.com/MathisWellmann/symbiont/main/assets/logo.svg" alt="Symbiont Logo">
 </p>
 
 
@@ -27,8 +27,9 @@ flowchart LR
 ```
 
 You declare function signatures with the `evolvable!` macro.
-At runtime, the harness prompts an LLM to implement them, then validates, compiles, and hot-swaps
-the resulting native code into the running process — no restart required.
+At runtime, the harness prompts an LLM to implement them, then validates, compiles,
+and hot-swaps the resulting native code into the running process — no restart required.
+The library manages the temporary dylib crate, compilation, loading, and hot-swapping transparently.
 
 **Constrained generation** is what makes this reliable: the harness enforces that LLM output is valid Rust,
 matches the declared function signature, and compiles successfully.
@@ -48,7 +49,7 @@ symbiont::evolvable! {
 
 #[tokio::main]
 async fn main() -> symbiont::Result<()> {
-    let runtime = symbiont::Runtime::init(SYMBIONT_DECLS).await?;
+    let runtime = symbiont::Runtime::init(SYMBIONT_DECLS, symbiont::Profile::Debug).await?;
     let agent = symbiont::inference::init_agent()?;
     let fn_sigs = runtime.fn_sigs();
     let base_prompt = format!(
