@@ -196,6 +196,29 @@ section {
     font-size: 0.85rem;
     line-height: 1.7;
   }
+
+  .video-demo {
+    margin-top: 2rem;
+
+    p {
+      color: $text-muted;
+      font-size: 0.9rem;
+      margin-bottom: 0.75rem;
+      text-align: center;
+    }
+
+    .tagline-below {
+      font-size: 1.3rem;
+      color: $text;
+      margin-top: 1.5rem;
+    }
+
+    video {
+      width: 100%;
+      border: 1px solid $border;
+      border-radius: 8px;
+    }
+  }
 }
 
 // --- Features ---
@@ -304,6 +327,9 @@ section {
 
     img {
       width: 100%;
+      height: 250px;
+      object-fit: cover;
+      object-position: top;
       display: block;
     }
 
