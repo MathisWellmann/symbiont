@@ -60,18 +60,19 @@
       deadnix # Dead code detection for nix
       statix # Highlights nix antipatterns
     ];
-  in
-    with pkgs; {
-      devShells.${system} = {
-        default = mkShell {
-          buildInputs =
-            buildInputs
-            ++ lsps
-            ++ tooling
-            ++ nix_tools;
-          RUST_BACKTRACE = "1";
-          RUST_LOG = "info";
-        };
+  in {
+    nixosModules.zola-serve = import ./symbiont/modules/nixos/zola-serve.nix;
+
+    devShells.${system} = {
+      default = pkgs.mkShell {
+        buildInputs =
+          buildInputs
+          ++ lsps
+          ++ tooling
+          ++ nix_tools;
+        RUST_BACKTRACE = "1";
+        RUST_LOG = "info";
       };
     };
+  };
 }
