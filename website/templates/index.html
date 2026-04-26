@@ -149,9 +149,17 @@
 
 <span style="color:#8b949e">#[tokio::main]</span>
 <span style="color:#FF6B35">async fn</span> <span style="color:#4ECDC4">main</span>() -&gt; symbiont::Result&lt;()&gt; {
-    <span style="color:#FF6B35">let</span> runtime = symbiont::Runtime::init(SYMBIONT_DECLS, Profile::Debug).<span style="color:#FF6B35">await</span>?;
+    <span style="color:#FF6B35">let</span> runtime = symbiont::Runtime::init(SYMBIONT_DECLS).<span style="color:#FF6B35">await</span>?;
     <span style="color:#FF6B35">let</span> agent = symbiont::inference::init_agent()?;
+    <span style="color:#FF6B35">let</span> fn_sigs = runtime.fn_sigs();
+    <span style="color:#FF6B35">let</span> prompt = <span style="color:#4ECDC4">format!</span>(
+        <span style="color:#F7C948">"Give a concise implementation for this function signature: ```{}```, \
+        that increments the counter by a constant in the range (5..20). \
+        Give Rust Code Only."</span>,
+        fn_sigs[<span style="color:#F7C948">0</span>]
+    );
 
+    <span style="color:#FF6B35">let mut</span> counter = <span style="color:#F7C948">0</span>;
     <span style="color:#FF6B35">loop</span> {
         step(&amp;<span style="color:#FF6B35">mut</span> counter);  <span style="color:#8b949e">// bare-metal: native dylib call</span>
 
