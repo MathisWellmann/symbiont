@@ -15,10 +15,11 @@
     <div class="container">
       <img src="/img/logo.svg" alt="symbiont.rs logo" class="logo">
       <p class="tagline">
-        Agent harness for hot-reloadable function evolution in Rust.
+        An agentic feedback loop that evolves Rust functions.
         <br>
-        You specify the function signature, the LLM writes the implementation, which gets compiled
-        natively and hot-swapped into your running binary for evaluation &mdash;
+        The LLM generates type-safe code, the harness compiles and hot-swaps it
+        into your running binary, evaluates the results, and feeds performance
+        back to the LLM for the next iteration &mdash;
         bare-metal execution, zero interpreter overhead.
       </p>
       <ul class="hero-features">
@@ -127,12 +128,11 @@
         </svg>
       </div>
       <p>
-        You define the <strong>function signature</strong> and the harness
-        enters a tight evolution loop: the LLM writes the body,
-        the harness validates and compiles it natively, hot-swaps
-        the dylib in-place, then evaluates against your metric.
+        Declare the <strong>function signature</strong> and provide an evaluation function.
+        The agent autonomously implements, and refines the code each iteration &mdash;
+        the harness validates, compiles, and hot-swaps the native code in-place.
         Diagnostics and failures are fed back as <strong>prompt steering</strong>
-        — constrained generation, with bare-metal execution.
+        &mdash; constrained generation, with bare-metal execution.
       </p>
     </div>
   </section>

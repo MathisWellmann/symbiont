@@ -5,9 +5,7 @@
 </p>
 
 
-A model harness for enabling hot-reloading function evolution in Rust.
-
-LLMs write type-safe Rust function bodies that get compiled natively and hot-swapped into your running binary — bare-metal execution, zero interpreter overhead.
+An agentic feedback loop that evolves Rust functions: an LLM generates type-safe code, the harness compiles and hot-swaps it into your running binary, evaluates the results, and feeds performance back to the LLM for the next iteration — bare-metal execution, zero interpreter overhead.
 
 ## How it works
 
@@ -17,7 +15,7 @@ flowchart LR
     B -->|"validate + compile"| C["Native .so"]
     C -->|"hot-swap"| D["Running\nBinary"]
     D -->|"bare-metal\nexecution"| E["Evaluate"]
-    E -->|"next iteration"| A
+    E -->|"feedback"| A
 
     style A fill:#1a1a2e,stroke:#e94560,color:#eee
     style B fill:#16213e,stroke:#e94560,color:#eee
@@ -26,10 +24,9 @@ flowchart LR
     style E fill:#1a1a2e,stroke:#e94560,color:#eee
 ```
 
-You declare function signatures with the `evolvable!` macro.
-At runtime, the harness prompts an LLM to implement them, then validates, compiles,
-and hot-swaps the resulting native code into the running process — no restart required.
-The library manages the temporary dylib crate, compilation, loading, and hot-swapping transparently.
+Declare function signatures with the `evolvable!` macro and provide an evaluation function.
+The agent autonomously implements, and refines the code each iteration — the harness
+validates, compiles, and hot-swaps the native code into the running process without a restart.
 
 **Constrained generation** is what makes this reliable: the harness enforces that LLM output is valid Rust,
 matches the declared function signature, and compiles successfully.
