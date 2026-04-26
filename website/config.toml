@@ -1,0 +1,10 @@
+base_url = "https://symbiont.rs"
+title = "symbiont.rs"
+description = "Agent harness for hot-reloadable function evolution in Rust"
+compile_sass = true
+minify_html = true
+generate_feeds = false
+build_search_index = false
+
+[extra]
+github_url = "https://github.com/MathisWellmann/symbiont"
