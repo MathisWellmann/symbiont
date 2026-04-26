@@ -43,7 +43,7 @@ async fn main() -> symbiont::Result<()> {
 
     let mut counter = 1;
     let mut last_evolution = std::time::Instant::now();
-    let evolution_interval = Duration::from_secs(10);
+    let evolution_interval = Duration::from_secs(5);
 
     loop {
         step(&mut counter);
@@ -51,8 +51,6 @@ async fn main() -> symbiont::Result<()> {
         std::thread::sleep(Duration::from_secs(1));
 
         if last_evolution.elapsed() >= evolution_interval {
-            info!("base_prompt: {base_prompt}");
-
             runtime
                 .evolve(&agent, &base_prompt)
                 .await
