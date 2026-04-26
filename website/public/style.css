@@ -269,12 +269,21 @@ section {
     grid-template-columns: 1fr;
   }
 }
+a.example {
+  color: inherit;
+  text-decoration: none;
+  display: block;
+}
+a.example:hover {
+  text-decoration: none;
+}
 .examples .example {
   background: #161b22;
   border: 1px solid #30363d;
   border-radius: 8px;
   overflow: hidden;
   transition: border-color 0.2s;
+  cursor: pointer;
 }
 .examples .example:hover {
   border-color: #FF6B35;
