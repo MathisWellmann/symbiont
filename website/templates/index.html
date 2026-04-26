@@ -39,79 +39,91 @@
     <div class="container">
       <h2>How it works</h2>
       <div class="flow-diagram">
-        <svg viewBox="0 0 600 480" class="flow-svg" role="img" aria-label="Circular evolution loop diagram">
+        <svg viewBox="0 0 600 500" class="flow-svg" role="img" aria-label="Hexagonal evolution loop diagram">
           <defs>
-            <marker id="ah" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
-              <polygon points="0 0, 7 2.5, 0 5" fill="#8b949e"/>
+            <marker id="ah" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+              <polygon points="0 0, 8 3, 0 6" fill="#8b949e"/>
+            </marker>
+            <marker id="ah-fb" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+              <polygon points="0 0, 8 3, 0 6" fill="#FF6B35"/>
             </marker>
           </defs>
 
-          <!-- Outer circular arrow path (clockwise) -->
-          <path d="M 300 80 A 160 160 0 1 1 299 80" fill="none" stroke="#30363d" stroke-width="1" stroke-dasharray="4 6" opacity="0.5"/>
+          <!-- Subtle hexagonal guide circle -->
+          <circle cx="300" cy="290" r="160" fill="none" stroke="#30363d" stroke-width="0.8" stroke-dasharray="4 6" opacity="0.35"/>
 
-          <!-- Arrow: User → LLM (top-right) -->
-          <line x1="335" y1="85" x2="420" y2="118" stroke="#8b949e" stroke-width="1.5" marker-end="url(#ah)"/>
+          <!-- ─── MAIN FLOW ARROWS (clockwise) ─── -->
 
-          <!-- Arrow: LLM → Validate (right) -->
-          <path d="M 500 180 A 100 100 0 0 1 500 280" fill="none" stroke="#8b949e" stroke-width="1.5" marker-end="url(#ah)"/>
+          <!-- USER → LLM -->
+          <line x1="300" y1="60" x2="300" y2="109" stroke="#8b949e" stroke-width="1.5" marker-end="url(#ah)"/>
 
-          <!-- Arrow: Validate → Compile (bottom-right) -->
-          <path d="M 465 365 A 100 100 0 0 1 375 405" fill="none" stroke="#8b949e" stroke-width="1.5" marker-end="url(#ah)"/>
+          <!-- LLM → VALIDATE -->
+          <path d="M 337 151 Q 376 160 403 189" fill="none" stroke="#8b949e" stroke-width="1.5" marker-end="url(#ah)"/>
 
-          <!-- Arrow: Compile → Hot-swap (bottom) -->
-          <line x1="330" y1="415" x2="270" y2="415" stroke="#8b949e" stroke-width="1.5" marker-end="url(#ah)"/>
+          <!-- VALIDATE → COMPILE -->
+          <path d="M 439 231 Q 460 290 439 349" fill="none" stroke="#8b949e" stroke-width="1.5" marker-end="url(#ah)"/>
 
-          <!-- Arrow: Hot-swap → Evaluate (bottom-left) -->
-          <path d="M 225 405 A 100 100 0 0 1 135 365" fill="none" stroke="#8b949e" stroke-width="1.5" marker-end="url(#ah)"/>
+          <!-- COMPILE → HOT-SWAP -->
+          <path d="M 403 391 Q 376 420 337 429" fill="none" stroke="#8b949e" stroke-width="1.5" marker-end="url(#ah)"/>
 
-          <!-- Arrow: Evaluate → Harness (left) -->
-          <path d="M 100 300 A 100 100 0 0 1 100 200" fill="none" stroke="#8b949e" stroke-width="1.5" marker-end="url(#ah)"/>
+          <!-- HOT-SWAP → EVALUATE -->
+          <path d="M 263 429 Q 224 420 197 391" fill="none" stroke="#8b949e" stroke-width="1.5" marker-end="url(#ah)"/>
 
-          <!-- Arrow: Harness → LLM (left, feedback) -->
-          <path d="M 115 155 A 100 100 0 0 1 175 120" fill="none" stroke="#8b949e" stroke-width="1.5" marker-end="url(#ah)"/>
-          <path d="M 215 100 A 100 100 0 0 1 260 85" fill="none" stroke="#8b949e" stroke-width="1.5" marker-end="url(#ah)"/>
+          <!-- EVALUATE → HARNESS -->
+          <path d="M 161 349 Q 140 290 161 231" fill="none" stroke="#8b949e" stroke-width="1.5" marker-end="url(#ah)"/>
 
-          <!-- Feedback label -->
-          <text x="130" y="108" text-anchor="middle" fill="#FF6B35" font-size="8" font-weight="600">PROMPT STEERING</text>
+          <!-- HARNESS → LLM (closes loop) -->
+          <path d="M 197 189 Q 224 160 263 151" fill="none" stroke="#8b949e" stroke-width="1.5" marker-end="url(#ah)"/>
 
-          <!-- Node: User (entry) — top -->
-          <rect x="260" y="40" width="80" height="38" rx="19" fill="#FF6B35" opacity="0.12" stroke="#FF6B35" stroke-width="1.5"/>
-          <text x="300" y="57" text-anchor="middle" fill="#FF6B35" font-size="10" font-weight="700">USER</text>
-          <text x="300" y="71" text-anchor="middle" fill="#e6edf3" font-size="8">specify signature</text>
+          <!-- ─── FEEDBACK ARROWS ─── -->
 
-          <!-- Node: LLM — top-right -->
-          <rect x="420" y="130" width="95" height="40" rx="8" fill="#F7C948" opacity="0.1" stroke="#F7C948" stroke-width="1.5"/>
-          <text x="467" y="148" text-anchor="middle" fill="#F7C948" font-size="11" font-weight="700">LLM</text>
-          <text x="467" y="162" text-anchor="middle" fill="#e6edf3" font-size="8">generate body</text>
+          <!-- VALIDATE → LLM backpressure (mirrors grey LLM→VALIDATE, curved inward) -->
+          <path d="M 403 189 Q 364 180 337 151" fill="none" stroke="#FF6B35" stroke-width="1.2" stroke-dasharray="5 4" marker-end="url(#ah-fb)"/>
+          <text x="345" y="183" text-anchor="middle" fill="#FF6B35" font-size="7.5" font-weight="600" opacity="0.9">backpressure</text>
 
-          <!-- Node: Validate — right -->
-          <rect x="455" y="290" width="100" height="40" rx="8" fill="#4ECDC4" opacity="0.1" stroke="#4ECDC4" stroke-width="1.5"/>
-          <text x="505" y="308" text-anchor="middle" fill="#4ECDC4" font-size="10" font-weight="700">VALIDATE</text>
-          <text x="505" y="322" text-anchor="middle" fill="#e6edf3" font-size="8">parse + signature</text>
+          <!-- Prompt steering label on HARNESS → LLM arrow -->
+          <text x="220" y="165" text-anchor="middle" fill="#FF6B35" font-size="7.5" font-weight="600" opacity="0.9">prompt steering</text>
 
-          <!-- Node: Compile — bottom-right -->
-          <rect x="380" y="410" width="100" height="40" rx="8" fill="#4ECDC4" opacity="0.1" stroke="#4ECDC4" stroke-width="1.5"/>
-          <text x="430" y="428" text-anchor="middle" fill="#4ECDC4" font-size="10" font-weight="700">COMPILE</text>
-          <text x="430" y="442" text-anchor="middle" fill="#e6edf3" font-size="8">native .so</text>
+          <!-- ─── NODES ─── -->
 
-          <!-- Node: Hot-swap — bottom -->
-          <rect x="240" y="410" width="110" height="40" rx="8" fill="#4ECDC4" opacity="0.1" stroke="#4ECDC4" stroke-width="1.5"/>
-          <text x="295" y="428" text-anchor="middle" fill="#4ECDC4" font-size="10" font-weight="700">HOT-SWAP</text>
-          <text x="295" y="442" text-anchor="middle" fill="#e6edf3" font-size="8">in-place</text>
+          <!-- USER (entry point) -->
+          <rect x="252" y="22" width="96" height="38" rx="19" fill="#FF6B35" opacity="0.12" stroke="#FF6B35" stroke-width="1.5"/>
+          <text x="300" y="39" text-anchor="middle" fill="#FF6B35" font-size="10" font-weight="700">USER</text>
+          <text x="300" y="53" text-anchor="middle" fill="#e6edf3" font-size="8">specify signature</text>
 
-          <!-- Node: Evaluate — bottom-left -->
-          <rect x="90" y="410" width="110" height="40" rx="8" fill="#4ECDC4" opacity="0.1" stroke="#4ECDC4" stroke-width="1.5"/>
-          <text x="145" y="428" text-anchor="middle" fill="#4ECDC4" font-size="10" font-weight="700">EVALUATE</text>
-          <text x="145" y="442" text-anchor="middle" fill="#e6edf3" font-size="8">against metric</text>
+          <!-- LLM (top of hexagon) -->
+          <rect x="250" y="109" width="100" height="42" rx="8" fill="#F7C948" opacity="0.1" stroke="#F7C948" stroke-width="1.5"/>
+          <text x="300" y="127" text-anchor="middle" fill="#F7C948" font-size="11" font-weight="700">LLM</text>
+          <text x="300" y="142" text-anchor="middle" fill="#e6edf3" font-size="8">generate body</text>
 
-          <!-- Node: Harness — left -->
-          <rect x="40" y="290" width="110" height="40" rx="8" fill="#FF6B35" opacity="0.1" stroke="#FF6B35" stroke-width="1.5"/>
-          <text x="95" y="308" text-anchor="middle" fill="#FF6B35" font-size="10" font-weight="700">HARNESS</text>
-          <text x="95" y="322" text-anchor="middle" fill="#e6edf3" font-size="8">catch panics, errors</text>
+          <!-- VALIDATE (top-right) -->
+          <rect x="389" y="189" width="100" height="42" rx="8" fill="#4ECDC4" opacity="0.1" stroke="#4ECDC4" stroke-width="1.5"/>
+          <text x="439" y="207" text-anchor="middle" fill="#4ECDC4" font-size="10" font-weight="700">VALIDATE</text>
+          <text x="439" y="222" text-anchor="middle" fill="#e6edf3" font-size="8">parse + signature</text>
+
+          <!-- COMPILE (bottom-right) -->
+          <rect x="389" y="349" width="100" height="42" rx="8" fill="#4ECDC4" opacity="0.1" stroke="#4ECDC4" stroke-width="1.5"/>
+          <text x="439" y="367" text-anchor="middle" fill="#4ECDC4" font-size="10" font-weight="700">COMPILE</text>
+          <text x="439" y="382" text-anchor="middle" fill="#e6edf3" font-size="8">native .so</text>
+
+          <!-- HOT-SWAP (bottom) -->
+          <rect x="250" y="429" width="100" height="42" rx="8" fill="#4ECDC4" opacity="0.1" stroke="#4ECDC4" stroke-width="1.5"/>
+          <text x="300" y="447" text-anchor="middle" fill="#4ECDC4" font-size="10" font-weight="700">HOT-SWAP</text>
+          <text x="300" y="462" text-anchor="middle" fill="#e6edf3" font-size="8">in-place</text>
+
+          <!-- EVALUATE (bottom-left) -->
+          <rect x="111" y="349" width="100" height="42" rx="8" fill="#4ECDC4" opacity="0.1" stroke="#4ECDC4" stroke-width="1.5"/>
+          <text x="161" y="367" text-anchor="middle" fill="#4ECDC4" font-size="10" font-weight="700">EVALUATE</text>
+          <text x="161" y="382" text-anchor="middle" fill="#e6edf3" font-size="8">against metric</text>
+
+          <!-- HARNESS (top-left) -->
+          <rect x="111" y="189" width="100" height="42" rx="8" fill="#FF6B35" opacity="0.1" stroke="#FF6B35" stroke-width="1.5"/>
+          <text x="161" y="207" text-anchor="middle" fill="#FF6B35" font-size="10" font-weight="700">HARNESS</text>
+          <text x="161" y="222" text-anchor="middle" fill="#e6edf3" font-size="8">catch panics, errors</text>
 
           <!-- Center label -->
-          <text x="300" y="240" text-anchor="middle" fill="#e6edf3" font-size="13" font-weight="700">evolution loop</text>
-          <text x="300" y="258" text-anchor="middle" fill="#8b949e" font-size="8">constrained generation</text>
+          <text x="300" y="284" text-anchor="middle" fill="#e6edf3" font-size="14" font-weight="700">evolution loop</text>
+          <text x="300" y="303" text-anchor="middle" fill="#8b949e" font-size="9">constrained generation</text>
         </svg>
       </div>
       <p>
@@ -120,7 +132,7 @@
         the harness validates and compiles it natively, hot-swaps
         the dylib in-place, then evaluates against your metric.
         Diagnostics and failures are fed back as <strong>prompt steering</strong>
-        — unconstrained generation, but bare-metal execution.
+        — constrained generation, with bare-metal execution.
       </p>
     </div>
   </section>
@@ -145,6 +157,7 @@
 
         <span style="color:#8b949e">// LLM rewrites the fn, harness validates + compiles + hot-swaps</span>
         runtime.evolve_with_backpressure(&amp;agent, &amp;prompt).<span style="color:#FF6B35">await</span>?;
+        <span style="color:#8b949e">// `step` function was updated and new Agent code runs in the next loop iteration</span>
     }
 }</code></pre>
     </div>
