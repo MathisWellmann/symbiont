@@ -79,6 +79,44 @@ section {
     color: $text-muted;
     max-width: 600px;
     margin: 0 auto 2rem;
+    line-height: 1.7;
+  }
+
+  .hero-features {
+    list-style: none;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 0.6rem 1.2rem;
+    margin-bottom: 2.5rem;
+    max-width: 640px;
+    margin-left: auto;
+    margin-right: auto;
+
+    li {
+      position: relative;
+      padding-left: 1.4rem;
+      font-size: 0.95rem;
+      color: $text;
+      line-height: 1.5;
+
+      &::before {
+        content: '';
+        position: absolute;
+        left: 0;
+        top: 0.45rem;
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: linear-gradient(135deg, $teal, $dark-teal);
+        box-shadow: 0 0 6px rgba(78, 205, 196, 0.4);
+      }
+
+      &:hover::before {
+        background: linear-gradient(135deg, $orange, $gold);
+        box-shadow: 0 0 8px rgba(255, 107, 53, 0.5);
+      }
+    }
   }
 
   .cta {
