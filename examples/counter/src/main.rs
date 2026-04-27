@@ -9,7 +9,6 @@ use std::time::Duration;
 
 use symbiont::Runtime;
 use tracing::info;
-use tracing_subscriber::EnvFilter;
 
 // The starting function definition, used during constrained generation,
 // where the LLM model will implement the function body.
@@ -23,10 +22,7 @@ symbiont::evolvable! {
 
 #[tokio::main]
 async fn main() -> symbiont::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
-        .with_line_number(true)
-        .init();
+    symbiont::init_tracing();
 
     let runtime = Runtime::init(SYMBIONT_DECLS, symbiont::Profile::Debug).await?;
     let fn_sigs = runtime.fn_sigs();

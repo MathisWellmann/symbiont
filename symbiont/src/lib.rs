@@ -10,6 +10,7 @@ pub mod runtime;
 
 mod compiler;
 mod decl;
+mod init_tracing;
 mod parser;
 mod unwind;
 mod utils;
@@ -23,6 +24,7 @@ pub use error::{
     Error,
     Result,
 };
+pub use init_tracing::init_tracing;
 pub use runtime::Runtime;
 pub use symbiont_macros::evolvable;
 
