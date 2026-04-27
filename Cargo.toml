@@ -3,6 +3,7 @@ exclude = ["assets", "website"]
 members = [
   "examples/counter",
   "examples/fizzbuzz",
+  "examples/quantize",
   "examples/rastrigin",
   "examples/sort",
   "examples/tictactoe",
