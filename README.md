@@ -35,7 +35,7 @@ is appended to the prompt and the LLM retries automatically until it produces co
 
 ## Quick start
 
-```rust
+```rust,ignore
 symbiont::evolvable! {
     fn step(counter: &mut usize) {
         // default implementation body, entirely evolved by the LLM

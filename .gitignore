@@ -2,3 +2,5 @@
 .direnv/
 .devenv/
 .env
+mutants.out/
+mutants.out.old/
