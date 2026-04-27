@@ -27,7 +27,6 @@ use tracing::{
     info,
     warn,
 };
-use tracing_subscriber::EnvFilter;
 
 // The evolvable function starts with a trivial default (returns 0.0).
 // The LLM must discover the Rastrigin formula purely from sample data.
@@ -153,10 +152,7 @@ fn sample_table(samples: &[Sample]) -> String {
 
 #[tokio::main]
 async fn main() -> symbiont::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
-        .with_line_number(true)
-        .init();
+    symbiont::init_tracing();
 
     let runtime = Runtime::init(SYMBIONT_DECLS, symbiont::Profile::Debug).await?;
     let fn_sigs = runtime.fn_sigs();

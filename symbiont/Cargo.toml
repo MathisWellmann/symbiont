@@ -23,10 +23,12 @@ tracing.workspace = true
 
 libloading = "0.8"
 minstant = "0.1"
+owo-colors = "4"
 prettyplease = "0.2"
 quote = "1"
 syn = { version = "2", features = ["full"] }
 thiserror = "2"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

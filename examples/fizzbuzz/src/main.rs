@@ -17,7 +17,6 @@ use tracing::{
     info,
     warn,
 };
-use tracing_subscriber::EnvFilter;
 
 // Encoding:
 //   0 → the number itself (not divisible by 3 or 5)
@@ -92,10 +91,7 @@ fn run_tests() -> (usize, usize, String) {
 
 #[tokio::main]
 async fn main() -> symbiont::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
-        .with_line_number(true)
-        .init();
+    symbiont::init_tracing();
 
     let runtime = Runtime::init(SYMBIONT_DECLS, symbiont::Profile::Debug).await?;
     let fn_sigs = runtime.fn_sigs();

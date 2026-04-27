@@ -31,6 +31,7 @@ use libloading::{
     Symbol,
 };
 use minstant::Instant;
+use owo_colors::OwoColorize;
 use rig::{
     agent::Agent,
     completion::{
@@ -262,11 +263,11 @@ impl Runtime {
             );
         }
 
-        info!("prompt: {prompt}");
+        info!("prompt: {}", prompt.green());
         let t0 = Instant::now();
         let llm_response = agent.prompt(prompt).await?;
         let llm_time = t0.elapsed().as_millis();
-        info!("llm_response: {llm_response}");
+        info!("llm_response: {}", llm_response.blue());
 
         let t0 = Instant::now();
         // Parse Rust from markdown fences
@@ -366,10 +367,10 @@ impl Runtime {
                         expected,
                         got,
                     } => write!(prompt,
-                        " Generated function signature miss-match. Expected ```{expected}```, Got ```{got}```"
+                        " Generated function signature miss-match. Expected ```{expected}```, Got ```{}```", got.red()
                     ).expect("Can write to prompt"),
                     CompilationFailed(ref stderr) => write!(prompt,
-                        " The generated code failed to compile. Compiler output:\n```\n{stderr}\n```\nPlease fix the compilation errors."
+                        " The generated code failed to compile. Compiler output:\n```\n{}\n```\nPlease fix the compilation errors.", stderr.red()
                     ).expect("Can write to prompt"),
                     e => {
                         warn!("Unhandled error: {e}");

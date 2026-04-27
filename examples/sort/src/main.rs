@@ -30,7 +30,6 @@ use tracing::{
     info,
     warn,
 };
-use tracing_subscriber::EnvFilter;
 
 /// Number of elements in each benchmark array.
 const ARRAY_LEN: usize = 10_000;
@@ -228,10 +227,7 @@ fn total_time(results: &[BenchResult]) -> Duration {
 
 #[tokio::main]
 async fn main() -> symbiont::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
-        .with_line_number(true)
-        .init();
+    symbiont::init_tracing();
 
     let runtime = Runtime::init(SYMBIONT_DECLS, symbiont::Profile::Release).await?;
     let fn_sigs = runtime.fn_sigs();

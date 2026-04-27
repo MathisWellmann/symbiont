@@ -19,7 +19,6 @@ use tracing::{
     info,
     warn,
 };
-use tracing_subscriber::EnvFilter;
 
 /// Number of games played per opponent per evaluation round.
 const GAMES_PER_OPPONENT: usize = 100;
@@ -335,10 +334,7 @@ fn overall_score(results: &[MatchResult]) -> f64 {
 
 #[tokio::main]
 async fn main() -> symbiont::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
-        .with_line_number(true)
-        .init();
+    symbiont::init_tracing();
 
     let runtime = Runtime::init(SYMBIONT_DECLS, symbiont::Profile::Debug).await?;
     let fn_sigs = runtime.fn_sigs();
