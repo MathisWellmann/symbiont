@@ -32,7 +32,9 @@
         }
     );
 
-    buildInputs = [
+    buildInputs = with pkgs; [
+      fontconfig
+      pkg-config
       rust
     ];
     lsps = with pkgs; [

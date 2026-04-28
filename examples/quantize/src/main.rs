@@ -360,6 +360,7 @@ fn plot_frontier_progression(
 
         root.present()?;
     }
+    println!("Plot saved to: {}", path.display());
 
     // Display in terminal via viuer.
     let conf = viuer::Config {
@@ -369,7 +370,6 @@ fn plot_frontier_progression(
     };
     viuer::print_from_file(&path, &conf)?;
 
-    println!("Plot saved to: {}", path.display());
     Ok(())
 }
 
