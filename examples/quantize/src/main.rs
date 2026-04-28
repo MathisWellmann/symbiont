@@ -10,7 +10,7 @@
 //! reduce the number of distinct output values while keeping MSE low.
 //!
 //! Each round:
-//!   1. Call the evolvable `quantize` function on data from multiple distributions.
+//!   1. Call the evolvable `quantize` function on data from a specific distribution.
 //!   2. Measure MSE (reconstruction error) and count distinct output values.
 //!   3. Update the Pareto frontier of (num_levels, MSE) trade-offs.
 //!   4. Feed the frontier and per-distribution results back to the LLM.
