@@ -307,7 +307,8 @@ fn plot_frontier_progression(
         .fold(0.0f64, f64::max);
 
     // Add some padding to the ranges.
-    let x_pad = (x_max - x_min).max(1.0) * 0.08;
+    let x_lo = (x_min / 1.5).max(1.0);
+    let x_hi = x_max * 1.5;
     let y_pad = (y_max - y_min).max(1e-10) * 0.08;
 
     let path = std::env::temp_dir().join("quantize_pareto.png");
@@ -324,7 +325,7 @@ fn plot_frontier_progression(
             .x_label_area_size(40)
             .y_label_area_size(60)
             .build_cartesian_2d(
-                (x_min - x_pad)..(x_max + x_pad),
+                (x_lo..x_hi).log_scale().base(2.0),
                 (y_min - y_pad)..(y_max + y_pad),
             )?;
 
@@ -419,7 +420,7 @@ async fn main() -> symbiont::Result<()> {
     }
 
     // -- Evolution loop ------------------------------------------------------
-    let max_rounds = 10;
+    let max_rounds = 20;
     let mut prev_code = String::new();
 
     for round in 1..=max_rounds {
