@@ -19,7 +19,10 @@
 //! all rounds, showing the LLM which trade-offs have been achieved and
 //! challenging it to push the frontier further.
 
-use std::collections::HashSet;
+use std::{
+    collections::HashSet,
+    fmt::Display,
+};
 
 use plotters::prelude::*;
 use romu::Rng;
@@ -224,36 +227,41 @@ impl ParetoFrontier {
 
 // -- Reporting ---------------------------------------------------------------
 
-fn format_results(r: &EvalResult) -> String {
-    let mut report = String::from(
-        "| Distribution | Distinct | Bits/val | MSE        |\n\
-         |--------------|----------|----------|------------|\n",
-    );
+impl Display for EvalResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "| Distribution | Distinct | Bits/val | MSE        |\n\
+             |--------------|----------|----------|------------|\n",
+        )?;
 
-    if r.panic.is_some() {
-        report.push_str(&format!(
-            "| {:<12} | PANIC    |          |            |\n",
-            r.distr.to_string()
-        ));
-    } else {
-        report.push_str(&format!(
-            "| {:<12} | {:>8} | {:>8.1} | {:>10.4e} |\n",
-            r.distr.to_string(),
-            r.num_distinct,
-            r.bits_per_value,
-            r.mse,
-        ));
+        if self.panic.is_some() {
+            write!(
+                f,
+                "| {:<12} | PANIC    |          |            |\n",
+                self.distr.to_string()
+            )?;
+        } else {
+            write!(
+                f,
+                "| {:<12} | {:>8} | {:>8.1} | {:>10.4e} |\n",
+                self.distr.to_string(),
+                self.num_distinct,
+                self.bits_per_value,
+                self.mse,
+            )?;
+        }
+
+        if self.panic.is_some() {
+            write!(
+                f,
+                "\nPANIC on '{}': {}\n",
+                self.distr.to_string(),
+                self.panic.as_deref().expect("filtered for panic"),
+            )?;
+        }
+        Ok(())
     }
-
-    if r.panic.is_some() {
-        report.push_str(&format!(
-            "\nPANIC on '{}': {}\n",
-            r.distr.to_string(),
-            r.panic.as_deref().expect("filtered for panic"),
-        ));
-    }
-
-    report
 }
 
 // -- Plotting ----------------------------------------------------------------
@@ -398,8 +406,7 @@ async fn main() -> symbiont::Result<()> {
     // -- Round 0: evaluate the default (identity copy) -----------------------
     println!("\n=== Round 0: default implementation (identity copy) ===");
     let mut result: EvalResult = evaluate(runtime, &dist_data, distr);
-    let mut report = format_results(&result);
-    println!("{report}");
+    println!("{result}");
 
     // Seed frontiers with round 0 data.
     if result.panic.is_none() {
@@ -458,11 +465,11 @@ async fn main() -> symbiont::Result<()> {
                  - The ideal solution adaptively chooses quantization bin boundaries \
                  based on the input data distribution\n\n\
                  {prev_impl_section}\
-                 Current evaluation ({SAMPLE_LEN} values per distribution):\n\
-                 {report}\n\
+                 Current evaluation on {SAMPLE_LEN} samples:\n\
+                 {result}\n\
                  {frontier_section}\n\
                  Push the Pareto frontier: find solutions with fewer distinct levels at \
-                 the same or lower MSE, or lower MSE at the same number of levels. Code only.",
+                 the same or lower MSE, or lower MSE at the same number of levels. Give Rust Code only.",
                 sig = fn_sigs[0],
             )
         };
@@ -477,8 +484,7 @@ async fn main() -> symbiont::Result<()> {
             .expect("failed to read generated code");
 
         result = evaluate(runtime, &dist_data, distr);
-        report = format_results(&result);
-        println!("{report}");
+        println!("{result}");
 
         // Update frontier
         if result.panic.is_none() {
