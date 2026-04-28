@@ -122,13 +122,14 @@ while `symbiont`'s constrained generation loop ensures the LLM output always com
 ## Use cases
 
 - Typed function body search (e.g., find an implementation that satisfies a test suite).
-  - See [fizzbuzz-example](examples/fizzbuzz/src/main.rs)
-  - See [rastrigin-example](examples/rastrigin/src/main.rs)
+  - See [fizzbuzz-example](examples/fizzbuzz/README.md)
+  - See [rastrigin-example](examples/rastrigin/README.md)
 - Performance Optimization under functional equivalence
-  - See [sort-example](examples/sort/src/main.rs)
+  - See [sort-example](examples/sort/README.md)
 - Game AI / strategic reasoning through evolved code
-  - See [tictactoe-example](examples/tictactoe/src/main.rs)
+  - See [tictactoe-example](examples/tictactoe/README.md)
 - Auto-research workflows with native-speed evaluation.
+  - See [quatize-example](examples/quantize/README.md)
 - Black-box optimization of inputs that produce desired outputs, e.g. Parameter Search.
 - Self-evolving feature processing pipelines.
 - Agentic code evolution generally.

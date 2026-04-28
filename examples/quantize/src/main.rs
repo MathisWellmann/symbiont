@@ -295,18 +295,10 @@ fn plot_frontier_progression(
         return Ok(());
     }
 
-    let x_min = all_points.iter().map(|p| p.0).fold(f64::INFINITY, f64::min);
-    let x_max = all_points.iter().map(|p| p.0).fold(0.0f64, f64::max);
-    let y_min = all_points
-        .iter()
-        .map(|p| p.1)
-        .filter(|y| y.is_finite())
-        .fold(f64::INFINITY, f64::min);
-    let y_max = all_points
-        .iter()
-        .map(|p| p.1)
-        .filter(|y| y.is_finite())
-        .fold(0.0f64, f64::max);
+    let x_min = 16_f64;
+    let x_max = 10_000_f64;
+    let y_min = 0_f64;
+    let y_max = 0.035;
 
     // Add some padding to the ranges.
     let x_lo = (x_min / 1.5).max(1.0);
