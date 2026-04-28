@@ -1,3 +1,4 @@
+use prettyplease::unparse;
 // SPDX-License-Identifier: MPL-2.0
 use quote::ToTokens;
 use syn::{
@@ -28,7 +29,7 @@ pub(crate) fn validate_generated_ast(file: &mut syn::File, expected_sigs: &[Stri
         return Ok(());
     }
 
-    let mut found_sigs: Vec<String> = Vec::new();
+    let mut found_sigs: Vec<String> = Vec::with_capacity(4);
 
     for item in &mut file.items {
         if let syn::Item::Fn(item_fn) = item {
@@ -50,31 +51,14 @@ pub(crate) fn validate_generated_ast(file: &mut syn::File, expected_sigs: &[Stri
             let sig = format_signature(&item_fn.sig)
                 .unwrap_or_else(|| format!("fn {}(...)", item_fn.sig.ident));
             found_sigs.push(sig.clone());
-
-            if !expected_sigs.contains(&sig) {
-                let expected = expected_sigs.join(", ");
-                return Err(Error::SignatureMismatch {
-                    name,
-                    expected,
-                    got: sig,
-                });
-            }
         }
     }
-
     // Ensure all expected signatures were found
     for expected in expected_sigs {
         if !found_sigs.contains(expected) {
-            // Try to extract function name for a better error message
-            let name = expected
-                .trim_start_matches("fn ")
-                .split('(')
-                .next()
-                .unwrap_or("unknown");
             return Err(Error::SignatureMismatch {
-                name: name.to_string(),
+                code: unparse(file),
                 expected: expected.clone(),
-                got: "not found".to_string(),
             });
         }
     }
@@ -213,11 +197,17 @@ pub fn add(a: i32, b: i32) -> i32 {
         let mut file = parse_rust_code(input).unwrap();
         let expected = vec!["fn step(counter: &mut usize)".to_string()];
         let err = validate_generated_ast(&mut file, &expected).unwrap_err();
-        let msg = format!("{err}");
-        assert!(
-            msg.contains("step") && msg.contains("add"),
-            "expected signature mismatch error, got: {msg}"
-        );
+        dbg!(&err);
+        match err {
+            Error::SignatureMismatch { code, expected } => {
+                assert_eq!(
+                    &code,
+                    "#[unsafe(no_mangle)]\npub fn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n"
+                );
+                assert_eq!(expected, "fn step(counter: &mut usize)");
+            }
+            _ => panic!("Invalid error"),
+        }
     }
 
     #[test]

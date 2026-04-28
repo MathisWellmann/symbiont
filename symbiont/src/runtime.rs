@@ -340,11 +340,10 @@ impl Runtime {
                     ),
                     WriteLib(_) => todo!(),
                     SignatureMismatch {
-                        name: _,
+                        code,
                         expected,
-                        got,
                     } => write!(prompt,
-                        " Generated function signature miss-match. Expected ```{expected}```, Got ```{}```", got.red()
+                        " Generated function signature miss-match. Expected ```{expected}```, Got Code ```{code}```",
                     ).expect("Can write to prompt"),
                     CompilationFailed{code, err} => write!(prompt,
                         " Your generated code ```{}``` failed to compile. Compiler output:\n```\n{}\n```\nPlease fix the compilation errors.", code.blue(), err.red()
