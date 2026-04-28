@@ -21,6 +21,7 @@
 
 use std::collections::HashSet;
 
+use plotters::prelude::*;
 use romu::Rng;
 use symbiont::Runtime;
 use tracing::{
@@ -193,6 +194,11 @@ impl ParetoFrontier {
         true
     }
 
+    /// Snapshot the current frontier as (num_distinct, mse) pairs.
+    fn snapshot(&self) -> Vec<(f64, f64)> {
+        Vec::from_iter(self.points.iter().map(|p| (p.num_distinct as f64, p.mse)))
+    }
+
     fn format_table(&self) -> String {
         if self.points.is_empty() {
             return String::from("(no valid points yet)\n");
@@ -250,6 +256,123 @@ fn format_results(r: &EvalResult) -> String {
     report
 }
 
+// -- Plotting ----------------------------------------------------------------
+
+/// Palette of colours for successive generations.
+const PALETTE: &[RGBColor] = &[
+    RGBColor(31, 119, 180),
+    RGBColor(255, 127, 14),
+    RGBColor(44, 160, 44),
+    RGBColor(214, 39, 40),
+    RGBColor(148, 103, 189),
+    RGBColor(140, 86, 75),
+    RGBColor(227, 119, 194),
+    RGBColor(127, 127, 127),
+    RGBColor(188, 189, 34),
+    RGBColor(23, 190, 207),
+    RGBColor(174, 199, 232),
+];
+
+/// Render the Pareto frontier progression to a PNG and display it with `viuer`.
+fn plot_frontier_progression(
+    history: &[(usize, Vec<(f64, f64)>)],
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Collect all points to determine axis ranges.
+    let all_points =
+        Vec::<(f64, f64)>::from_iter(history.iter().flat_map(|(_, pts)| pts.iter().copied()));
+    if all_points.is_empty() {
+        println!("No Pareto frontier data to plot.");
+        return Ok(());
+    }
+
+    let x_min = all_points.iter().map(|p| p.0).fold(f64::INFINITY, f64::min);
+    let x_max = all_points.iter().map(|p| p.0).fold(0.0f64, f64::max);
+    let y_min = all_points
+        .iter()
+        .map(|p| p.1)
+        .filter(|y| y.is_finite())
+        .fold(f64::INFINITY, f64::min);
+    let y_max = all_points
+        .iter()
+        .map(|p| p.1)
+        .filter(|y| y.is_finite())
+        .fold(0.0f64, f64::max);
+
+    // Add some padding to the ranges.
+    let x_pad = (x_max - x_min).max(1.0) * 0.08;
+    let y_pad = (y_max - y_min).max(1e-10) * 0.08;
+
+    let path = std::env::temp_dir().join("quantize_pareto.png");
+    {
+        let root = BitMapBackend::new(&path, (2048, 2048)).into_drawing_area();
+        root.fill(&WHITE)?;
+
+        let mut chart = ChartBuilder::on(&root)
+            .caption(
+                "Pareto Frontier Progression",
+                ("sans-serif", 22).into_font().with_color(BLACK),
+            )
+            .margin(10)
+            .x_label_area_size(40)
+            .y_label_area_size(60)
+            .build_cartesian_2d(
+                (x_min - x_pad)..(x_max + x_pad),
+                (y_min - y_pad)..(y_max + y_pad),
+            )?;
+
+        chart
+            .configure_mesh()
+            .x_desc("Distinct levels")
+            .y_desc("MSE")
+            .draw()?;
+
+        for (round, pts) in history {
+            let color = PALETTE[*round % PALETTE.len()];
+            let label = format!("Round {round}");
+
+            // Draw the frontier line + points for this generation.
+            let mut sorted = pts.clone();
+            sorted.sort_by(|a, b| a.0.partial_cmp(&b.0).expect("finite"));
+
+            chart
+                .draw_series(LineSeries::new(
+                    sorted.iter().copied(),
+                    color.stroke_width(2),
+                ))?
+                .label(&label)
+                .legend(move |(x, y)| {
+                    Rectangle::new([(x, y - 4), (x + 14, y + 4)], color.filled())
+                });
+
+            chart.draw_series(
+                sorted
+                    .iter()
+                    .map(|&(x, y)| Circle::new((x, y), 4, color.filled())),
+            )?;
+        }
+
+        chart
+            .configure_series_labels()
+            .background_style(WHITE.mix(0.8))
+            .border_style(BLACK)
+            .position(SeriesLabelPosition::UpperRight)
+            .draw()?;
+
+        root.present()?;
+    }
+
+    // Display in terminal via viuer.
+    let conf = viuer::Config {
+        width: Some(80),
+        absolute_offset: false,
+        ..Default::default()
+    };
+    viuer::print_from_file(&path, &conf)?;
+
+    println!("Plot saved to: {}", path.display());
+    Ok(())
+}
+
 // -- Main --------------------------------------------------------------------
 
 #[tokio::main]
@@ -271,6 +394,9 @@ async fn main() -> symbiont::Result<()> {
     // Aggregate frontier (worst-case distinct across distributions, mean MSE).
     let mut aggregate_frontier = ParetoFrontier::new();
 
+    // Frontier snapshots per round for the final progression plot.
+    let mut frontier_history: Vec<(usize, Vec<(f64, f64)>)> = Vec::new();
+
     // -- Round 0: evaluate the default (identity copy) -----------------------
     println!("\n=== Round 0: default implementation (identity copy) ===");
     let mut result: EvalResult = evaluate(runtime, &dist_data, distr);
@@ -284,6 +410,7 @@ async fn main() -> symbiont::Result<()> {
             num_distinct: result.num_distinct,
             mse: result.mse,
         });
+        frontier_history.push((0, frontier.snapshot()));
     }
 
     // -- Evolution loop ------------------------------------------------------
@@ -375,6 +502,9 @@ async fn main() -> symbiont::Result<()> {
             frontier_updated = true;
         }
 
+        // Always snapshot the frontier state after each round.
+        frontier_history.push((round, frontier.snapshot()));
+
         if frontier_updated {
             info!("Pareto frontier updated in round {round}");
             println!(
@@ -395,6 +525,11 @@ async fn main() -> symbiont::Result<()> {
 
     if !prev_code.is_empty() {
         println!("Last implementation:\n```rust\n{prev_code}```",);
+    }
+
+    // Plot the Pareto frontier progression across generations.
+    if let Err(e) = plot_frontier_progression(&frontier_history) {
+        warn!("Failed to render Pareto frontier plot: {e}");
     }
 
     Ok(())
