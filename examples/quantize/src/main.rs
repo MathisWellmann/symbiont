@@ -276,14 +276,6 @@ impl Display for EvalResult {
             )?;
         }
 
-        if self.panic.is_some() {
-            write!(
-                f,
-                "\nPANIC on '{}': {}\n",
-                self.distr.to_string(),
-                self.panic.as_deref().expect("filtered for panic"),
-            )?;
-        }
         Ok(())
     }
 }
@@ -480,8 +472,7 @@ async fn main() -> symbiont::Result<()> {
                 format!(
                     "## Last Attempt\n\
                      ```rust\n{prev_code}\n```\n\
-                     Result: {} distinct | MSE {:.4e}\n\n",
-                    result.num_distinct, result.mse,
+                     Result: {result}\n\n",
                 )
             };
             format!(
