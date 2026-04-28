@@ -22,7 +22,7 @@ rewriting from scratch.
 
 This may be highly useful in the search for a sorting algorithm, tuned for a specific input distribution.
 
-Also showcases `symbiont::catch_unwind` to catch out-of-bounds panics in Agent code,
+Also showcases `catch_unwind` in generated function code to catch out-of-bounds panics in Agent code,
 which is used to improve the next generation of LLM code.
 
 ## Running

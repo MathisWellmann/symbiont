@@ -135,18 +135,16 @@ fn run_benchmarks(runtime: &Runtime, benches: &[DistBench]) -> Vec<BenchResult> 
         for _ in 0..BENCH_RUNS {
             let mut data = b.template.clone();
             let start = Instant::now();
-            match symbiont::catch_panic(runtime, || sort(&mut data, ARRAY_LEN)) {
-                Ok(()) => {
-                    let elapsed = start.elapsed();
-                    times.push(elapsed);
-                    if data != b.reference {
-                        correct = false;
-                    }
-                }
-                Err(msg) => {
+            sort(&mut data, ARRAY_LEN);
+            if let Some(msg) = runtime.take_panic() {
+                correct = false;
+                panic_msg = Some(msg);
+                break;
+            } else {
+                let elapsed = start.elapsed();
+                times.push(elapsed);
+                if data != b.reference {
                     correct = false;
-                    panic_msg = Some(msg);
-                    break;
                 }
             }
         }
