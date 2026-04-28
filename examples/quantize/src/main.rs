@@ -516,3 +516,14 @@ async fn main() -> symbiont::Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_plot_frontier() {
+        let history = vec![(0, vec![(1.0, 2.0)])];
+        plot_frontier_progression(&history).expect("Can plot")
+    }
+}
