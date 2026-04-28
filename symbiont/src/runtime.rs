@@ -55,10 +55,6 @@ use crate::{
         Result,
     },
     parser::parse_rust_code,
-    unwind::{
-        PANIC_PREAMBLE,
-        wrap_bodies_in_catch_unwind,
-    },
     validation::validate_generated_ast,
 };
 
@@ -199,11 +195,10 @@ impl Runtime {
 
         // Write src/lib.rs from all default_source entries
         let lib_rs = generate_lib_rs(decls);
-        std::fs::write(crate_dir.join("src").join("lib.rs"), &lib_rs)?;
-        info!("Created temp dylib crate at {}", crate_dir.display());
+        let mut ast = syn::parse_str(&lib_rs)?;
 
         // Compile
-        compile_dylib(&crate_dir, profile).await?;
+        compile_dylib(&crate_dir, profile, &mut ast).await?;
 
         // Find and load the .so
         let so_path = find_so(&crate_dir, profile)?;
@@ -269,33 +264,15 @@ impl Runtime {
         let llm_time = t0.elapsed().as_millis();
         info!("llm_response: {}", llm_response.blue());
 
-        let t0 = Instant::now();
         // Parse Rust from markdown fences
         let mut ast = parse_rust_code(&llm_response).map_err(|_| Error::CouldNotParseRust)?;
 
         // Validate signatures match declarations
         validate_generated_ast(&mut ast, &self.fn_sigs)?;
 
-        // Save the clean (unwrapped) LLM code for display / prompt feedback.
-        let clean_code = prettyplease::unparse(&ast);
-        let clean_path = self.crate_dir.join("src").join("clean.rs");
-        std::fs::write(&clean_path, &clean_code)
-            .map_err(|e| Error::WriteLib(format!("Failed to write clean.rs: {e}")))?;
-
-        // Wrap function bodies in catch_unwind so panics stay inside the dylib.
-        wrap_bodies_in_catch_unwind(&mut ast);
-
-        // Write final lib.rs (preamble + wrapped code) for compilation.
-        let lib_rs_path = self.crate_dir.join("src").join("lib.rs");
-        let formatted = format!("{PANIC_PREAMBLE}\n{}", prettyplease::unparse(&ast));
-        std::fs::write(&lib_rs_path, &formatted)
-            .map_err(|e| Error::WriteLib(format!("Failed to write lib.rs: {e}")))?;
-        info!("Wrote evolved lib.rs to {}", lib_rs_path.display());
-        let validation_time = t0.elapsed().as_millis();
-
         // Recompile
         let t0 = Instant::now();
-        compile_dylib(&self.crate_dir, self.profile).await?;
+        compile_dylib(&self.crate_dir, self.profile, &mut ast).await?;
         let compile_time = t0.elapsed().as_millis();
 
         // Copy .so to versioned path to defeat dlopen caching
@@ -321,7 +298,7 @@ impl Runtime {
         *self.library.lock().expect("library Mutex poisoned") = Some(new_lib);
 
         info!(
-            "Hot-reloaded evolvable dylib (version {version}). Timings: LLM generation: {llm_time}ms, validation: {validation_time}ms, compilation: {compile_time}ms.",
+            "Hot-reloaded evolvable dylib (version {version}). Timings: LLM generation: {llm_time}ms, compilation: {compile_time}ms.",
         );
 
         Ok(())
@@ -369,8 +346,8 @@ impl Runtime {
                     } => write!(prompt,
                         " Generated function signature miss-match. Expected ```{expected}```, Got ```{}```", got.red()
                     ).expect("Can write to prompt"),
-                    CompilationFailed(ref stderr) => write!(prompt,
-                        " The generated code failed to compile. Compiler output:\n```\n{}\n```\nPlease fix the compilation errors.", stderr.red()
+                    CompilationFailed{code, err} => write!(prompt,
+                        " Your generated code ```{}``` failed to compile. Compiler output:\n```\n{}\n```\nPlease fix the compilation errors.", code.blue(), err.red()
                     ).expect("Can write to prompt"),
                     e => {
                         warn!("Unhandled error: {e}");
@@ -441,7 +418,7 @@ panic = "unwind"
 }
 
 fn generate_lib_rs(decls: &[EvolvableDecl]) -> String {
-    let mut src = PANIC_PREAMBLE.to_string();
+    let mut src = String::with_capacity(1_000);
     for d in decls {
         src.push_str(d.default_source);
         src.push_str("\n\n");

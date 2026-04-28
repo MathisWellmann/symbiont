@@ -33,8 +33,8 @@ pub enum Error {
         got: String,
     },
 
-    #[error("Compilation failed:\n{0}")]
-    CompilationFailed(String),
+    #[error("Compilation failed:\n{err}")]
+    CompilationFailed { code: String, err: String },
 
     #[error("No evolvable functions found. Use the evolvable! macro to declare at least one.")]
     NoEvolvableFunctions,
