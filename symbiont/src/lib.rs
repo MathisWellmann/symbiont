@@ -25,7 +25,6 @@ pub use error::{
 };
 pub use runtime::Runtime;
 pub use symbiont_macros::evolvable;
-pub use unwind::catch_panic;
 
 /// Internal module for macro-generated dispatch code.
 ///

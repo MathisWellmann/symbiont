@@ -207,9 +207,9 @@ fn play_game(
     for _ in 0..9 {
         let pos = if current == ai_player {
             // AI's turn — catch panics so a bad evolution doesn't crash us.
-            let m = match symbiont::catch_panic(runtime, || choose_move(&board, 9, current)) {
-                Ok(m) => m,
-                Err(_) => return GameResult::Forfeit,
+            let m = choose_move(&board, 9, current);
+            if runtime.take_panic().is_some() {
+                return GameResult::Forfeit;
             };
             if !is_valid_move(&board, m) {
                 return GameResult::Forfeit;

@@ -1,35 +1,4 @@
 // SPDX-License-Identifier: MPL-2.0
-/// Catch a panic from an evolvable function call, returning the result
-/// or a human-readable panic message.
-///
-/// Panics inside evolvable functions are caught **within the dylib** (via
-/// `catch_unwind`) and stored in a fixed-size buffer. This function runs
-/// the closure normally, then checks the dylib's panic buffer via
-/// [`Runtime::take_panic`].
-///
-/// Zero overhead on the happy path.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// match symbiont::catch_panic(&runtime, || sort(&mut data, len)) {
-///     Ok(()) => { /* success */ }
-///     Err(msg) => eprintln!("panic: {msg}"),
-/// }
-/// ```
-///
-/// [`Runtime::take_panic`]: crate::Runtime::take_panic
-pub fn catch_panic<F, T>(runtime: &crate::Runtime, f: F) -> Result<T, String>
-where
-    F: FnOnce() -> T,
-{
-    let result = f();
-    if let Some(msg) = runtime.take_panic() {
-        Err(msg)
-    } else {
-        Ok(result)
-    }
-}
 
 /// Wrap each function body in `catch_unwind` so panics are caught inside the
 /// dylib and never unwind across the `dlopen` boundary.
