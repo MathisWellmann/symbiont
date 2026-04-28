@@ -21,3 +21,4 @@ plotters = { version = "0.3", default-features = false, features = [
   "line_series",
 ] }
 viuer = { version = "0.11", features = ["print-file"] }
+colorgrad = { version = "0.8", features = ["preset"] }
