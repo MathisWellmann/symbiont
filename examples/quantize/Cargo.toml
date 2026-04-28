@@ -14,3 +14,10 @@ tokio.workspace = true
 tracing.workspace = true
 
 derive_more = { version = "2", features = ["full"] }
+plotters = { version = "0.3", default-features = false, features = [
+  "ab_glyph",
+  "bitmap_backend",
+  "bitmap_encoder",
+  "line_series",
+] }
+viuer = { version = "0.11", features = ["print-file"] }
