@@ -98,3 +98,41 @@ pub unsafe fn __symbiont_take_panic(buf: *mut u8, buf_len: usize) -> usize {
     }
 }
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_wrap_bodies_in_catch_unwind() {
+        let mut file: syn::File = syn::parse_str(
+            "
+            fn step(counter: &mut usize) {
+                panic!()
+            }
+            ",
+        )
+        .expect("Can parse");
+        wrap_bodies_in_catch_unwind(&mut file);
+        assert_eq!(
+            &prettyplease::unparse(&file),
+            r#"fn step(counter: &mut usize) {
+    match ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| { panic!() })) {
+        Ok(__symbiont_val) => __symbiont_val,
+        Err(__symbiont_err) => {
+            let __symbiont_msg = if let Some(s) = __symbiont_err.downcast_ref::<&str>() {
+                *s
+            } else if let Some(s) = __symbiont_err.downcast_ref::<String>() {
+                s.as_str()
+            } else {
+                "unknown panic"
+            };
+            __symbiont_store_panic(__symbiont_msg);
+            unsafe { ::core::mem::zeroed() }
+        }
+    }
+}
+"#
+        );
+    }
+}
