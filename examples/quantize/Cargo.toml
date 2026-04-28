@@ -15,7 +15,7 @@ tracing.workspace = true
 
 derive_more = { version = "2", features = ["full"] }
 plotters = { version = "0.3", default-features = false, features = [
-  "ab_glyph",
+  "ttf",
   "bitmap_backend",
   "bitmap_encoder",
   "line_series",
