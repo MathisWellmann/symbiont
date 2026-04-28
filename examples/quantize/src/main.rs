@@ -391,8 +391,6 @@ async fn main() -> symbiont::Result<()> {
     let dist_data = distr.generate(SAMPLE_LEN, &rng);
 
     let mut frontier = ParetoFrontier::new();
-    // Aggregate frontier (worst-case distinct across distributions, mean MSE).
-    let mut aggregate_frontier = ParetoFrontier::new();
 
     // Frontier snapshots per round for the final progression plot.
     let mut frontier_history: Vec<(usize, Vec<(f64, f64)>)> = Vec::new();
@@ -443,7 +441,6 @@ async fn main() -> symbiont::Result<()> {
                 let mut s = String::from(
                     "Pareto frontier of best (distinct_levels, MSE) trade-offs across all rounds:\n",
                 );
-                s.push_str(&aggregate_frontier.format_table());
                 s.push_str("\nPer-distribution frontiers:\n");
                 s.push_str(&format!("\n{distr}:\n"));
                 s.push_str(&frontier.format_table());
@@ -484,42 +481,21 @@ async fn main() -> symbiont::Result<()> {
         println!("{report}");
 
         // Update frontier
-        let mut frontier_updated = false;
-        if result.panic.is_none()
-            && frontier.add(ParetoPoint {
+        if result.panic.is_none() {
+            frontier.add(ParetoPoint {
                 round,
                 num_distinct: result.num_distinct,
                 mse: result.mse,
-            })
-        {
-            frontier_updated = true;
-        }
-        if aggregate_frontier.add(ParetoPoint {
-            round,
-            num_distinct: result.num_distinct,
-            mse: result.mse,
-        }) {
-            frontier_updated = true;
+            });
         }
 
         // Always snapshot the frontier state after each round.
         frontier_history.push((round, frontier.snapshot()));
-
-        if frontier_updated {
-            info!("Pareto frontier updated in round {round}");
-            println!(
-                "Aggregate Pareto frontier:\n{}",
-                aggregate_frontier.format_table()
-            );
-        } else {
-            warn!("No improvement to Pareto frontier in round {round}");
-        }
     }
 
     // -- Summary -------------------------------------------------------------
     println!("\nEvolution complete after {max_rounds} rounds.");
     println!("Final aggregate Pareto frontier:");
-    println!("{}", aggregate_frontier.format_table());
     println!("{distr} frontier:");
     println!("{}", frontier.format_table());
 

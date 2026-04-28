@@ -34,6 +34,7 @@
 
     buildInputs = with pkgs; [
       fontconfig
+      liberation_ttf
       pkg-config
       rust
     ];
