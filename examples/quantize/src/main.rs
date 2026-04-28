@@ -24,6 +24,7 @@ use std::{
     fmt::Display,
 };
 
+use colorgrad::Gradient;
 use plotters::prelude::*;
 use romu::Rng;
 use symbiont::Runtime;
@@ -282,21 +283,6 @@ impl Display for EvalResult {
 
 // -- Plotting ----------------------------------------------------------------
 
-/// Palette of colours for successive generations.
-const PALETTE: &[RGBColor] = &[
-    RGBColor(31, 119, 180),
-    RGBColor(255, 127, 14),
-    RGBColor(44, 160, 44),
-    RGBColor(214, 39, 40),
-    RGBColor(148, 103, 189),
-    RGBColor(140, 86, 75),
-    RGBColor(227, 119, 194),
-    RGBColor(127, 127, 127),
-    RGBColor(188, 189, 34),
-    RGBColor(23, 190, 207),
-    RGBColor(174, 199, 232),
-];
-
 /// Render the Pareto frontier progression to a PNG and display it with `viuer`.
 fn plot_frontier_progression(
     history: &[(usize, Vec<(f64, f64)>)],
@@ -351,8 +337,10 @@ fn plot_frontier_progression(
             .y_desc("MSE")
             .draw()?;
 
+        let grad = colorgrad::preset::turbo();
         for (round, pts) in history {
-            let color = PALETTE[*round % PALETTE.len()];
+            let color = grad.at(*round as f32 / history.len() as f32).to_rgba8();
+            let color = RGBColor(color[0], color[1], color[2]);
             let label = format!("Round {round}");
 
             // Draw the frontier line + points for this generation.
