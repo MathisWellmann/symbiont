@@ -126,11 +126,7 @@ fn evaluate(runtime: &Runtime, input: &[f64], distr: Distribution) -> EvalResult
                 .sum::<f64>()
                 / input.len() as f64;
             let num_distinct = count_distinct(&output);
-            let bits_per_value = if num_distinct <= 1 {
-                0.0
-            } else {
-                (num_distinct as f64).log2().ceil()
-            };
+            let bits_per_value = required_bits(num_distinct);
             EvalResult {
                 distr,
                 mse,
@@ -151,12 +147,23 @@ fn evaluate(runtime: &Runtime, input: &[f64], distr: Distribution) -> EvalResult
 
 // -- Pareto frontier ---------------------------------------------------------
 
-/// A point on the Pareto frontier: (num_distinct, mse) from a given round.
+/// A point on the Pareto frontier: (num_distinct, mse) from a given round,
+/// together with the source code that produced it.
 #[derive(Clone)]
 struct ParetoPoint {
     round: usize,
     num_distinct: usize,
     mse: f64,
+    code: String,
+}
+
+#[inline]
+fn required_bits(num_distinct: usize) -> f64 {
+    if num_distinct <= 1 {
+        0.0
+    } else {
+        (num_distinct as f64).log2().ceil()
+    }
 }
 
 /// Maintains the Pareto frontier of (num_distinct, mse) trade-offs.
@@ -222,6 +229,23 @@ impl ParetoFrontier {
             ));
         }
         table
+    }
+
+    /// Format each frontier entry with its source code so the LLM can see
+    /// *how* each trade-off was achieved.
+    fn format_with_code(&self) -> String {
+        if self.points.is_empty() {
+            return String::from("(no valid points yet)\n");
+        }
+        let mut s = String::new();
+        for p in &self.points {
+            let bits = required_bits(p.num_distinct);
+            s.push_str(&format!(
+                "### {} distinct | {:.1} bits/value | MSE {:.4e} (round {})\n```rust\n{}\n```\n\n",
+                p.num_distinct, bits, p.mse, p.round, p.code,
+            ));
+        }
+        s
     }
 }
 
@@ -415,6 +439,7 @@ async fn main() -> symbiont::Result<()> {
             round: 0,
             num_distinct: result.num_distinct,
             mse: result.mse,
+            code: "for i in 0..len {\n    output[i] = input[i];\n}".into(),
         });
         frontier_history.push((0, frontier.snapshot()));
     }
@@ -426,52 +451,62 @@ async fn main() -> symbiont::Result<()> {
     for round in 1..=max_rounds {
         println!("\n=== Round {round}: evolving via LLM ===");
 
-        let prev_impl_section = if prev_code.is_empty() {
-            String::new()
-        } else {
-            format!("Your previous implementation:\n```rust\n{prev_code}```\n\n")
-        };
+        let sig = &fn_sigs[0];
 
-        let prompt = if let Some(panic_msg) = result.panic {
-            let mut panic_report = String::new();
-            panic_report.push_str(&format!("- {panic_msg}\n"));
+        let prompt = if let Some(ref panic_msg) = result.panic {
+            let last_attempt = if prev_code.is_empty() {
+                String::new()
+            } else {
+                format!("## Last Attempt\n```rust\n{prev_code}\n```\n\n")
+            };
             format!(
-                "Implement this function that quantizes `len` input values, writing \
+                "## Task\n\
+                 Implement this function that quantizes `len` input values, writing \
                  the reconstructed (quantized) values into `output`:\n\
                  ```\n{sig}\n```\n\n\
-                 {prev_impl_section}\
-                 Runtime panics:\n{panic_report}\n\
-                 Fix the panic. The function must not crash for any input. Code only.",
-                sig = fn_sigs[0],
+                 ## Constraints\n\
+                 - No external crates — only `std` and built-in operations.\n\
+                 - `input` and `output` are the same length; `len` gives the count.\n\
+                 - The function must not panic or crash for any input.\n\n\
+                 {last_attempt}\
+                 ## Runtime Panic\n\
+                 - {panic_msg}\n\n\
+                 Fix the panic. Rust code only.",
             )
         } else {
-            let frontier_section = {
-                let mut s = String::from(
-                    "Pareto frontier of best (distinct_levels, MSE) trade-offs across all rounds:\n",
-                );
-                s.push_str("\nPer-distribution frontiers:\n");
-                s.push_str(&format!("\n{distr}:\n"));
-                s.push_str(&frontier.format_table());
-                s
+            let last_attempt = if prev_code.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "## Last Attempt\n\
+                     ```rust\n{prev_code}\n```\n\
+                     Result: {} distinct | MSE {:.4e}\n\n",
+                    result.num_distinct, result.mse,
+                )
             };
-
             format!(
-                "Implement this function that quantizes `len` input values, writing \
+                "## Task\n\
+                 Implement this function that quantizes `len` input values, writing \
                  the reconstructed (quantized) values into `output`:\n\
                  ```\n{sig}\n```\n\n\
-                 Goal: minimize the number of distinct values in `output` (compression) \
-                 while minimizing reconstruction error (MSE between input and output).\n\
+                 ## Constraints\n\
+                 - No external crates — only `std` and built-in operations.\n\
+                 - `input` and `output` are the same length; `len` gives the count.\n\n\
+                 ## Goal\n\
+                 Minimize the number of distinct values in `output` (compression) while \
+                 minimizing reconstruction error (MSE).\n\
                  - Fewer distinct output values = better compression (fewer bits per value)\n\
                  - Lower MSE = better reconstruction quality\n\
                  - The ideal solution adaptively chooses quantization bin boundaries \
                  based on the input data distribution\n\n\
-                 {prev_impl_section}\
-                 Current evaluation on {SAMPLE_LEN} samples:\n\
-                 {result}\n\
-                 {frontier_section}\n\
+                 ## Current Frontier ({distr}, {SAMPLE_LEN} samples)\n\
+                 {frontier}\n\
+                 {last_attempt}\
+                 ## Direction\n\
                  Push the Pareto frontier: find solutions with fewer distinct levels at \
-                 the same or lower MSE, or lower MSE at the same number of levels. Give Rust Code only.",
-                sig = fn_sigs[0],
+                 the same or lower MSE, or lower MSE at the same number of levels. \
+                 Rust code only.",
+                frontier = frontier.format_with_code(),
             )
         };
 
@@ -487,12 +522,13 @@ async fn main() -> symbiont::Result<()> {
         result = evaluate(runtime, &dist_data, distr);
         println!("{result}");
 
-        // Update frontier
+        // Update frontier.
         if result.panic.is_none() {
             frontier.add(ParetoPoint {
                 round,
                 num_distinct: result.num_distinct,
                 mse: result.mse,
+                code: prev_code.clone(),
             });
         }
 
