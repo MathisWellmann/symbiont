@@ -261,15 +261,15 @@ impl Display for EvalResult {
         )?;
 
         if self.panic.is_some() {
-            write!(
+            writeln!(
                 f,
-                "| {:<12} | PANIC    |          |            |\n",
+                "| {:<12} | PANIC    |          |            |",
                 self.distr.to_string()
             )?;
         } else {
-            write!(
+            writeln!(
                 f,
-                "| {:<12} | {:>8} | {:>8.1} | {:>10.4e} |\n",
+                "| {:<12} | {:>8} | {:>8.1} | {:>10.4e} |",
                 self.distr.to_string(),
                 self.num_distinct,
                 self.bits_per_value,
