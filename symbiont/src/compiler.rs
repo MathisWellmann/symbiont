@@ -55,7 +55,7 @@ pub(crate) async fn compile_dylib(
 ) -> Result<()> {
     let t0 = Instant::now();
 
-    let clean_code = unparse(&clean_ast);
+    let clean_code = unparse(clean_ast);
     debug!("clean_code: {clean_code}");
     let clean_path = crate_dir.join("src").join("clean.rs");
     std::fs::write(&clean_path, &clean_code)
@@ -65,7 +65,7 @@ pub(crate) async fn compile_dylib(
     wrap_bodies_in_catch_unwind(clean_ast);
 
     // Write final lib.rs (preamble + wrapped code) for compilation.
-    let formatted = format!("{PANIC_PREAMBLE}\n{}", unparse(&clean_ast));
+    let formatted = format!("{PANIC_PREAMBLE}\n{}", unparse(clean_ast));
     std::fs::write(crate_dir.join("src").join("lib.rs"), formatted)?;
     info!("Created temp dylib crate at {}", crate_dir.display());
 
@@ -85,7 +85,7 @@ pub(crate) async fn compile_dylib(
         .output()
         .await
         .map_err(|e| Error::CompilationFailed {
-            code: clean_code.to_string(),
+            code: clean_code.clone(),
             err: format!("Failed to spawn cargo: {e}"),
         })?;
 
@@ -98,7 +98,7 @@ pub(crate) async fn compile_dylib(
     } else {
         let err = String::from_utf8_lossy(&output.stderr).to_string();
         Err(Error::CompilationFailed {
-            code: clean_code.to_string(),
+            code: clean_code.clone(),
             err,
         })
     }
