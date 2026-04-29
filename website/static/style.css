@@ -278,6 +278,9 @@ a.example:hover {
   text-decoration: none;
 }
 .examples .example {
+  display: flex;
+  flex-direction: column;
+  height: 380px;
   background: #161b22;
   border: 1px solid #30363d;
   border-radius: 8px;
@@ -290,10 +293,15 @@ a.example:hover {
 }
 .examples .example img {
   width: 100%;
+  height: 250px;
+  object-fit: cover;
+  object-position: top;
   display: block;
+  flex-shrink: 0;
 }
 .examples .example .caption {
   padding: 1rem 1.2rem;
+  flex: 1;
 }
 .examples .example .caption h3 {
   font-size: 1rem;

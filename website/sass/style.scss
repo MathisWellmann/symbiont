@@ -319,6 +319,9 @@ section {
   }
 
   .example {
+    display: flex;
+    flex-direction: column;
+    height: 380px;
     background: $bg-card;
     border: 1px solid $border;
     border-radius: 8px;
@@ -333,10 +336,12 @@ section {
       object-fit: cover;
       object-position: top;
       display: block;
+      flex-shrink: 0;
     }
 
     .caption {
       padding: 1rem 1.2rem;
+      flex: 1;
 
       h3 {
         font-size: 1rem;
