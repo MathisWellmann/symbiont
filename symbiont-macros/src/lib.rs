@@ -124,6 +124,19 @@ fn normalize_tokens(mut s: String) -> String {
     s
 }
 
+/// Extract the string value from a `#[doc = "..."]` attribute.
+fn extract_doc_string(attr: &syn::Attribute) -> Option<String> {
+    if let syn::Meta::NameValue(nv) = &attr.meta
+        && let syn::Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Str(s),
+            ..
+        }) = &nv.value
+    {
+        return Some(s.value());
+    }
+    None
+}
+
 /// Build the `full_source` string for the dylib from a function declaration.
 ///
 /// Forces `pub` visibility and prepends `#[unsafe(no_mangle)]`.
@@ -143,21 +156,25 @@ fn build_full_source(func: &EvolvableFn) -> String {
     let output = &sig.output;
     let ident = &sig.ident;
 
-    // Preserve doc comments (`///` and `#[doc = "..."]`) on the generated function so
-    // they are available in the dylib's source for tooling and documentation purposes.
-    let doc_attrs = Vec::<&syn::Attribute>::from_iter(
-        func.attrs()
-            .iter()
-            .filter(|attr| attr.path().is_ident("doc")),
-    );
+    // Preserve doc comments on the generated function so they are available in the
+    // dylib's source for tooling and documentation purposes. Render them as `///`
+    // line comments rather than `#[doc = "..."]` attributes for readability.
+    let doc_lines: String = func
+        .attrs()
+        .iter()
+        .filter(|attr| attr.path().is_ident("doc"))
+        .filter_map(extract_doc_string)
+        .map(|line| format!("///{line}\n"))
+        .collect();
 
-    let fn_source = quote! {
-        #(#doc_attrs)*
+    let fn_body = quote! {
         #[unsafe(no_mangle)]
         pub fn #ident(#inputs) #output #body_tokens
     };
 
-    fn_source.to_string()
+    format!("{doc_lines}{fn_body}\n")
+        .trim_start()
+        .to_string()
 }
 
 /// Declare hot-reloadable functions that are compiled into a temporary dylib and loaded at runtime.
