@@ -159,22 +159,23 @@ fn build_full_source(func: &EvolvableFn) -> String {
     // Preserve doc comments on the generated function so they are available in the
     // dylib's source for tooling and documentation purposes. Render them as `///`
     // line comments rather than `#[doc = "..."]` attributes for readability.
+    use std::fmt::Write as _;
     let doc_lines: String = func
         .attrs()
         .iter()
         .filter(|attr| attr.path().is_ident("doc"))
         .filter_map(extract_doc_string)
-        .map(|line| format!("///{line}\n"))
-        .collect();
+        .fold(String::new(), |mut acc, line| {
+            let _ = writeln!(acc, "///{line}");
+            acc
+        });
 
     let fn_body = quote! {
         #[unsafe(no_mangle)]
         pub fn #ident(#inputs) #output #body_tokens
     };
 
-    format!("{doc_lines}{fn_body}\n")
-        .trim_start()
-        .to_string()
+    format!("{doc_lines}{fn_body}\n").trim_start().to_string()
 }
 
 /// Declare hot-reloadable functions that are compiled into a temporary dylib and loaded at runtime.
