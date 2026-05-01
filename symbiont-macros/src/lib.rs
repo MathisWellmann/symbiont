@@ -47,6 +47,13 @@ impl EvolvableFn {
             EvolvableFn::WithoutBody(f) => &f.vis,
         }
     }
+
+    fn attrs(&self) -> &[syn::Attribute] {
+        match self {
+            EvolvableFn::WithBody(f) => &f.attrs,
+            EvolvableFn::WithoutBody(f) => &f.attrs,
+        }
+    }
 }
 
 /// The contents of an `evolvable! { ... }` block: zero or more function declarations.
@@ -117,10 +124,10 @@ fn normalize_tokens(mut s: String) -> String {
     s
 }
 
-/// Build the `default_source` string for the dylib from a function declaration.
+/// Build the `full_source` string for the dylib from a function declaration.
 ///
 /// Forces `pub` visibility and prepends `#[unsafe(no_mangle)]`.
-fn build_default_source(func: &EvolvableFn) -> String {
+fn build_full_source(func: &EvolvableFn) -> String {
     let sig = func.sig();
 
     // Keep the body as a TokenStream so `quote!` splices it as code, not as a string literal.
@@ -136,7 +143,16 @@ fn build_default_source(func: &EvolvableFn) -> String {
     let output = &sig.output;
     let ident = &sig.ident;
 
+    // Preserve doc comments (`///` and `#[doc = "..."]`) on the generated function so
+    // they are available in the dylib's source for tooling and documentation purposes.
+    let doc_attrs = Vec::<&syn::Attribute>::from_iter(
+        func.attrs()
+            .iter()
+            .filter(|attr| attr.path().is_ident("doc")),
+    );
+
     let fn_source = quote! {
+        #(#doc_attrs)*
         #[unsafe(no_mangle)]
         pub fn #ident(#inputs) #output #body_tokens
     };
@@ -183,7 +199,7 @@ pub fn evolvable(input: TokenStream) -> TokenStream {
         let ident = &sig.ident;
         let fn_name_str = ident.to_string();
         let signature_str = format_signature(sig);
-        let default_source = build_default_source(func);
+        let full_source = build_full_source(func);
 
         // Generate a unique static name for the cached function pointer
         let static_name = syn::Ident::new(
@@ -221,7 +237,7 @@ pub fn evolvable(input: TokenStream) -> TokenStream {
             ::symbiont::EvolvableDecl {
                 name: #fn_name_str,
                 signature: #signature_str,
-                default_source: #default_source,
+                full_source: #full_source,
                 fn_ptr: &#static_name,
             }
         });

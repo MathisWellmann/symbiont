@@ -232,6 +232,11 @@ impl Runtime {
         &self.fn_sigs
     }
 
+    /// Get the full function signatures, including doc comments and default function body.
+    pub fn fn_full_sources(&self) -> Vec<&'static str> {
+        Vec::from_iter(self.decls.iter().map(|d| d.full_source))
+    }
+
     /// Generate LLM response, then parse, validate, compile, and hot-swap.
     /// It does not catch validation errors and feed it back to the LLM, allowing the user to customize prompting behaviour.
     ///
@@ -419,7 +424,7 @@ panic = "unwind"
 fn generate_lib_rs(decls: &[EvolvableDecl]) -> String {
     let mut src = String::with_capacity(1_000);
     for d in decls {
-        src.push_str(d.default_source);
+        src.push_str(d.full_source);
         src.push_str("\n\n");
     }
     src
