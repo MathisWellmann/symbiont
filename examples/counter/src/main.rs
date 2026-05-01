@@ -27,6 +27,7 @@ symbiont::evolvable! {
 async fn main() -> symbiont::Result<()> {
     symbiont::init_tracing();
 
+    info!("SYMBIONT_DECLS: {SYMBIONT_DECLS:#?}");
     let runtime = Runtime::init(SYMBIONT_DECLS, symbiont::Profile::Debug).await?;
     let fn_sigs = runtime.fn_sigs(); // Alternatively, `fn_full_sources` can be used to also show doc string and default function body.
     info!("fn_sigs: {fn_sigs:?}");
