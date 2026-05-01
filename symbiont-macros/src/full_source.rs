@@ -35,12 +35,18 @@ pub(crate) fn build_full_source(func: &EvolvableFn) -> String {
             acc
         });
 
-    let fn_body = quote! {
+    let fn_tokens = quote! {
         #[unsafe(no_mangle)]
         pub fn #ident(#inputs) #output #body_tokens
     };
 
-    format!("{doc_lines}{fn_body}\n").trim_start().to_string()
+    // `quote!` above always produces a valid `fn` item, so parsing as a
+    // `syn::File` is infallible. Run it through `prettyplease` so the emitted
+    // source reads like hand-written Rust rather than a single token-spaced line.
+    let file = syn::parse2::<syn::File>(fn_tokens).expect("generated fn is valid Rust");
+    let formatted = prettyplease::unparse(&file);
+
+    format!("{doc_lines}{formatted}")
 }
 
 /// Extract the string value from a `#[doc = "..."]` attribute.
@@ -58,8 +64,27 @@ fn extract_doc_string(attr: &syn::Attribute) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::EvolvableBlock;
+
     #[test]
     fn test_build_full_source() {
-        todo!()
+        let func = quote!(
+            /// Should increment the counter by a value in the range 5..20
+            fn step(counter: &mut usize) {
+                *counter += 1;
+                println!("doing stuff in iteration {}", counter);
+            }
+        );
+        let block: EvolvableBlock = syn::parse2(func).expect("parse evolvable block");
+        assert_eq!(
+            build_full_source(&block.functions[0]),
+            "/// Should increment the counter by a value in the range 5..20\n\
+             #[unsafe(no_mangle)]\n\
+             pub fn step(counter: &mut usize) {\n    \
+                 *counter += 1;\n    \
+                 println!(\"doing stuff in iteration {}\", counter);\n\
+             }\n",
+        );
     }
 }
