@@ -12,8 +12,11 @@ use tracing::info;
 
 // The starting function definition, used during constrained generation,
 // where the LLM model will implement the function body.
-// The body can be empty too. The Agent will only see the function signature.
+// The body can be empty too.
+// If prompting with `fn_sigs`, then the Agent will only see the function signature. This is used here.
+// If prompting with `fn_full_sources`, then the Agent will see the entire function, including docs and default body. (Not shown here.)
 symbiont::evolvable! {
+    /// Should increment the counter by a value in the range 5..20
     fn step(counter: &mut usize) {
         *counter += 1;
         println!("doing stuff in iteration {}", counter);
@@ -25,7 +28,7 @@ async fn main() -> symbiont::Result<()> {
     symbiont::init_tracing();
 
     let runtime = Runtime::init(SYMBIONT_DECLS, symbiont::Profile::Debug).await?;
-    let fn_sigs = runtime.fn_sigs();
+    let fn_sigs = runtime.fn_sigs(); // Alternatively, `fn_full_sources` can be used to also show doc string and default function body.
     info!("fn_sigs: {fn_sigs:?}");
 
     let agent = symbiont::inference::init_agent()?;

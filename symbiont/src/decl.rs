@@ -5,13 +5,14 @@ use std::sync::atomic::AtomicPtr;
 ///
 /// Contains the metadata needed to create the temporary dylib crate and validate
 /// LLM-generated code against the expected function signatures.
+#[derive(Debug)]
 pub struct EvolvableDecl {
     /// Function name (e.g., `"step"`).
     pub name: &'static str,
     /// Formatted signature string (e.g., `"fn step(counter: &mut usize)"`).
     pub signature: &'static str,
     /// Full source code for the dylib, including `#[unsafe(no_mangle)]` and `pub`.
-    pub default_source: &'static str,
+    pub full_source: &'static str,
     /// Pointer to the per-function `AtomicPtr<()>` that caches the loaded symbol.
     /// Updated by the runtime on init and each reload.
     pub fn_ptr: &'static AtomicPtr<()>,
