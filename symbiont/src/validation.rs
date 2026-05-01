@@ -126,25 +126,25 @@ mod tests {
 
     #[test]
     fn test_validate_valid_code() {
-        let input = r#"```rust
+        let input = "```rust
 #[unsafe(no_mangle)]
 pub fn step(counter: &mut usize) {
     *counter += 1;
 }
-```"#;
-        let mut file = parse_rust_code(input).unwrap();
+```";
+        let mut file = parse_rust_code(input).expect("can parse");
         let expected = vec!["fn step(counter: &mut usize)".to_string()];
         validate_generated_ast(&mut file, &expected).expect("validation passed");
     }
 
     #[test]
     fn test_validate_missing_no_mangle_gets_added() {
-        let input = r#"```rust
+        let input = "```rust
 pub fn step(counter: &mut usize) {
     *counter += 1;
 }
-```"#;
-        let mut file = parse_rust_code(input).unwrap();
+```";
+        let mut file = parse_rust_code(input).expect("can parse");
         let expected = vec!["fn step(counter: &mut usize)".to_string()];
         validate_generated_ast(&mut file, &expected)
             .expect("should succeed by adding #[unsafe(no_mangle)]");
@@ -162,12 +162,12 @@ pub fn step(counter: &mut usize) {
 
     #[test]
     fn test_validate_non_public_gets_pub_added() {
-        let input = r#"```rust
+        let input = "```rust
 fn step(counter: &mut usize) {
     *counter += 1;
 }
-```"#;
-        let mut file = parse_rust_code(input).unwrap();
+```";
+        let mut file = parse_rust_code(input).expect("can parse");
         let expected = vec!["fn step(counter: &mut usize)".to_string()];
         validate_generated_ast(&mut file, &expected)
             .expect("should succeed by adding `pub` and #[unsafe(no_mangle)]");
@@ -188,15 +188,15 @@ fn step(counter: &mut usize) {
 
     #[test]
     fn test_validate_signature_mismatch() {
-        let input = r#"```rust
+        let input = "```rust
 #[unsafe(no_mangle)]
 pub fn add(a: i32, b: i32) -> i32 {
     a + b
 }
-```"#;
-        let mut file = parse_rust_code(input).unwrap();
+```";
+        let mut file = parse_rust_code(input).expect("can parse");
         let expected = vec!["fn step(counter: &mut usize)".to_string()];
-        let err = validate_generated_ast(&mut file, &expected).unwrap_err();
+        let err = validate_generated_ast(&mut file, &expected).expect_err("should error");
         dbg!(&err);
         match err {
             Error::SignatureMismatch { code, expected } => {
@@ -212,26 +212,26 @@ pub fn add(a: i32, b: i32) -> i32 {
 
     #[test]
     fn test_validate_unsafe_no_mangle() {
-        let input = r#"```rust
+        let input = "```rust
 #[unsafe(no_mangle)]
 pub fn step(counter: &mut usize) {
     *counter += 1;
 }
-```"#;
-        let mut file = parse_rust_code(input).unwrap();
+```";
+        let mut file = parse_rust_code(input).expect("can parse");
         let expected = vec!["fn step(counter: &mut usize)".to_string()];
         validate_generated_ast(&mut file, &expected).expect("#[unsafe(no_mangle)] should be valid");
     }
 
     #[test]
     fn test_validate_with_return_type() {
-        let input = r#"```rust
+        let input = "```rust
 #[unsafe(no_mangle)]
 pub fn step(counter: &mut usize) -> usize {
     *counter
 }
-```"#;
-        let mut file = parse_rust_code(input).unwrap();
+```";
+        let mut file = parse_rust_code(input).expect("can parse");
         let expected = vec!["fn step(counter: &mut usize) -> usize".to_string()];
         validate_generated_ast(&mut file, &expected).expect("validation with return type passed");
     }

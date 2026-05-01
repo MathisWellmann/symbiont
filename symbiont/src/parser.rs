@@ -85,11 +85,11 @@ mod tests {
 
     #[test]
     fn test_extract_rust_code_simple_fence() {
-        let input = r#"```rust
+        let input = "```rust
 fn step(counter: &mut usize) {
     *counter += 1;
 }
-```"#;
+```";
         let code = extract_rust_code(input).expect("Can parse");
         assert_eq!(
             code.trim(),
@@ -99,14 +99,14 @@ fn step(counter: &mut usize) {
 
     #[test]
     fn test_extract_rust_code_with_text_around() {
-        let input = r#"Here is the implementation:
+        let input = "Here is the implementation:
 ```rust
 pub fn add(a: i32, b: i32) -> i32 {
     a + b
 }
 ```
-Hope that helps!"#;
-        let code = extract_rust_code(input).unwrap();
+Hope that helps!";
+        let code = extract_rust_code(input).expect("can extract");
         assert_eq!(
             code.trim(),
             "pub fn add(a: i32, b: i32) -> i32 {\n    a + b\n}"
@@ -121,22 +121,22 @@ Hope that helps!"#;
 
     #[test]
     fn test_extract_rust_code_generic_fence() {
-        let input = r#"```
+        let input = "```
 fn no_lang_marker(x: i32) -> i32 { x }
-```"#;
-        let code = extract_rust_code(input).unwrap();
+```";
+        let code = extract_rust_code(input).expect("can extract");
         assert_eq!(code.trim(), "fn no_lang_marker(x: i32) -> i32 { x }");
     }
 
     #[test]
     fn test_parse_rust_code_from_block() {
-        let input = r#"```rust
+        let input = "```rust
 #[unsafe(no_mangle)]
 pub fn step(state: &mut usize) {
     *state += 1;
 }
-```"#;
-        let file = parse_rust_code(input).unwrap();
+```";
+        let file = parse_rust_code(input).expect("can parse");
         assert_eq!(file.items.len(), 1);
     }
 }
