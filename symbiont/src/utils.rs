@@ -1,5 +1,17 @@
+use std::path::{
+    Path,
+    PathBuf,
+};
+
 // SPDX-License-Identifier: MPL-2.0
 use syn::ItemFn;
+
+use crate::{
+    Error,
+    EvolvableDecl,
+    Profile,
+    Result,
+};
 
 /// If `true`, the function has visibiliity `pub`
 #[inline(always)]
@@ -17,6 +29,72 @@ pub(crate) fn is_no_mangle(item_fn: &ItemFn) -> bool {
     })
 }
 
+pub(crate) fn generate_cargo_toml() -> String {
+    r#"[package]
+name = "symbiont-evolvable"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["dylib"]
+
+# Ensure panics unwind rather than abort so that `symbiont::catch_panic`
+# can intercept them across the dylib boundary.
+[profile.dev]
+panic = "unwind"
+
+[profile.release]
+panic = "unwind"
+
+[dependencies]
+"#
+    .to_string()
+}
+
+pub(crate) fn generate_lib_rs(decls: &[EvolvableDecl]) -> String {
+    let mut src = String::with_capacity(1_000);
+    for d in decls {
+        src.push_str(d.full_source);
+        src.push_str("\n\n");
+    }
+    src
+}
+
+pub(crate) fn dylib_extension() -> &'static str {
+    if cfg!(target_os = "macos") {
+        ".dylib"
+    } else if cfg!(target_os = "windows") {
+        ".dll"
+    } else {
+        ".so"
+    }
+}
+
+/// Find the compiled shared library in the temp crate's target directory.
+pub(crate) fn find_so(crate_dir: &Path, profile: Profile) -> Result<PathBuf> {
+    let subdir = match profile {
+        Profile::Debug => "debug",
+        Profile::Release => "release",
+    };
+    let target_dir = crate_dir.join("target").join(subdir);
+
+    let prefix = if cfg!(target_os = "windows") {
+        ""
+    } else {
+        "lib"
+    };
+    let name = format!("{prefix}symbiont_evolvable{ext}", ext = dylib_extension());
+    let so_path = target_dir.join(&name);
+
+    if so_path.exists() {
+        Ok(so_path)
+    } else {
+        Err(Error::DylibLoad(format!(
+            "Compiled dylib not found at {}",
+            so_path.display()
+        )))
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
