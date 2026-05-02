@@ -55,6 +55,12 @@ use crate::{
         Result,
     },
     parser::parse_rust_code,
+    utils::{
+        dylib_extension,
+        find_so,
+        generate_cargo_toml,
+        generate_lib_rs,
+    },
     validation::validate_generated_ast,
 };
 
@@ -396,72 +402,5 @@ impl Runtime {
     /// displaying to the user.
     pub fn read_clean_code(&self) -> std::io::Result<String> {
         std::fs::read_to_string(self.crate_dir.join("src").join("clean.rs"))
-    }
-}
-
-fn generate_cargo_toml() -> String {
-    r#"[package]
-name = "symbiont-evolvable"
-version = "0.1.0"
-edition = "2024"
-
-[lib]
-crate-type = ["dylib"]
-
-# Ensure panics unwind rather than abort so that `symbiont::catch_panic`
-# can intercept them across the dylib boundary.
-[profile.dev]
-panic = "unwind"
-
-[profile.release]
-panic = "unwind"
-
-[dependencies]
-"#
-    .to_string()
-}
-
-fn generate_lib_rs(decls: &[EvolvableDecl]) -> String {
-    let mut src = String::with_capacity(1_000);
-    for d in decls {
-        src.push_str(d.full_source);
-        src.push_str("\n\n");
-    }
-    src
-}
-
-fn dylib_extension() -> &'static str {
-    if cfg!(target_os = "macos") {
-        ".dylib"
-    } else if cfg!(target_os = "windows") {
-        ".dll"
-    } else {
-        ".so"
-    }
-}
-
-/// Find the compiled shared library in the temp crate's target directory.
-fn find_so(crate_dir: &Path, profile: Profile) -> Result<PathBuf> {
-    let subdir = match profile {
-        Profile::Debug => "debug",
-        Profile::Release => "release",
-    };
-    let target_dir = crate_dir.join("target").join(subdir);
-
-    let prefix = if cfg!(target_os = "windows") {
-        ""
-    } else {
-        "lib"
-    };
-    let name = format!("{prefix}symbiont_evolvable{ext}", ext = dylib_extension());
-    let so_path = target_dir.join(&name);
-
-    if so_path.exists() {
-        Ok(so_path)
-    } else {
-        Err(Error::DylibLoad(format!(
-            "Compiled dylib not found at {}",
-            so_path.display()
-        )))
     }
 }
