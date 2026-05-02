@@ -19,7 +19,10 @@ mod validation;
 // Re-export the proc macro.
 // Re-export key types.
 pub use compiler::Profile;
-pub use decl::EvolvableDecl;
+pub use decl::{
+    EvolvableDecl,
+    FullSource,
+};
 pub use error::{
     Error,
     Result,

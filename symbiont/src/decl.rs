@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 use std::{
     fmt,
+    ops::Deref,
     sync::atomic::AtomicPtr,
 };
 
@@ -25,23 +26,36 @@ impl fmt::Debug for EvolvableDecl {
         f.debug_struct("EvolvableDecl")
             .field("name", &self.name)
             .field("signature", &self.signature)
-            .field("full_source", &MultilineSource(self.full_source))
+            .field("full_source", &FullSource(self.full_source))
             .field("fn_ptr", &self.fn_ptr)
             .finish()
     }
 }
 
-/// Wrapper that renders a multi-line source string with real line breaks under
-/// pretty-print (`{:#?}`), instead of the default escaped single-line form.
-struct MultilineSource<'a>(&'a str);
+/// Wrapper around a multi-line Rust source string that renders with real line
+/// breaks under pretty-print (`{:#?}`), instead of the default escaped
+/// single-line form.
+///
+/// Behaves like a `&str` for all practical purposes: dereferences to `str`,
+/// implements `AsRef<str>` and `Display` (which writes the source verbatim).
+#[derive(Clone, Copy)]
+pub struct FullSource<'a>(pub &'a str);
 
-impl fmt::Debug for MultilineSource<'_> {
+impl FullSource<'_> {
+    /// Borrow the underlying source string.
+    #[inline]
+    pub fn as_str(&self) -> &str {
+        self.0
+    }
+}
+
+impl fmt::Debug for FullSource<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if f.alternate() {
             // Render each source line indented one level deeper than the
-            // surrounding `EvolvableDecl { ... }` fields. Avoid emitting a
-            // trailing newline so the closing `,` from `debug_struct` sits
-            // directly after the last source line.
+            // surrounding context. Avoid emitting a trailing newline so any
+            // following punctuation (e.g. the `,` from `debug_struct` /
+            // `debug_list`) sits directly after the last source line.
             let trimmed = self.0.trim_end_matches('\n');
             for line in trimmed.lines() {
                 f.write_str("\n    ")?;
@@ -51,6 +65,35 @@ impl fmt::Debug for MultilineSource<'_> {
         } else {
             fmt::Debug::fmt(self.0, f)
         }
+    }
+}
+
+impl fmt::Display for FullSource<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.0)
+    }
+}
+
+impl Deref for FullSource<'_> {
+    type Target = str;
+
+    #[inline]
+    fn deref(&self) -> &str {
+        self.0
+    }
+}
+
+impl AsRef<str> for FullSource<'_> {
+    #[inline]
+    fn as_ref(&self) -> &str {
+        self.0
+    }
+}
+
+impl<'a> From<&'a str> for FullSource<'a> {
+    #[inline]
+    fn from(s: &'a str) -> Self {
+        Self(s)
     }
 }
 
@@ -83,6 +126,21 @@ mod tests {
         assert!(pretty.contains("\n        #[unsafe(no_mangle)]\n"));
         assert!(pretty.contains("\n        pub fn step(counter: &mut usize) {\n"));
         assert!(pretty.contains("\n            *counter += 1;\n"));
+        assert!(!pretty.contains(r"\n"));
+    }
+
+    #[test]
+    fn full_source_vec_pretty_prints_each_entry() {
+        let sources = vec![
+            FullSource("#[unsafe(no_mangle)]\npub fn a() {}\n"),
+            FullSource("#[unsafe(no_mangle)]\npub fn b() {\n    todo!()\n}\n"),
+        ];
+
+        let pretty = format!("{sources:#?}");
+        assert!(pretty.contains("\n        #[unsafe(no_mangle)]\n"));
+        assert!(pretty.contains("\n        pub fn a() {}"));
+        assert!(pretty.contains("\n        pub fn b() {\n"));
+        assert!(pretty.contains("\n            todo!()\n"));
         assert!(!pretty.contains(r"\n"));
     }
 }

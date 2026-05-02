@@ -46,6 +46,7 @@ use tracing::{
 
 use crate::{
     EvolvableDecl,
+    FullSource,
     compiler::{
         Profile,
         compile_dylib,
@@ -239,8 +240,11 @@ impl Runtime {
     }
 
     /// Get the full function signatures, including doc comments and default function body.
-    pub fn fn_full_sources(&self) -> Vec<&'static str> {
-        Vec::from_iter(self.decls.iter().map(|d| d.full_source))
+    ///
+    /// Returns each source wrapped in [`FullSource`], which preserves real line
+    /// breaks when pretty-printed (`{:#?}`) so logs stay readable.
+    pub fn fn_full_sources(&self) -> Vec<FullSource<'static>> {
+        Vec::from_iter(self.decls.iter().map(|d| FullSource(d.full_source)))
     }
 
     /// Generate LLM response, then parse, validate, compile, and hot-swap.
