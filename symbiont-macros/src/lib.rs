@@ -4,6 +4,9 @@
 //! Provides the [`evolvable!`] function-like macro that declares
 //! hot-reloadable functions and generates dispatch wrappers.
 
+mod evolvable;
+mod full_source;
+
 use proc_macro::TokenStream;
 use proc_macro2::Span;
 use quote::{
@@ -12,71 +15,14 @@ use quote::{
 };
 use syn::{
     FnArg,
-    ForeignItemFn,
-    ItemFn,
     ReturnType,
     Signature,
-    Visibility,
-    parse::{
-        Parse,
-        ParseStream,
-    },
 };
 
-/// A single function declaration inside `evolvable! { ... }`.
-///
-/// Supports two forms:
-/// - With body: `fn step(counter: &mut usize) { *counter += 1; }`
-/// - Without body: `fn step(counter: &mut usize);`
-enum EvolvableFn {
-    WithBody(ItemFn),
-    WithoutBody(ForeignItemFn),
-}
-
-impl EvolvableFn {
-    fn sig(&self) -> &Signature {
-        match self {
-            EvolvableFn::WithBody(f) => &f.sig,
-            EvolvableFn::WithoutBody(f) => &f.sig,
-        }
-    }
-
-    fn vis(&self) -> &Visibility {
-        match self {
-            EvolvableFn::WithBody(f) => &f.vis,
-            EvolvableFn::WithoutBody(f) => &f.vis,
-        }
-    }
-
-    fn attrs(&self) -> &[syn::Attribute] {
-        match self {
-            EvolvableFn::WithBody(f) => &f.attrs,
-            EvolvableFn::WithoutBody(f) => &f.attrs,
-        }
-    }
-}
-
-/// The contents of an `evolvable! { ... }` block: zero or more function declarations.
-struct EvolvableBlock {
-    functions: Vec<EvolvableFn>,
-}
-
-impl Parse for EvolvableBlock {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        let mut functions = Vec::new();
-        while !input.is_empty() {
-            // Try parsing as a full function (with body) first
-            let fork = input.fork();
-            if fork.parse::<ItemFn>().is_ok() {
-                functions.push(EvolvableFn::WithBody(input.parse::<ItemFn>()?));
-            } else {
-                // Fall back to bodyless (foreign-style) declaration
-                functions.push(EvolvableFn::WithoutBody(input.parse::<ForeignItemFn>()?));
-            }
-        }
-        Ok(EvolvableBlock { functions })
-    }
-}
+use crate::{
+    evolvable::EvolvableBlock,
+    full_source::build_full_source,
+};
 
 /// Format a `syn::Signature` into a human-readable string like `"fn step(counter: &mut usize)"`.
 ///
@@ -122,60 +68,6 @@ fn normalize_tokens(mut s: String) -> String {
     s = s.replace("* const ", "*const ");
     s = s.replace("mut & ", "mut &");
     s
-}
-
-/// Extract the string value from a `#[doc = "..."]` attribute.
-fn extract_doc_string(attr: &syn::Attribute) -> Option<String> {
-    if let syn::Meta::NameValue(nv) = &attr.meta
-        && let syn::Expr::Lit(syn::ExprLit {
-            lit: syn::Lit::Str(s),
-            ..
-        }) = &nv.value
-    {
-        return Some(s.value());
-    }
-    None
-}
-
-/// Build the `full_source` string for the dylib from a function declaration.
-///
-/// Forces `pub` visibility and prepends `#[unsafe(no_mangle)]`.
-fn build_full_source(func: &EvolvableFn) -> String {
-    let sig = func.sig();
-
-    // Keep the body as a TokenStream so `quote!` splices it as code, not as a string literal.
-    let body_tokens: proc_macro2::TokenStream = match func {
-        EvolvableFn::WithBody(f) => {
-            let block = &f.block;
-            quote!(#block)
-        }
-        EvolvableFn::WithoutBody(_) => quote!({ todo!() }),
-    };
-
-    let inputs = &sig.inputs;
-    let output = &sig.output;
-    let ident = &sig.ident;
-
-    // Preserve doc comments on the generated function so they are available in the
-    // dylib's source for tooling and documentation purposes. Render them as `///`
-    // line comments rather than `#[doc = "..."]` attributes for readability.
-    use std::fmt::Write as _;
-    let doc_lines: String = func
-        .attrs()
-        .iter()
-        .filter(|attr| attr.path().is_ident("doc"))
-        .filter_map(extract_doc_string)
-        .fold(String::new(), |mut acc, line| {
-            let _ = writeln!(acc, "///{line}");
-            acc
-        });
-
-    let fn_body = quote! {
-        #[unsafe(no_mangle)]
-        pub fn #ident(#inputs) #output #body_tokens
-    };
-
-    format!("{doc_lines}{fn_body}\n").trim_start().to_string()
 }
 
 /// Declare hot-reloadable functions that are compiled into a temporary dylib and loaded at runtime.
