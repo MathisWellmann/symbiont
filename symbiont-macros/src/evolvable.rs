@@ -43,6 +43,7 @@ impl EvolvableFn {
 }
 
 /// The contents of an `evolvable! { ... }` block: zero or more function declarations.
+#[expect(clippy::field_scoped_visibility_modifiers, reason = "Good here")]
 pub(crate) struct EvolvableBlock {
     pub(crate) functions: Vec<EvolvableFn>,
 }
