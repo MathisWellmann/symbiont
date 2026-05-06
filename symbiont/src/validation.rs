@@ -224,6 +224,7 @@ pub fn step(counter: &mut usize) {
     }
 
     #[test]
+    #[tracing_test::traced_test]
     fn test_validate_with_return_type() {
         let input = "```rust
 #[unsafe(no_mangle)]
