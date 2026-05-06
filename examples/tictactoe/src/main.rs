@@ -385,7 +385,7 @@ async fn main() -> symbiont::Result<()> {
         // Update best code if this round improved.
         if score > best_score {
             best_score = score;
-            best_code = runtime.read_clean_code().ok();
+            best_code = Some(runtime.current_code());
             info!("New best score: {:.0}%", best_score * 100.0);
         }
 

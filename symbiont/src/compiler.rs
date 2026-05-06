@@ -4,10 +4,7 @@ use std::path::Path;
 use minstant::Instant;
 use prettyplease::unparse;
 use tokio::process::Command;
-use tracing::{
-    debug,
-    info,
-};
+use tracing::info;
 
 use crate::{
     error::{
@@ -36,9 +33,10 @@ pub enum Profile {
 
 impl std::fmt::Display for Profile {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use Profile::*;
         match self {
-            Profile::Debug => f.write_str("debug"),
-            Profile::Release => f.write_str("release"),
+            Debug => f.write_str("debug"),
+            Release => f.write_str("release"),
         }
     }
 }
@@ -52,14 +50,9 @@ pub(crate) async fn compile_dylib(
     crate_dir: &Path,
     profile: Profile,
     clean_ast: &mut syn::File,
+    clean_ast_str: &str,
 ) -> Result<()> {
     let t0 = Instant::now();
-
-    let clean_code = unparse(clean_ast);
-    debug!("clean_code: {clean_code}");
-    let clean_path = crate_dir.join("src").join("clean.rs");
-    std::fs::write(&clean_path, &clean_code)
-        .map_err(|e| Error::WriteLib(format!("Failed to write clean.rs: {e}")))?;
 
     // Wrap function bodies in catch_unwind so panics stay inside the dylib.
     wrap_bodies_in_catch_unwind(clean_ast);
@@ -85,7 +78,7 @@ pub(crate) async fn compile_dylib(
         .output()
         .await
         .map_err(|e| Error::CompilationFailed {
-            code: clean_code.clone(),
+            code: clean_ast_str.to_string(),
             err: format!("Failed to spawn cargo: {e}"),
         })?;
 
@@ -98,7 +91,7 @@ pub(crate) async fn compile_dylib(
     } else {
         let err = String::from_utf8_lossy(&output.stderr).to_string();
         Err(Error::CompilationFailed {
-            code: clean_code.clone(),
+            code: clean_ast_str.to_string(),
             err,
         })
     }

@@ -486,9 +486,7 @@ async fn main() -> symbiont::Result<()> {
             .await
             .expect("evolution should succeed");
 
-        prev_code = runtime
-            .read_clean_code()
-            .expect("failed to read generated code");
+        prev_code = runtime.current_code();
 
         result = evaluate(runtime, &dist_data, distr);
         println!("{result}");

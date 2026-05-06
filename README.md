@@ -226,4 +226,4 @@ Also **checkout** the [TODOs](TODO.md) file for what might come next for `symbio
 
 Copyright (C) 2026 MathisWellmann
 
-This project is licensed under the **Mozilla Public License 2.0** — see [LICENSE](LICENSE) for details.
+This project is licensed under the **Mozilla Public License 2.0** — see [LICENSE](LICENSE) for details

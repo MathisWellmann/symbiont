@@ -32,6 +32,7 @@ use libloading::{
 };
 use minstant::Instant;
 use owo_colors::OwoColorize;
+use prettyplease::unparse;
 use rig::{
     agent::Agent,
     completion::{
@@ -40,6 +41,7 @@ use rig::{
     },
 };
 use tracing::{
+    debug,
     info,
     warn,
 };
@@ -133,6 +135,8 @@ pub struct Runtime {
     decls: &'static [EvolvableDecl],
     /// Compilation profile (`debug` or `release`).
     profile: Profile,
+    /// The currently active AST of the agent code, in String form, to make it `Send`
+    current_clean_ast: Mutex<String>,
 }
 
 /// Look up all declared symbols in `lib` and store their addresses
@@ -205,7 +209,7 @@ impl Runtime {
         let mut ast = syn::parse_str(&lib_rs)?;
 
         // Compile
-        compile_dylib(&crate_dir, profile, &mut ast).await?;
+        compile_dylib(&crate_dir, profile, &mut ast, &lib_rs).await?;
 
         // Find and load the .so
         let so_path = find_so(&crate_dir, profile)?;
@@ -226,25 +230,13 @@ impl Runtime {
             library: Mutex::new(Some(lib)),
             decls,
             profile,
+            current_clean_ast: Mutex::new(lib_rs),
         };
 
         RUNTIME
             .set(runtime)
             .map_err(|_| Error::AlreadyInitialized)?;
         Ok(RUNTIME.get().expect("just set"))
-    }
-
-    /// Get the function signature strings for all evolvable functions.
-    pub fn fn_sigs(&self) -> &[String] {
-        &self.fn_sigs
-    }
-
-    /// Get the full function signatures, including doc comments and default function body.
-    ///
-    /// Returns each source wrapped in [`FullSource`], which preserves real line
-    /// breaks when pretty-printed (`{:#?}`) so logs stay readable.
-    pub fn fn_full_sources(&self) -> Vec<FullSource<'static>> {
-        Vec::from_iter(self.decls.iter().map(|d| FullSource(d.full_source)))
     }
 
     /// Generate LLM response, then parse, validate, compile, and hot-swap.
@@ -287,7 +279,15 @@ impl Runtime {
 
         // Recompile
         let t0 = Instant::now();
-        compile_dylib(&self.crate_dir, self.profile, &mut ast).await?;
+        let clean_ast_str = unparse(&ast);
+        debug!("clean_ast_str: {clean_ast_str}");
+        compile_dylib(&self.crate_dir, self.profile, &mut ast, &clean_ast_str).await?;
+        {
+            *self
+                .current_clean_ast
+                .lock()
+                .expect("Can lock the clean ast mutex") = clean_ast_str;
+        }
         let compile_time = t0.elapsed().as_millis();
 
         // Copy .so to versioned path to defeat dlopen caching
@@ -373,11 +373,6 @@ impl Runtime {
         Ok(())
     }
 
-    /// Path to the temporary crate directory.
-    pub fn crate_dir(&self) -> &Path {
-        &self.crate_dir
-    }
-
     /// Retrieve and clear the last panic message from the loaded dylib.
     ///
     /// Returns `Some(message)` if the most recent evolvable function call
@@ -401,10 +396,30 @@ impl Runtime {
         }
     }
 
-    /// Read the clean LLM-generated code (without panic-catching wrappers
-    /// or preamble). Suitable for feeding back into the LLM prompt or
-    /// displaying to the user.
-    pub fn read_clean_code(&self) -> std::io::Result<String> {
-        std::fs::read_to_string(self.crate_dir.join("src").join("clean.rs"))
+    /// Path to the temporary crate directory.
+    pub fn crate_dir(&self) -> &Path {
+        &self.crate_dir
+    }
+
+    /// Get the function signature strings for all evolvable functions.
+    pub fn fn_sigs(&self) -> &[String] {
+        &self.fn_sigs
+    }
+
+    /// Get the full function signatures, including doc comments and default function body.
+    ///
+    /// Returns each source wrapped in [`FullSource`], which preserves real line
+    /// breaks when pretty-printed (`{:#?}`) so logs stay readable.
+    pub fn fn_full_sources(&self) -> Vec<FullSource<'static>> {
+        Vec::from_iter(self.decls.iter().map(|d| FullSource(d.full_source)))
+    }
+
+    /// Get the current, ,clean LLM-generated code (without panic-catching wrappers or preamble).
+    /// Suitable for feeding back into the LLM prompt or displaying to the user.
+    pub fn current_code(&self) -> String {
+        self.current_clean_ast
+            .lock()
+            .expect("Can lock the mutex to get clean AST")
+            .clone()
     }
 }
