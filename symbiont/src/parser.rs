@@ -129,6 +129,27 @@ fn no_lang_marker(x: i32) -> i32 { x }
     }
 
     #[test]
+    fn test_extract_rust_code_with_prefix_and_extra_whitespace() {
+        // Prefix text ensures `start > 0` and extra whitespace after the fence
+        // ensures the whitespace count is `> 1`, so that `code_start + count`
+        // differs from `code_start * count` in a way `trim()` cannot recover.
+        let prefix = "Here is the code you requested:\n";
+        let input = format!("{prefix}```rust\n\n  fn foo() -> i32 {{ 42 }}\n```");
+        let code = extract_rust_code(&input).expect("can extract");
+        assert_eq!(code, "fn foo() -> i32 { 42 }");
+    }
+
+    #[test]
+    fn test_extract_rust_code_generic_fence_with_prefix() {
+        // Prefix ensures `start > 0` for the generic-fence branch so that
+        // mutations of `+ start` to `- start` or `* start` produce a wrong
+        // (or panicking) result.
+        let input = "Some explanation here:\n```\nfn no_lang(x: i32) -> i32 { x }\n```";
+        let code = extract_rust_code(input).expect("can extract");
+        assert_eq!(code, "fn no_lang(x: i32) -> i32 { x }");
+    }
+
+    #[test]
     fn test_parse_rust_code_from_block() {
         let input = "```rust
 #[unsafe(no_mangle)]
