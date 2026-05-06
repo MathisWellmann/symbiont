@@ -33,13 +33,7 @@ use libloading::{
 use minstant::Instant;
 use owo_colors::OwoColorize;
 use prettyplease::unparse;
-use rig::{
-    agent::Agent,
-    completion::{
-        CompletionModel,
-        Prompt,
-    },
-};
+use rig::completion::Prompt;
 use tracing::{
     debug,
     info,
@@ -247,13 +241,9 @@ impl Runtime {
     /// All evolvable function calls must have returned before this is called.
     /// In debug builds this is enforced with an assertion; in release it is
     /// the caller's responsibility.
-    async fn evolve_no_backpressure<CompletionModelT>(
-        &self,
-        agent: &Agent<CompletionModelT>,
-        prompt: &str,
-    ) -> Result<()>
+    async fn evolve_no_backpressure<AgentT>(&self, agent: &AgentT, prompt: &str) -> Result<()>
     where
-        CompletionModelT: CompletionModel + 'static,
+        AgentT: Prompt,
     {
         #[cfg(debug_assertions)]
         {
@@ -330,13 +320,9 @@ impl Runtime {
     /// All evolvable function calls must have returned before this is called.
     /// This is the natural shape of the feedback loop: run functions, collect
     /// results, evolve, repeat.
-    pub async fn evolve<CompletionModelT>(
-        &self,
-        agent: &Agent<CompletionModelT>,
-        base_prompt: &str,
-    ) -> Result<()>
+    pub async fn evolve<AgentT>(&self, agent: &AgentT, base_prompt: &str) -> Result<()>
     where
-        CompletionModelT: CompletionModel + 'static,
+        AgentT: Prompt,
     {
         let mut prompt = base_prompt.to_string();
 
