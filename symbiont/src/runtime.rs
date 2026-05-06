@@ -24,6 +24,7 @@ use std::{
             Ordering,
         },
     },
+    time::Duration,
 };
 
 use libloading::{
@@ -57,6 +58,7 @@ use crate::{
         find_so,
         generate_cargo_toml,
         generate_lib_rs,
+        is_transient_http_error,
     },
     validation::validate_generated_ast,
 };
@@ -314,6 +316,18 @@ impl Runtime {
         Ok(())
     }
 
+    /// Maximum number of retries for transient HTTP errors (429, 5xx, 529).
+    ///
+    /// These are retried with exponential backoff and do not count against
+    /// [`Self::MAX_EVOLVE_ATTEMPTS`].
+    pub const MAX_TRANSIENT_RETRIES: usize = 6;
+
+    /// Exponential backoff (capped at 30s) for transient retry attempt `n`.
+    fn transient_backoff(n: usize) -> Duration {
+        let secs = 1u64 << n.min(5);
+        Duration::from_secs(secs.min(30))
+    }
+
     /// Prompt the LLM, validate the response, compile, and hot-swap.
     ///
     /// If the constrained generation fails (parse error, signature mismatch,
@@ -321,6 +335,11 @@ impl Runtime {
     /// retries until it produces valid code, up to [`Self::MAX_EVOLVE_ATTEMPTS`]
     /// attempts. After that, [`Error::MaxRetriesExceeded`] is returned so a
     /// misbehaving agent cannot hang the runtime indefinitely.
+    ///
+    /// Transient HTTP errors from the LLM provider (HTTP 429, 5xx, 529
+    /// "overloaded") are retried separately with exponential backoff up to
+    /// [`Self::MAX_TRANSIENT_RETRIES`] times, and do not count against the
+    /// self-healing attempt budget.
     ///
     /// # Contract
     ///
@@ -333,12 +352,38 @@ impl Runtime {
     {
         let mut prompt = base_prompt.to_string();
         let mut attempts: usize = 0;
+        let mut transient_attempts: usize = 0;
 
         loop {
             attempts += 1;
             match self.evolve_no_backpressure(agent, &prompt).await {
                 Ok(()) => return Ok(()),
                 Err(e) => {
+                    // Transient HTTP errors (rate limits, overload, gateway
+                    // failures) are not the LLM's fault: retry with
+                    // exponential backoff and don't count against the
+                    // self-healing attempt budget.
+                    if is_transient_http_error(&e) {
+                        if transient_attempts >= Self::MAX_TRANSIENT_RETRIES {
+                            warn!(
+                                "Transient HTTP error retry budget exhausted ({transient_attempts}/{}); giving up. Last error: {e}",
+                                Self::MAX_TRANSIENT_RETRIES
+                            );
+                            return Err(e);
+                        }
+                        let backoff = Self::transient_backoff(transient_attempts);
+                        transient_attempts += 1;
+                        warn!(
+                            "Transient HTTP error from LLM provider (retry {transient_attempts}/{} in {:?}): {e}",
+                            Self::MAX_TRANSIENT_RETRIES,
+                            backoff,
+                        );
+                        // Don't count this against the self-healing budget.
+                        attempts -= 1;
+                        tokio::time::sleep(backoff).await;
+                        continue;
+                    }
+
                     if attempts >= Self::MAX_EVOLVE_ATTEMPTS {
                         warn!(
                             "Evolution failed after {attempts} attempts; giving up. Last error: {e}"

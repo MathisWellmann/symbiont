@@ -95,6 +95,35 @@ pub(crate) fn find_so(crate_dir: &Path, profile: Profile) -> Result<PathBuf> {
         )))
     }
 }
+
+/// Return `true` for [`Error`] values that represent transient failures of
+/// the LLM provider (rate-limits, server overload, gateway errors) and are
+/// safe to retry without modifying the prompt.
+pub(crate) fn is_transient_http_error(err: &Error) -> bool {
+    let http_err = match err {
+        Error::RigPrompt(rig::completion::PromptError::CompletionError(
+            rig::completion::CompletionError::HttpError(http_err),
+        )) => http_err,
+        Error::RigHttp(http_err) => http_err,
+        _ => return false,
+    };
+
+    use rig::http_client::Error::*;
+    let status = match http_err {
+        InvalidStatusCode(s) => *s,
+        InvalidStatusCodeWithMessage(s, _) => *s,
+        // Connection-level errors (timeouts, resets, DNS, etc.) are also
+        // transient by nature.
+        Instance(_) => return true,
+        _ => return false,
+    };
+
+    let code = status.as_u16();
+    // 408 Request Timeout, 425 Too Early, 429 Too Many Requests,
+    // 5xx Server errors (incl. 529 Site Overloaded used by Anthropic).
+    matches!(code, 408 | 425 | 429 | 500..=599)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
