@@ -40,6 +40,12 @@ pub enum Error {
 
     #[error("Failed to load dylib: {0}")]
     DylibLoad(String),
+
+    #[error("Evolution failed after {attempts} attempts. Last error: {last_error}")]
+    MaxRetriesExceeded {
+        attempts: usize,
+        last_error: Box<Error>,
+    },
 }
 
 /// Result type alias for symbiont operations.
