@@ -11,6 +11,7 @@ use symbiont::{
 };
 
 #[tokio::test]
+#[tracing_test::traced_test]
 async fn runtime() {
     symbiont::evolvable! {
         /// Should increment the counter by a value in the range 5..20
@@ -27,7 +28,11 @@ async fn runtime() {
     let agent = MockAgent;
     let prompt = format!("Implement this function in rust: ```{}```", rt.fn_sigs()[0]);
     rt.evolve(&agent, &prompt).await.expect("Can evolve");
-    assert_eq!(&rt.current_code(), "");
+    assert_eq!(
+        &rt.current_code(),
+        "#[unsafe(no_mangle)]\npub fn step(counter: &mut usize) {\n    *counter += 5;\n}\n",
+        "Code has evolved"
+    );
 }
 
 struct MockAgent;
@@ -40,6 +45,11 @@ impl Prompt for MockAgent {
         Output = Result<String, rig::completion::PromptError>,
         IntoFuture: rig::wasm_compat::WasmCompatSend,
     > {
-        async { Ok("```pub fn step(counter: &mut usize) { *counter += 5; }```".to_string()) }
+        async {
+            Ok("```
+            pub fn step(counter: &mut usize) { *counter += 5; }
+            ```"
+            .to_string())
+        }
     }
 }
