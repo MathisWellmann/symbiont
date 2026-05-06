@@ -64,8 +64,6 @@
       statix # Highlights nix antipatterns
     ];
   in {
-    nixosModules.zola-serve = import ./symbiont/modules/nixos/zola-serve.nix;
-
     devShells.${system} = {
       default = pkgs.mkShell {
         buildInputs =
