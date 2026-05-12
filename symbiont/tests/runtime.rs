@@ -6,6 +6,7 @@
 
 use rig::completion::Prompt;
 use symbiont::{
+    FullSource,
     Profile,
     Runtime,
 };
@@ -22,9 +23,21 @@ async fn runtime() {
     let rt = Runtime::init(SYMBIONT_DECLS, SYMBIONT_PRELUDE, Profile::Debug)
         .await
         .expect("Can init");
+    assert_eq!(&rt.fn_sigs(), &["fn step(counter: &mut usize)".to_string()]);
+    assert_eq!(
+        &rt.fn_full_sources(),
+        &[FullSource(
+            "/// Should increment the counter by a value in the range 5..20\n#[unsafe(no_mangle)]\npub fn step(counter: &mut usize) {\n    *counter += 1;\n}\n"
+        )]
+    );
     assert_eq!(
         &rt.current_code(),
         "/// Should increment the counter by a value in the range 5..20\n#[unsafe(no_mangle)]\npub fn step(counter: &mut usize) {\n    *counter += 1;\n}\n\n\n"
+    );
+    assert_eq!(
+        rt.fn_prelude(),
+        Vec::new(),
+        "No prelude items in this function."
     );
     let mut counter = 0;
     step(&mut counter);
@@ -33,10 +46,22 @@ async fn runtime() {
     let agent = MockAgent;
     let prompt = format!("Implement this function in rust: ```{}```", rt.fn_sigs()[0]);
     rt.evolve(&agent, &prompt).await.expect("Can evolve");
+    assert_eq!(&rt.fn_sigs(), &["fn step(counter: &mut usize)".to_string()]);
+    assert_eq!(
+        &rt.fn_full_sources(),
+        &[FullSource(
+            "/// Should increment the counter by a value in the range 5..20\n#[unsafe(no_mangle)]\npub fn step(counter: &mut usize) {\n    *counter += 1;\n}\n"
+        )]
+    );
     assert_eq!(
         &rt.current_code(),
         "#[unsafe(no_mangle)]\npub fn step(counter: &mut usize) {\n    *counter += 5;\n}\n",
         "Code has evolved"
+    );
+    assert_eq!(
+        rt.fn_prelude(),
+        Vec::new(),
+        "No prelude items in this function."
     );
     step(&mut counter);
     assert_eq!(counter, 6);

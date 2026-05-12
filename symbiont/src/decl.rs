@@ -38,7 +38,7 @@ impl fmt::Debug for EvolvableDecl {
 ///
 /// Behaves like a `&str` for all practical purposes: dereferences to `str`,
 /// implements `AsRef<str>` and `Display` (which writes the source verbatim).
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct FullSource<'a>(pub &'a str);
 
 impl FullSource<'_> {
