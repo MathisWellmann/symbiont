@@ -76,34 +76,26 @@ jobs:
         # Start a local llama-cpp server via devenv, then run the counter
         # example for 30s. This exercises the full pipeline: dylib creation,
         # compilation, loading, dispatch, LLM evolution, and hot-swap.
-        # Exit code 124 = timeout killed the process (success).
         run: |
           nix develop --command bash -c '
             devenv up -d
             devenv processes wait llama-server --timeout 120
-            timeout 30s cargo run -p counter-example || [ $? -eq 124 ]
+            cargo run -p counter-example
             devenv processes down
           '
       - name: fizzbuzz-example-smoke-test
         env:
           RUSTFLAGS: "-D warnings"
-        # Run the fizzbuzz example which evolves a function to pass a test
-        # suite. Timeout after 60s — the example exits on its own once all
-        # tests pass or after max_rounds.
         run: |
           nix develop --command bash -c '
             devenv up -d
             devenv processes wait llama-server --timeout 120
-            timeout 60s cargo run -p fizzbuzz-example || [ $? -eq 124 ]
+            cargo run -p fizzbuzz-example
             devenv processes down
           '
       - name: rastrigin-example-smoke-test
         env:
           RUSTFLAGS: "-D warnings"
-        # Run the rastrigin example which evolves a function to match
-        # sample data via symbolic regression. Timeout after 120s — the
-        # example exits on its own once the formula is found or after
-        # max_rounds.
         run: |
           nix develop --command bash -c '
             devenv up -d
