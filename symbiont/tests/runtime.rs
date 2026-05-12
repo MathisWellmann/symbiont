@@ -19,7 +19,7 @@ async fn runtime() {
             *counter += 1;
         }
     };
-    let rt = Runtime::init(SYMBIONT_DECLS, Profile::Debug)
+    let rt = Runtime::init(SYMBIONT_DECLS, SYMBIONT_PRELUDE, Profile::Debug)
         .await
         .expect("Can init");
     assert_eq!(

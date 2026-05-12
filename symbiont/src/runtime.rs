@@ -131,6 +131,13 @@ pub struct Runtime {
     decls: &'static [EvolvableDecl],
     /// Compilation profile (`debug` or `release`).
     profile: Profile,
+    /// Supporting items (structs, enums, type aliases, `use` statements, ...)
+    /// either declared inline inside `evolvable! { ... }` or pulled in via
+    /// `shared <Ident>;` references to `#[symbiont::shared]`-annotated types.
+    /// Each entry is a Rust source snippet that is prepended to the dylib's
+    /// `lib.rs` on every (re)compilation so evolved code can reference
+    /// user-defined types.
+    prelude: &'static [&'static str],
     /// The currently active AST of the agent code, in String form, to make it `Send`
     current_clean_ast: Mutex<String>,
 }
@@ -179,11 +186,17 @@ impl Runtime {
     /// optimizer can make orders-of-magnitude difference for compute-heavy code.
     /// [`Profile::Debug`] compiles faster and is fine for correctness-only workloads.
     ///
+    /// # Arguments:
+    /// - `decls` should be the generated `SYMBIONT_DECLS` constant from the `evolvable` macro.
+    /// - `prelude` should be the generated `SYMBIONT_PRELUDE` constant from the `evolvable` macro too.
+    /// - `profile` defines the optimization level to apply to the dylib.
+    ///
     /// # Panics
     ///
     /// Panics if called more than once.
     pub async fn init(
         decls: &'static [EvolvableDecl],
+        prelude: &'static [&'static str],
         profile: Profile,
     ) -> Result<&'static Runtime> {
         if decls.is_empty() {
@@ -206,7 +219,7 @@ impl Runtime {
         std::fs::write(crate_dir.join("Cargo.toml"), cargo_toml)?;
 
         // Write src/lib.rs from all default_source entries
-        let lib_rs = generate_lib_rs(decls);
+        let lib_rs = generate_lib_rs(decls, prelude);
         let mut ast = syn::parse_str(&lib_rs)?;
 
         // Compile
@@ -231,6 +244,7 @@ impl Runtime {
             library: Mutex::new(Some(lib)),
             decls,
             profile,
+            prelude,
             current_clean_ast: Mutex::new(lib_rs),
         };
 
@@ -273,6 +287,24 @@ impl Runtime {
 
         // Validate signatures match declarations
         validate_generated_ast(&mut ast, &self.fn_sigs)?;
+
+        // Re-inject the prelude (user-defined structs/enums/etc.) so the
+        // dylib still sees the same type definitions used in the host crate.
+        // The LLM is asked to emit only the function bodies, so we control
+        // the prelude here rather than relying on the model to repeat it.
+        if !self.prelude.is_empty() {
+            let mut combined: Vec<syn::Item> = Vec::new();
+            for part in self.prelude {
+                if part.is_empty() {
+                    continue;
+                }
+                let prelude_file: syn::File = syn::parse_str(part)
+                    .expect("prelude was successfully parsed at init; should still be valid");
+                combined.extend(prelude_file.items);
+            }
+            combined.append(&mut ast.items);
+            ast.items = combined;
+        }
 
         // Recompile
         let t0 = Instant::now();
@@ -462,15 +494,23 @@ impl Runtime {
         &self.fn_sigs
     }
 
+    /// Get the prelude items of the evolvable functions if any.
+    /// This includes structs, enums and type declarations which are relevant in the function signature.
+    pub fn fn_prelude(&self) -> Vec<FullSource<'static>> {
+        Vec::from_iter(self.prelude.iter().map(|v| FullSource(v)))
+    }
+
     /// Get the full function signatures, including doc comments and default function body.
     ///
     /// Returns each source wrapped in [`FullSource`], which preserves real line
     /// breaks when pretty-printed (`{:#?}`) so logs stay readable.
+    ///
+    /// The other relevant types that a function may require can be found in `fn_preludes`.
     pub fn fn_full_sources(&self) -> Vec<FullSource<'static>> {
         Vec::from_iter(self.decls.iter().map(|d| FullSource(d.full_source)))
     }
 
-    /// Get the current, ,clean LLM-generated code (without panic-catching wrappers or preamble).
+    /// Get the current, clean LLM-generated code (without panic-catching wrappers or preamble).
     /// Suitable for feeding back into the LLM prompt or displaying to the user.
     pub fn current_code(&self) -> String {
         self.current_clean_ast

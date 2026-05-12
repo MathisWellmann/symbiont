@@ -229,7 +229,8 @@ fn total_time(results: &[BenchResult]) -> Duration {
 async fn main() -> symbiont::Result<()> {
     symbiont::init_tracing();
 
-    let runtime = Runtime::init(SYMBIONT_DECLS, symbiont::Profile::Release).await?;
+    let runtime =
+        Runtime::init(SYMBIONT_DECLS, SYMBIONT_PRELUDE, symbiont::Profile::Release).await?;
     let fn_sigs = runtime.fn_sigs();
     info!("fn_sigs: {fn_sigs:?}");
 

@@ -28,7 +28,7 @@ async fn main() -> symbiont::Result<()> {
     symbiont::init_tracing();
 
     info!("SYMBIONT_DECLS: {SYMBIONT_DECLS:#?}");
-    let runtime = Runtime::init(SYMBIONT_DECLS, symbiont::Profile::Debug).await?;
+    let runtime = Runtime::init(SYMBIONT_DECLS, SYMBIONT_PRELUDE, symbiont::Profile::Debug).await?;
     let fn_sigs = runtime.fn_sigs(); // Alternatively, `fn_full_sources` can be used to also show doc string and default function body.
     info!("fn_sigs: {fn_sigs:?}");
 
@@ -45,7 +45,7 @@ async fn main() -> symbiont::Result<()> {
     let mut last_evolution = std::time::Instant::now();
     let evolution_interval = Duration::from_secs(5);
 
-    loop {
+    for _ in 0..10 {
         step(&mut counter);
         println!("counter: {counter}");
         std::thread::sleep(Duration::from_secs(1));
@@ -61,4 +61,7 @@ async fn main() -> symbiont::Result<()> {
             last_evolution = std::time::Instant::now();
         }
     }
+    assert!(counter > 10);
+
+    Ok(())
 }

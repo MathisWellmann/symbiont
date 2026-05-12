@@ -32,7 +32,7 @@ fn bench_dispatch_overhead(c: &mut Criterion) {
     // Initialize the symbiont runtime (compiles the temp dylib).
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
     rt.block_on(async {
-        symbiont::Runtime::init(SYMBIONT_DECLS, symbiont::Profile::Debug)
+        symbiont::Runtime::init(SYMBIONT_DECLS, SYMBIONT_PRELUDE, symbiont::Profile::Debug)
             .await
             .expect("runtime init")
     });
