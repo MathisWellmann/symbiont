@@ -31,13 +31,13 @@ async fn runtime() {
         )]
     );
     assert_eq!(
-        &rt.current_code(),
-        "/// Should increment the counter by a value in the range 5..20\n#[unsafe(no_mangle)]\npub fn step(counter: &mut usize) {\n    *counter += 1;\n}\n\n\n"
-    );
-    assert_eq!(
         rt.fn_prelude(),
         Vec::new(),
         "No prelude items in this function."
+    );
+    assert_eq!(
+        &rt.current_code(),
+        "/// Should increment the counter by a value in the range 5..20\n#[unsafe(no_mangle)]\npub fn step(counter: &mut usize) {\n    *counter += 1;\n}\n\n\n"
     );
     let mut counter = 0;
     step(&mut counter);
