@@ -522,7 +522,7 @@ impl Runtime {
     /// Return the function signature and body for a single function base on its `fn_name`
     pub fn current_function(&self, fn_name: &str) -> Option<syn::ItemFn> {
         let code = self.current_code();
-        let file: syn::File = syn::parse_str(&code).ok()?;
+        let file: syn::File = syn::parse_str(&code).ok()?; // Its always valid code.
         file.items.into_iter().find_map(|item| match item {
             syn::Item::Fn(f) if f.sig.ident == fn_name => Some(f),
             _ => None,

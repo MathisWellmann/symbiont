@@ -96,3 +96,14 @@ pub(crate) async fn compile_dylib(
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn profile_display() {
+        assert_eq!(&Profile::Release.to_string(), "release");
+        assert_eq!(&Profile::Debug.to_string(), "debug");
+    }
+}

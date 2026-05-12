@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 use std::{
     fmt,
-    ops::Deref,
     sync::atomic::AtomicPtr,
 };
 
@@ -41,11 +40,9 @@ impl fmt::Debug for EvolvableDecl {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct FullSource<'a>(pub &'a str);
 
-impl FullSource<'_> {
-    /// Borrow the underlying source string.
-    #[inline]
-    pub fn as_str(&self) -> &str {
-        self.0
+impl AsRef<str> for FullSource<'static> {
+    fn as_ref(&self) -> &str {
+        &self.0
     }
 }
 
@@ -71,22 +68,6 @@ impl fmt::Debug for FullSource<'_> {
 impl fmt::Display for FullSource<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.0)
-    }
-}
-
-impl Deref for FullSource<'_> {
-    type Target = str;
-
-    #[inline]
-    fn deref(&self) -> &str {
-        self.0
-    }
-}
-
-impl AsRef<str> for FullSource<'_> {
-    #[inline]
-    fn as_ref(&self) -> &str {
-        self.0
     }
 }
 
@@ -142,5 +123,11 @@ mod tests {
         assert!(pretty.contains("\n        pub fn b() {\n"));
         assert!(pretty.contains("\n            todo!()\n"));
         assert!(!pretty.contains(r"\n"));
+    }
+
+    #[test]
+    fn full_source_as_str() {
+        let source = FullSource("Hello");
+        assert_eq!(&source.to_string(), "Hello");
     }
 }
