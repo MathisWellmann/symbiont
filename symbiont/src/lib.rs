@@ -29,7 +29,10 @@ pub use error::{
 };
 pub use init_tracing::init_tracing;
 pub use runtime::Runtime;
-pub use symbiont_macros::evolvable;
+pub use symbiont_macros::{
+    evolvable,
+    shared,
+};
 
 /// Internal module for macro-generated dispatch code.
 ///

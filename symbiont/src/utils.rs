@@ -51,8 +51,18 @@ panic = "unwind"
     .to_string()
 }
 
-pub(crate) fn generate_lib_rs(decls: &[EvolvableDecl]) -> String {
+pub(crate) fn generate_lib_rs(decls: &[EvolvableDecl], prelude: &[&str]) -> String {
     let mut src = String::with_capacity(1_000);
+    for part in prelude {
+        if part.is_empty() {
+            continue;
+        }
+        src.push_str(part);
+        if !part.ends_with('\n') {
+            src.push('\n');
+        }
+        src.push('\n');
+    }
     for d in decls {
         src.push_str(d.full_source);
         src.push_str("\n\n");

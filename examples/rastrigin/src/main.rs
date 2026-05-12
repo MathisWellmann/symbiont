@@ -154,7 +154,7 @@ fn sample_table(samples: &[Sample]) -> String {
 async fn main() -> symbiont::Result<()> {
     symbiont::init_tracing();
 
-    let runtime = Runtime::init(SYMBIONT_DECLS, symbiont::Profile::Debug).await?;
+    let runtime = Runtime::init(SYMBIONT_DECLS, SYMBIONT_PRELUDE, symbiont::Profile::Debug).await?;
     let fn_sigs = runtime.fn_sigs();
     info!("fn_sigs: {fn_sigs:?}");
 
