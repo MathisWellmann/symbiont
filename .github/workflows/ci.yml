@@ -116,3 +116,13 @@ jobs:
             timeout 180s cargo run -p sort-example || [ $? -eq 124 ]
             devenv processes down
           '
+      - name: struct-support-example-smoke-test
+        env:
+          RUSTFLAGS: "-D warnings"
+        run: |
+          nix develop --command bash -c '
+            devenv up -d
+            devenv processes wait llama-server --timeout 120
+            cargo run -p struct-support-example
+            devenv processes down
+          '

@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 //! The example shows support for functions taking in custom structs from the surrounding scope.
 
-use std::time::Duration;
-
 use symbiont::Runtime;
 use tracing::info;
 
@@ -54,28 +52,14 @@ async fn main() -> symbiont::Result<()> {
         .evolve(&agent, &base_prompt)
         .await
         .expect("Can successfully evolve");
-
-    let mut last_evolution = std::time::Instant::now();
-    let evolution_interval = Duration::from_secs(2);
+    info!(
+        "Successfully evolved the function, which is now hot-reloaded in-place. Next call to `step` will run the newly compiled Agent code."
+    );
 
     let mut state = GameState::default();
 
-    for _ in 0..10 {
-        step(&mut state);
-        println!("state: {state:?}");
-        std::thread::sleep(Duration::from_secs(1));
-
-        if last_evolution.elapsed() >= evolution_interval {
-            runtime
-                .evolve(&agent, &base_prompt)
-                .await
-                .expect("Can successfully evolve");
-            info!(
-                "Successfully evolved the function, which is now hot-reloaded in-place. Next call to `step` will run the newly compiled Agent code."
-            );
-            last_evolution = std::time::Instant::now();
-        }
-    }
+    step(&mut state);
+    println!("state: {state:?}");
     assert_ne!(state, GameState::default(), "Game state must have evolved.");
 
     Ok(())
