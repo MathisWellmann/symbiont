@@ -88,6 +88,7 @@ fn normalize_tokens(mut s: String) -> String {
 /// - A `SYMBIONT_DECLS` constant with metadata for each function
 /// - Wrapper functions that dispatch calls through the loaded dylib
 #[proc_macro]
+#[expect(clippy::too_many_lines, reason = "one macro")]
 pub fn evolvable(input: TokenStream) -> TokenStream {
     let block = syn::parse_macro_input!(input as EvolvableBlock);
 
