@@ -41,8 +41,9 @@ impl fmt::Debug for EvolvableDecl {
 pub struct FullSource<'a>(pub &'a str);
 
 impl AsRef<str> for FullSource<'static> {
+    #[inline(always)]
     fn as_ref(&self) -> &str {
-        &self.0
+        self.0
     }
 }
 
