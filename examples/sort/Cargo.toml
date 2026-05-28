@@ -3,7 +3,7 @@ edition = "2024"
 license = "MPL-2.0"
 name = "sort-example"
 publish = false
-version = "0.9.0"
+version.workspace = true
 
 [dependencies]
 symbiont = { path = "../../symbiont" }

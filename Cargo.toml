@@ -13,6 +13,9 @@ members = [
 ]
 resolver = "2"
 
+[workspace.package]
+version = "0.9.0"
+
 [workspace.lints.rust]
 # checks for cases that are confusing between a negative literal and a negation that's not part of the literal.
 # E.g.: denies this: `-1i32.abs();` // equals -1, while `(-1i32).abs()` equals 1
