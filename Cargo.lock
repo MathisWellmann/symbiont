@@ -484,7 +484,7 @@ dependencies = [
 
 [[package]]
 name = "counter-example"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "symbiont",
  "tokio",
@@ -854,7 +854,7 @@ checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
 
 [[package]]
 name = "fizzbuzz-example"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "rig-core",
  "symbiont",
@@ -2166,7 +2166,7 @@ dependencies = [
 
 [[package]]
 name = "quantize-example"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "colorgrad",
  "derive_more",
@@ -2317,7 +2317,7 @@ dependencies = [
 
 [[package]]
 name = "rastrigin-example"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "rig-core",
  "romu",
@@ -2895,7 +2895,7 @@ dependencies = [
 
 [[package]]
 name = "sort-example"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "rig-core",
  "romu",
@@ -2912,7 +2912,7 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
 name = "struct-support-example"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "symbiont",
  "tokio",
@@ -2927,7 +2927,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "symbiont"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "criterion",
  "libloading",
@@ -2947,7 +2947,7 @@ dependencies = [
 
 [[package]]
 name = "symbiont-macros"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "prettyplease",
  "proc-macro2",
@@ -3091,7 +3091,7 @@ dependencies = [
 
 [[package]]
 name = "tictactoe-example"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "romu",
  "symbiont",

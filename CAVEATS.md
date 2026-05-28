@@ -50,10 +50,12 @@ with the same `rustc` version to guarantee matching calling
 conventions and memory layouts. The harness ensures this by
 compiling the dylib on the same machine with the same toolchain.
 
-Evolvable function signatures are limited to primitive and `std`
+Evolvable function signatures work best with primitive and `std`
 types (`usize`, `f64`, `&mut [f64]`, etc.). Custom structs across
-the boundary would require matching `#[repr(C)]` layouts and are
-not currently supported.
+the boundary are supported when both the host and generated dylib
+compile against the same shared API crate, but Rust still has no
+stable ABI: layout and calling-convention compatibility remain an
+unsafe invariant of the hot-loading boundary.
 
 ## String types
 
@@ -66,7 +68,9 @@ compiler and linking against the same `std`.
 ## Dependencies
 
 By default the generated dylib has no dependencies beyond `std`.
-External crate support may be added in the future, but introduces
+Use [`DylibConfig`](symbiont/src/decl.rs) to add path or registry
+dependencies to the generated crate. This enables shared API crates
+and upstream dependency types in evolvable signatures, but introduces
 additional constraints:
 
 - The host and dylib compile separate copies of any shared
@@ -79,8 +83,10 @@ additional constraints:
   sides share the same allocator — guaranteed when compiled with
   the same toolchain, but fragile under any mismatch.
 - Evolvable function signatures should still prefer primitive and
-  `std` types at the boundary. Use dependency types internally
-  within the function body, not in the signature.
+  `std` types at the boundary when possible. When dependency types
+  are used in the signature, expose them through a small shared API
+  crate/prelude that both sides compile against with matching
+  versions and features.
 
 ## Infinite loops in generated code
 

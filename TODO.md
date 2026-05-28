@@ -1,8 +1,7 @@
 - Show multi-threading support with example.
-- Support non-trivial type definitions for any input and output types to the function.
+- Improve documentation/context extraction for shared API crates used by evolvable functions.
 - Support multi function evolution, with example too.
-- Support external dependencies in lib.
-- Support shared external dependencies across function boundary.
+- Support external dependency auto-discovery for generated dylibs.
 - Support disallowing methods, crates or unsafe, enforced by the harness.
 - Proper eval pipeline to compare model performance across tasks.
 - Probably some more prompt engineering can improve results, built on top of eval.

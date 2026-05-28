@@ -88,7 +88,6 @@ fn normalize_tokens(mut s: String) -> String {
 /// - A `SYMBIONT_DECLS` constant with metadata for each function
 /// - Wrapper functions that dispatch calls through the loaded dylib
 #[proc_macro]
-#[expect(clippy::too_many_lines, reason = "one macro")]
 pub fn evolvable(input: TokenStream) -> TokenStream {
     let block = syn::parse_macro_input!(input as EvolvableBlock);
 
@@ -179,16 +178,10 @@ pub fn evolvable(input: TokenStream) -> TokenStream {
         });
     }
 
-    // Render the prelude into the per-call constant slice. The prelude has
-    // two sources:
-    //
-    //   1. Inline items declared inside `evolvable! { ... }` — re-emitted
-    //      verbatim in the host crate and converted to a string literal
-    //      that the runtime will splice into the dylib's `lib.rs`.
-    //   2. `shared Foo, Bar;` references — each resolves to a
-    //      `__SYMBIONT_SHARED_<Ident>` const produced by the
-    //      `#[symbiont::shared]` attribute macro applied to types defined
-    //      outside the macro.
+    // Render inline items declared inside `evolvable! { ... }` into the
+    // per-call constant slice. These items are re-emitted verbatim in the
+    // host crate and converted to a string literal that the runtime will
+    // splice into the dylib's `lib.rs`.
     let prelude_items = &block.prelude_items;
     let inline_prelude_source = if prelude_items.is_empty() {
         String::new()
@@ -204,10 +197,6 @@ pub fn evolvable(input: TokenStream) -> TokenStream {
     let mut prelude_parts: Vec<proc_macro2::TokenStream> = Vec::new();
     if !inline_prelude_source.is_empty() {
         prelude_parts.push(quote! { #inline_prelude_source });
-    }
-    for ident in &block.shared_refs {
-        let const_ident = syn::Ident::new(&format!("__SYMBIONT_SHARED_{ident}"), ident.span());
-        prelude_parts.push(quote! { #const_ident });
     }
 
     let expanded = quote! {
@@ -226,69 +215,4 @@ pub fn evolvable(input: TokenStream) -> TokenStream {
     };
 
     expanded.into()
-}
-
-/// Attribute macro that marks a type (struct, enum, or type alias) as
-/// shared between the host crate and any `evolvable!`-generated dylib.
-///
-/// Expands the annotated item unchanged, and additionally emits a
-/// `pub const __SYMBIONT_SHARED_<Ident>: &str = "<source>"` constant
-/// holding the item's source code. The `evolvable!` macro picks this up
-/// via `shared <Ident>;` declarations.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// #[symbiont::shared]
-/// #[derive(Debug, Clone)]
-/// struct GameState { x: usize, y: usize }
-///
-/// symbiont::evolvable! {
-///     shared GameState;
-///     fn step(state: &mut GameState) { state.x += 1; }
-/// }
-/// ```
-#[proc_macro_attribute]
-pub fn shared(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    let item_ts: proc_macro2::TokenStream = item.clone().into();
-    let parsed = match syn::parse::<syn::Item>(item) {
-        Ok(p) => p,
-        Err(e) => return e.to_compile_error().into(),
-    };
-
-    use syn::Item::*;
-    let ident = match &parsed {
-        Struct(s) => &s.ident,
-        Enum(e) => &e.ident,
-        Type(t) => &t.ident,
-        Union(u) => &u.ident,
-        _ => {
-            return syn::Error::new_spanned(
-                &parsed,
-                "#[symbiont::shared] only supports `struct`, `enum`, `union`, and `type` items",
-            )
-            .to_compile_error()
-            .into();
-        }
-    };
-
-    // Render the annotated item back to source so the runtime can splice
-    // the exact same definition into the dylib's `lib.rs`.
-    let file = syn::File {
-        shebang: None,
-        attrs: Vec::new(),
-        items: vec![parsed.clone()],
-    };
-    let source = prettyplease::unparse(&file);
-
-    let const_ident = syn::Ident::new(&format!("__SYMBIONT_SHARED_{ident}"), ident.span());
-
-    quote! {
-        #item_ts
-
-        #[doc(hidden)]
-        #[allow(non_upper_case_globals)]
-        pub const #const_ident: &::core::primitive::str = #source;
-    }
-    .into()
 }
