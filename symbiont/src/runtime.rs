@@ -42,6 +42,7 @@ use tracing::{
 };
 
 use crate::{
+    DylibConfig,
     EvolvableDecl,
     FullSource,
     compiler::{
@@ -131,13 +132,11 @@ pub struct Runtime {
     decls: &'static [EvolvableDecl],
     /// Compilation profile (`debug` or `release`).
     profile: Profile,
-    /// Supporting items (structs, enums, type aliases, `use` statements, ...)
-    /// either declared inline inside `evolvable! { ... }` or pulled in via
-    /// `shared <Ident>;` references to `#[symbiont::shared]`-annotated types.
-    /// Each entry is a Rust source snippet that is prepended to the dylib's
-    /// `lib.rs` on every (re)compilation so evolved code can reference
-    /// user-defined types.
-    prelude: &'static [&'static str],
+    /// Rust source snippets prepended to the dylib's `lib.rs` on every
+    /// (re)compilation. This includes inline items declared inside
+    /// `evolvable! { ... }` and configured imports such as
+    /// `use host::prelude::*;`.
+    prelude: Vec<String>,
     /// The currently active AST of the agent code, in String form, to make it `Send`
     current_clean_ast: Mutex<String>,
 }
@@ -188,17 +187,18 @@ impl Runtime {
     ///
     /// # Arguments:
     /// - `decls` should be the generated `SYMBIONT_DECLS` constant from the `evolvable` macro.
-    /// - `prelude` should be the generated `SYMBIONT_PRELUDE` constant from the `evolvable` macro too.
-    /// - `profile` defines the optimization level to apply to the dylib.
+    /// - `generated_prelude` should be the generated `SYMBIONT_PRELUDE` constant from the macro.
+    /// - `config` defines the compilation profile, dylib dependencies, and configured imports.
     ///
     /// # Panics
     ///
     /// Panics if called more than once.
     pub async fn init(
         decls: &'static [EvolvableDecl],
-        prelude: &'static [&'static str],
-        profile: Profile,
+        generated_prelude: &'static [&'static str],
+        config: impl Into<DylibConfig>,
     ) -> Result<&'static Runtime> {
+        let config = config.into();
         if decls.is_empty() {
             return Err(Error::NoEvolvableFunctions);
         }
@@ -215,18 +215,28 @@ impl Runtime {
         std::fs::create_dir_all(crate_dir.join("src"))?;
 
         // Write Cargo.toml
-        let cargo_toml = generate_cargo_toml();
+        let cargo_toml = generate_cargo_toml(&config.dependencies);
         std::fs::write(crate_dir.join("Cargo.toml"), cargo_toml)?;
 
+        let mut prelude = Vec::new();
+        prelude.extend(
+            generated_prelude
+                .iter()
+                .copied()
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned),
+        );
+        prelude.extend(config.prelude.iter().cloned());
+
         // Write src/lib.rs from all default_source entries
-        let lib_rs = generate_lib_rs(decls, prelude);
+        let lib_rs = generate_lib_rs(decls, &prelude);
         let mut ast = syn::parse_str(&lib_rs)?;
 
         // Compile
-        compile_dylib(&crate_dir, profile, &mut ast, &lib_rs).await?;
+        compile_dylib(&crate_dir, config.profile, &mut ast, &lib_rs).await?;
 
         // Find and load the .so
-        let so_path = find_so(&crate_dir, profile)?;
+        let so_path = find_so(&crate_dir, config.profile)?;
         let lib = unsafe {
             Library::new(&so_path).map_err(|e| {
                 Error::DylibLoad(format!("Failed to load {}: {e}", so_path.display()))
@@ -243,7 +253,7 @@ impl Runtime {
             fn_sigs,
             library: Mutex::new(Some(lib)),
             decls,
-            profile,
+            profile: config.profile,
             prelude,
             current_clean_ast: Mutex::new(lib_rs),
         };
@@ -288,13 +298,13 @@ impl Runtime {
         // Validate signatures match declarations
         validate_generated_ast(&mut ast, &self.fn_sigs)?;
 
-        // Re-inject the prelude (user-defined structs/enums/etc.) so the
-        // dylib still sees the same type definitions used in the host crate.
+        // Re-inject the prelude (inline helper items and configured imports)
+        // so the dylib still sees the same API surface used at initialization.
         // The LLM is asked to emit only the function bodies, so we control
         // the prelude here rather than relying on the model to repeat it.
         if !self.prelude.is_empty() {
             let mut combined: Vec<syn::Item> = Vec::new();
-            for part in self.prelude {
+            for part in &self.prelude {
                 if part.is_empty() {
                     continue;
                 }
@@ -494,9 +504,11 @@ impl Runtime {
         &self.fn_sigs
     }
 
-    /// Get the prelude items of the evolvable functions if any.
-    /// This includes structs, enums and type declarations which are relevant in the function signature.
-    pub fn fn_prelude(&self) -> Vec<FullSource<'static>> {
+    /// Get the prelude source injected into the generated dylib.
+    ///
+    /// This includes inline items from `evolvable!` and configured imports such
+    /// as `use host::prelude::*;`.
+    pub fn fn_prelude(&self) -> Vec<FullSource<'_>> {
         Vec::from_iter(self.prelude.iter().map(|v| FullSource(v)))
     }
 
@@ -505,7 +517,7 @@ impl Runtime {
     /// Returns each source wrapped in [`FullSource`], which preserves real line
     /// breaks when pretty-printed (`{:#?}`) so logs stay readable.
     ///
-    /// The other relevant types that a function may require can be found in `fn_preludes`.
+    /// The other relevant imports/items that a function may require can be found in `fn_preludes`.
     pub fn fn_full_sources(&self) -> Vec<FullSource<'static>> {
         Vec::from_iter(self.decls.iter().map(|d| FullSource(d.full_source)))
     }

@@ -20,6 +20,8 @@ mod validation;
 // Re-export key types.
 pub use compiler::Profile;
 pub use decl::{
+    DylibConfig,
+    DylibDependency,
     EvolvableDecl,
     FullSource,
 };
@@ -29,10 +31,7 @@ pub use error::{
 };
 pub use init_tracing::init_tracing;
 pub use runtime::Runtime;
-pub use symbiont_macros::{
-    evolvable,
-    shared,
-};
+pub use symbiont_macros::evolvable;
 
 /// Internal module for macro-generated dispatch code.
 ///

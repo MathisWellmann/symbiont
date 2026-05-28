@@ -206,8 +206,8 @@ These constraints arise from the binary/dylib interaction boundary. The harness 
   Multi-threading is possible, but requires extra care.
 - **Same toolchain required**:
   Rust has no stable ABI. The binary and dylib must be compiled with the same `rustc` version to guarantee matching calling conventions and memory layouts. The harness ensures this by compiling the dylib on the same machine with the same toolchain.
-- **Primitive types only**:
-  The generated dylib has no dependencies, so evolvable function signatures are limited to `std` types (`usize`, `f64`, `&[u8]`, etc.). Custom types across the boundary will require shared dependency support (not yet implemented).
+- **Shared API crates for custom types**:
+  Evolvable signatures may use custom or upstream dependency types when the generated dylib is configured with matching Cargo dependencies. For single-package applications, move boundary types and methods into the package library target, re-export them from `prelude`, and initialize with `DylibConfig::host_package(...)` so the dylib depends on the host crate as `host` and imports `host::prelude::*`.
 - **`unsafe` at the boundary**:
   Dynamic symbol lookup is inherently `unsafe`. The harness validates function signatures against the `evolvable!` declaration and only loads code that parses, type-checks, and compiles — but the `extern "Rust"` pointer cast remains an unsafe invariant.
 

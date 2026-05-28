@@ -1,29 +1,14 @@
 // SPDX-License-Identifier: MPL-2.0
 //! The example shows support for functions taking in custom structs from the surrounding scope.
 
-use symbiont::Runtime;
+use struct_support_example::prelude::*;
+use symbiont::{
+    DylibConfig,
+    Runtime,
+};
 use tracing::info;
 
-/// A 2D game state, with just the x and y coordinates.
-///
-/// Annotated with `#[symbiont::shared]` so the macro records the type's
-/// source code into a hidden `__SYMBIONT_SHARED_GameState` constant that
-/// `evolvable!` can pull into the dylib via `shared GameState;`.
-#[symbiont::shared]
-#[derive(Default, Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code, reason = "Just debug impl is used.")]
-struct GameState {
-    /// The x coordinate. Range of 0..100
-    x: usize,
-    /// The y coordinate. Range of 0..250
-    y: usize,
-}
-
 symbiont::evolvable! {
-    // Bring the externally-defined `GameState` into the dylib's source so the
-    // evolved function below can reference it.
-    shared GameState;
-
     /// Implement some different logic in here, while respecting the bounds laid out in the docs.
     fn step(state: &mut GameState);
 }
@@ -33,7 +18,16 @@ async fn main() -> symbiont::Result<()> {
     symbiont::init_tracing();
 
     info!("SYMBIONT_DECLS: {SYMBIONT_DECLS:#?}");
-    let runtime = Runtime::init(SYMBIONT_DECLS, SYMBIONT_PRELUDE, symbiont::Profile::Debug).await?;
+    let runtime = Runtime::init(
+        SYMBIONT_DECLS,
+        SYMBIONT_PRELUDE,
+        DylibConfig::host_package(
+            symbiont::Profile::Debug,
+            env!("CARGO_PKG_NAME"),
+            env!("CARGO_MANIFEST_DIR"),
+        ),
+    )
+    .await?;
     let fn_prelude = runtime.fn_prelude();
     let fn_source = runtime.fn_full_sources();
     info!("fn_prelude: {fn_prelude:#?}, fn_source: {fn_source:#?}");

@@ -1,12 +1,16 @@
-use std::path::{
-    Path,
-    PathBuf,
+use std::{
+    fmt::Write,
+    path::{
+        Path,
+        PathBuf,
+    },
 };
 
 // SPDX-License-Identifier: MPL-2.0
 use syn::ItemFn;
 
 use crate::{
+    DylibDependency,
     Error,
     EvolvableDecl,
     Profile,
@@ -29,8 +33,8 @@ pub(crate) fn is_no_mangle(item_fn: &ItemFn) -> bool {
     })
 }
 
-pub(crate) fn generate_cargo_toml() -> String {
-    r#"[package]
+pub(crate) fn generate_cargo_toml(dependencies: &[DylibDependency]) -> String {
+    let mut toml = r#"[package]
 name = "symbiont-evolvable"
 version = "0.1.0"
 edition = "2024"
@@ -48,10 +52,72 @@ panic = "unwind"
 
 [dependencies]
 "#
-    .to_string()
+    .to_string();
+
+    for dependency in dependencies {
+        write_dependency(&mut toml, dependency);
+    }
+
+    toml
 }
 
-pub(crate) fn generate_lib_rs(decls: &[EvolvableDecl], prelude: &[&str]) -> String {
+fn write_dependency(toml: &mut String, dependency: &DylibDependency) {
+    toml.push_str(&dependency.name);
+    toml.push_str(" = ");
+
+    let simple_version = dependency.package.is_none()
+        && dependency.path.is_none()
+        && dependency.features.is_empty()
+        && dependency.default_features;
+    if simple_version && let Some(version) = &dependency.version {
+        let _ = writeln!(toml, "{version:?}");
+        return;
+    }
+
+    toml.push_str("{ ");
+    let mut needs_comma = false;
+    let mut push_field = |toml: &mut String, name: &str, value: &str| {
+        if needs_comma {
+            toml.push_str(", ");
+        }
+        let _ = write!(toml, "{name} = {value:?}");
+        needs_comma = true;
+    };
+
+    if let Some(package) = &dependency.package {
+        push_field(toml, "package", package);
+    }
+    if let Some(path) = &dependency.path {
+        push_field(toml, "path", &path.display().to_string());
+    }
+    if let Some(version) = &dependency.version {
+        push_field(toml, "version", version);
+    }
+    if !dependency.default_features {
+        if needs_comma {
+            toml.push_str(", ");
+        }
+        toml.push_str("default-features = false");
+        needs_comma = true;
+    }
+    if !dependency.features.is_empty() {
+        if needs_comma {
+            toml.push_str(", ");
+        }
+        toml.push_str("features = [");
+        for (idx, feature) in dependency.features.iter().enumerate() {
+            if idx > 0 {
+                toml.push_str(", ");
+            }
+            let _ = write!(toml, "{feature:?}");
+        }
+        toml.push(']');
+    }
+
+    toml.push_str(" }\n");
+}
+
+pub(crate) fn generate_lib_rs(decls: &[EvolvableDecl], prelude: &[String]) -> String {
     let mut src = String::with_capacity(1_000);
     for part in prelude {
         if part.is_empty() {
