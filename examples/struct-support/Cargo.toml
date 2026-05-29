@@ -9,7 +9,7 @@ version.workspace = true
 workspace = true
 
 [lib]
-crate-type = ["rlib", "dylib"]
+crate-type = ["dylib", "rlib"]
 
 [dependencies]
 symbiont = { path = "../../symbiont" }
