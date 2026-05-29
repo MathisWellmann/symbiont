@@ -389,7 +389,7 @@ async fn main() -> symbiont::Result<()> {
     let fn_sigs = runtime.fn_sigs();
     info!("fn_sigs: {fn_sigs:?}");
 
-    let agent = symbiont::inference::init_agent()?;
+    let agent = symbiont::init_agent()?;
 
     // Fixed test data — identical across rounds for fair comparison.
     let rng = Rng::from_seed_with_64bit(42);

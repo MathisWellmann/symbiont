@@ -4,31 +4,31 @@
 )]
 #![doc = include_str!("../README.md")]
 
-pub mod error;
-pub mod inference;
-pub mod runtime;
-
 mod compiler;
 mod decl;
+mod dylib_config;
+mod dylib_dependency;
+mod error;
+mod inference;
 mod init_tracing;
 mod parser;
+mod runtime;
 mod unwind;
 mod utils;
 mod validation;
 
-// Re-export the proc macro.
-// Re-export key types.
 pub use compiler::Profile;
 pub use decl::{
-    DylibConfig,
-    DylibDependency,
     EvolvableDecl,
     FullSource,
 };
+pub use dylib_config::DylibConfig;
+pub use dylib_dependency::DylibDependency;
 pub use error::{
     Error,
     Result,
 };
+pub use inference::init_agent;
 pub use init_tracing::init_tracing;
 pub use runtime::Runtime;
 pub use symbiont_macros::evolvable;

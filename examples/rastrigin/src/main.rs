@@ -158,7 +158,7 @@ async fn main() -> symbiont::Result<()> {
     let fn_sigs = runtime.fn_sigs();
     info!("fn_sigs: {fn_sigs:?}");
 
-    let agent = symbiont::inference::init_agent()?;
+    let agent = symbiont::init_agent()?;
     let samples = build_samples();
 
     // Convergence threshold: MSE < 1e-10 means the formula is exact
