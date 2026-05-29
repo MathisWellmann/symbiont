@@ -1,0 +1,48 @@
+# Run all examples alongside the llama-cpp inference server.
+#
+# Usage:
+#   nix develop          # enter dev shell (provides cargo, devenv, etc.)
+#   mprocs               # start all processes
+#
+# The inference server must be running before any example can start.
+# Press 's' on any example to launch it, or start all examples at once:
+#   mprocs run counter fizzbuzz rastrigin sort struct-support
+procs:
+  devenv:
+    shell: "devenv up"
+    autostart: true
+  counter:
+    shell: |
+      echo "Waiting for llama-server on http://127.0.0.1:8231/health"
+      until curl --fail --silent --output /dev/null "http://127.0.0.1:8231/health"; do
+        sleep 2
+      done
+      BASE_URL=http://127.0.0.1:8231 cargo run -p counter-example
+  fizzbuzz:
+    shell: |
+      echo "Waiting for llama-server on http://127.0.0.1:8231/health"
+      until curl --fail --silent --output /dev/null "http://127.0.0.1:8231/health"; do
+        sleep 2
+      done
+      BASE_URL=http://127.0.0.1:8231 cargo run -p fizzbuzz-example
+  rastrigin:
+    shell: |
+      echo "Waiting for llama-server on http://127.0.0.1:8231/health"
+      until curl --fail --silent --output /dev/null "http://127.0.0.1:8231/health"; do
+        sleep 2
+      done
+      BASE_URL=http://127.0.0.1:8231 cargo run -p rastrigin-example
+  sort:
+    shell: |
+      echo "Waiting for llama-server on http://127.0.0.1:8231/health"
+      until curl --fail --silent --output /dev/null "http://127.0.0.1:8231/health"; do
+        sleep 2
+      done
+      BASE_URL=http://127.0.0.1:8231 cargo run -p sort-example
+  struct-support:
+    shell: |
+      echo "Waiting for llama-server on http://127.0.0.1:8231/health"
+      until curl --fail --silent --output /dev/null "http://127.0.0.1:8231/health"; do
+        sleep 2
+      done
+      BASE_URL=http://127.0.0.1:8231 cargo run -p struct-support-example

@@ -5,7 +5,10 @@
 //! This is agentic code mode in action.
 //! The harness provides constrained generation and nudges the LLM prompt if necessary.
 
-use std::time::Duration;
+use std::time::{
+    Duration,
+    Instant,
+};
 
 use symbiont::Runtime;
 use tracing::info;
@@ -42,7 +45,7 @@ async fn main() -> symbiont::Result<()> {
     );
 
     let mut counter = 1;
-    let mut last_evolution = std::time::Instant::now();
+    let mut last_evolution = Instant::now();
     let evolution_interval = Duration::from_secs(5);
 
     for _ in 0..10 {
@@ -61,10 +64,13 @@ async fn main() -> symbiont::Result<()> {
             info!(
                 "Successfully evolved the function, which is now hot-reloaded in-place. Next call to `step` will run the newly compiled Agent code."
             );
-            last_evolution = std::time::Instant::now();
+            last_evolution = Instant::now();
         }
     }
-    assert!(counter > 10, "Counter did not evolve: still {counter} after 10 iterations");
+    assert!(
+        counter > 10,
+        "Counter did not evolve: still {counter} after 10 iterations"
+    );
 
     Ok(())
 }
