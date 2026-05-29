@@ -6,6 +6,14 @@
     rust-overlay.url = "github:oxalica/rust-overlay";
     flake-utils.url = "github:numtide/flake-utils";
   };
+  nixConfig = {
+    extra-substituters = [
+      "https://cache.nixos-cuda.org"
+    ];
+    extra-trusted-public-keys = [
+      "cache.nixos-cuda.org:74DUi4Ye579gUqzH4ziL9IyiJBlDpMRn9MBN8oNan9M="
+    ];
+  };
 
   outputs = {
     nixpkgs,
@@ -38,6 +46,9 @@
       pkg-config
       rust
     ];
+    cuda_inputs = with pkgs; [
+      cudatoolkit
+    ];
     lsps = with pkgs; [
       marksman # Markdown LSP
       markdown-oxide
@@ -57,6 +68,7 @@
       mermaid-cli
       devenv
       zola
+      llama-cpp
     ];
     nix_tools = with pkgs; [
       alejandra # Nix code formatter
@@ -68,11 +80,17 @@
       default = pkgs.mkShell {
         buildInputs =
           buildInputs
+          ++ cuda_inputs
           ++ lsps
           ++ tooling
           ++ nix_tools;
         RUST_BACKTRACE = "1";
         RUST_LOG = "info";
+        LD_LIBRARY_PATH = "${pkgs.lib.makeLibraryPath (
+          buildInputs
+          ++ cuda_inputs
+        )}:/run/opengl-driver/lib";
+        CUDA_PATH = "${pkgs.cudatoolkit}";
       };
     };
   };
