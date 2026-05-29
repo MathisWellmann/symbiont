@@ -62,14 +62,14 @@ panic = "unwind"
 }
 
 fn write_dependency(toml: &mut String, dependency: &DylibDependency) {
-    toml.push_str(&dependency.name);
+    toml.push_str(&dependency.name());
     toml.push_str(" = ");
 
-    let simple_version = dependency.package.is_none()
-        && dependency.path.is_none()
-        && dependency.features.is_empty()
-        && dependency.default_features;
-    if simple_version && let Some(version) = &dependency.version {
+    let simple_version = dependency.package().is_none()
+        && dependency.path().is_none()
+        && dependency.features().is_empty()
+        && dependency.default_features();
+    if simple_version && let Some(version) = &dependency.version() {
         let _ = writeln!(toml, "{version:?}");
         return;
     }
@@ -84,28 +84,28 @@ fn write_dependency(toml: &mut String, dependency: &DylibDependency) {
         needs_comma = true;
     };
 
-    if let Some(package) = &dependency.package {
+    if let Some(package) = dependency.package() {
         push_field(toml, "package", package);
     }
-    if let Some(path) = &dependency.path {
+    if let Some(path) = dependency.path() {
         push_field(toml, "path", &path.display().to_string());
     }
-    if let Some(version) = &dependency.version {
+    if let Some(version) = dependency.version() {
         push_field(toml, "version", version);
     }
-    if !dependency.default_features {
+    if !dependency.default_features() {
         if needs_comma {
             toml.push_str(", ");
         }
         toml.push_str("default-features = false");
         needs_comma = true;
     }
-    if !dependency.features.is_empty() {
+    if !dependency.features().is_empty() {
         if needs_comma {
             toml.push_str(", ");
         }
         toml.push_str("features = [");
-        for (idx, feature) in dependency.features.iter().enumerate() {
+        for (idx, feature) in dependency.features().iter().enumerate() {
             if idx > 0 {
                 toml.push_str(", ");
             }

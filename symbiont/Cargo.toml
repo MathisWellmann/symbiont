@@ -29,6 +29,7 @@ quote = "1"
 syn = { version = "2", features = ["full"] }
 thiserror = "2"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+getset = "0.1.6"
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

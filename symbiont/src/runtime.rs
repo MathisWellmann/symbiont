@@ -215,7 +215,7 @@ impl Runtime {
         std::fs::create_dir_all(crate_dir.join("src"))?;
 
         // Write Cargo.toml
-        let cargo_toml = generate_cargo_toml(&config.dependencies);
+        let cargo_toml = generate_cargo_toml(config.dependencies());
         std::fs::write(crate_dir.join("Cargo.toml"), cargo_toml)?;
 
         let mut prelude = Vec::new();
@@ -226,17 +226,17 @@ impl Runtime {
                 .filter(|s| !s.is_empty())
                 .map(str::to_owned),
         );
-        prelude.extend(config.prelude.iter().cloned());
+        prelude.extend(config.prelude().iter().cloned());
 
         // Write src/lib.rs from all default_source entries
         let lib_rs = generate_lib_rs(decls, &prelude);
         let mut ast = syn::parse_str(&lib_rs)?;
 
         // Compile
-        compile_dylib(&crate_dir, config.profile, &mut ast, &lib_rs).await?;
+        compile_dylib(&crate_dir, config.profile(), &mut ast, &lib_rs).await?;
 
         // Find and load the .so
-        let so_path = find_so(&crate_dir, config.profile)?;
+        let so_path = find_so(&crate_dir, config.profile())?;
         let lib = unsafe {
             Library::new(&so_path).map_err(|e| {
                 Error::DylibLoad(format!("Failed to load {}: {e}", so_path.display()))
@@ -253,7 +253,7 @@ impl Runtime {
             fn_sigs,
             library: Mutex::new(Some(lib)),
             decls,
-            profile: config.profile,
+            profile: config.profile(),
             prelude,
             current_clean_ast: Mutex::new(lib_rs),
         };
