@@ -62,7 +62,7 @@ panic = "unwind"
 }
 
 fn write_dependency(toml: &mut String, dependency: &DylibDependency) {
-    toml.push_str(&dependency.name());
+    toml.push_str(dependency.name());
     toml.push_str(" = ");
 
     let simple_version = dependency.package().is_none()
