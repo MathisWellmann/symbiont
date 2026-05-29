@@ -5,6 +5,8 @@ on:
 permissions:
   contents: read
   actions: read
+env:
+  RUSTFLAGS: "-D warnings" # Make all warnings deny.
 jobs:
   ci-meta:
     # Target self-hosted runner by label
@@ -41,20 +43,12 @@ jobs:
       - name: checkout-code
         uses: actions/checkout@v4
       - name: cargo-check
-        env:
-          RUSTFLAGS: "-D warnings" # Make all warnings deny.
         run: nix develop --command cargo check
       - name: cargo-test
-        env:
-          RUSTFLAGS: "-D warnings" # Make all warnings deny.
         run: nix develop --command bash -c "cargo nextest run"
       - name: cargo-clippy
-        env:
-          RUSTFLAGS: "-D warnings" # Make all warnings deny.
         run: nix develop --command cargo clippy
       - name: cargo-bench
-        env:
-          RUSTFLAGS: "-D warnings" # Make all warnings deny.
         run: nix develop --command cargo bench --no-run # Just to make sure it compiles
       - name: cargo-fmt
         run: nix develop --command cargo fmt --check
@@ -71,8 +65,6 @@ jobs:
       - name: checkout-code
         uses: actions/checkout@v4
       - name: counter-example-smoke-test
-        env:
-          RUSTFLAGS: "-D warnings"
         # Start a local llama-cpp server via devenv, then run the counter
         # example for 30s. This exercises the full pipeline: dylib creation,
         # compilation, loading, dispatch, LLM evolution, and hot-swap.
@@ -84,8 +76,6 @@ jobs:
             devenv processes down
           '
       - name: fizzbuzz-example-smoke-test
-        env:
-          RUSTFLAGS: "-D warnings"
         run: |
           nix develop --command bash -c '
             devenv up -d
@@ -94,8 +84,6 @@ jobs:
             devenv processes down
           '
       - name: rastrigin-example-smoke-test
-        env:
-          RUSTFLAGS: "-D warnings"
         run: |
           nix develop --command bash -c '
             devenv up -d
@@ -104,8 +92,6 @@ jobs:
             devenv processes down
           '
       - name: sort-example-smoke-test
-        env:
-          RUSTFLAGS: "-D warnings"
         # Run the sort example which evolves a sorting algorithm across
         # multiple data distributions. The bubble sort default is slow,
         # so allow 180s for the full evolution loop.
@@ -117,8 +103,6 @@ jobs:
             devenv processes down
           '
       - name: struct-support-example-smoke-test
-        env:
-          RUSTFLAGS: "-D warnings"
         run: |
           nix develop --command bash -c '
             devenv up -d
