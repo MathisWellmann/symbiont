@@ -338,16 +338,14 @@ async fn main() -> symbiont::Result<()> {
         report = new_report;
     }
 
-    println!("\nEvolution complete after {max_rounds} rounds.");
     if best_code.is_empty() {
-        println!("No correct implementation was found.");
-    } else {
-        println!(
-            "Best implementation found ({max_rounds} iterations, original time: {}, new time: {}):\n```rust\n{best_code}```",
-            format_duration(orig_total),
-            format_duration(best_total),
-        );
+        panic!("No correct sort implementation found after {max_rounds} rounds.");
     }
+    println!(
+        "Best implementation found ({max_rounds} iterations, original time: {}, new time: {}):\n```rust\n{best_code}```",
+        format_duration(orig_total),
+        format_duration(best_total),
+    );
 
     Ok(())
 }

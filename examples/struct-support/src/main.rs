@@ -53,6 +53,9 @@ async fn main() -> symbiont::Result<()> {
     let mut state = GameState::default();
 
     step(&mut state);
+    if let Some(panic_msg) = runtime.take_panic() {
+        panic!("Evolvable function panicked: {panic_msg}");
+    }
     println!("state: {state:?}");
     assert_ne!(state, GameState::default(), "Game state must have evolved.");
 
