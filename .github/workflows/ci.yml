@@ -72,7 +72,7 @@ jobs:
           nix develop --command bash -c '
             devenv up -d
             devenv processes wait llama-server --timeout 120
-            cargo run -p counter-example
+            BASE_URL=http://127.0.0.1:8231 cargo run -p counter-example
             devenv processes down
           '
       - name: fizzbuzz-example-smoke-test
@@ -80,7 +80,7 @@ jobs:
           nix develop --command bash -c '
             devenv up -d
             devenv processes wait llama-server --timeout 120
-            cargo run -p fizzbuzz-example
+            BASE_URL=http://127.0.0.1:8231 cargo run -p fizzbuzz-example
             devenv processes down
           '
       - name: rastrigin-example-smoke-test
@@ -88,7 +88,7 @@ jobs:
           nix develop --command bash -c '
             devenv up -d
             devenv processes wait llama-server --timeout 120
-            timeout 120s cargo run -p rastrigin-example
+            BASE_URL=http://127.0.0.1:8231 timeout 120s cargo run -p rastrigin-example
             devenv processes down
           '
       - name: sort-example-smoke-test
@@ -99,7 +99,7 @@ jobs:
           nix develop --command bash -c '
             devenv up -d
             devenv processes wait llama-server --timeout 120
-            timeout 180s cargo run -p sort-example
+            BASE_URL=http://127.0.0.1:8231 timeout 180s cargo run -p sort-example
             devenv processes down
           '
       - name: struct-support-example-smoke-test
@@ -107,6 +107,6 @@ jobs:
           nix develop --command bash -c '
             devenv up -d
             devenv processes wait llama-server --timeout 120
-            cargo run -p struct-support-example
+            BASE_URL=http://127.0.0.1:8231 cargo run -p struct-support-example
             devenv processes down
           '
