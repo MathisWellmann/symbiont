@@ -178,6 +178,7 @@ async fn main() -> symbiont::Result<()> {
     // -- Evolution loop ---------------------------------------------------
     let max_rounds = 10;
     let mut prev_report = report;
+    let mut final_mse = mse;
 
     for round in 1..=max_rounds {
         println!("\n=== Round {round}: evolving via LLM ===");
@@ -214,8 +215,8 @@ async fn main() -> symbiont::Result<()> {
 
         warn!("MSE {new_mse:.6e} after round {round} — refining.");
         prev_report = new_report;
+        final_mse = new_mse;
     }
 
-    println!("\nDid not converge after {max_rounds} rounds.");
-    Ok(())
+    panic!("Did not converge after {max_rounds} rounds. Final MSE: {final_mse:.6e}")
 }

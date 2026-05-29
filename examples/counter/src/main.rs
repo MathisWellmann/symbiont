@@ -47,6 +47,9 @@ async fn main() -> symbiont::Result<()> {
 
     for _ in 0..10 {
         step(&mut counter);
+        if let Some(panic_msg) = runtime.take_panic() {
+            panic!("Evolvable function panicked: {panic_msg}");
+        }
         println!("counter: {counter}");
         std::thread::sleep(Duration::from_secs(1));
 
@@ -61,7 +64,7 @@ async fn main() -> symbiont::Result<()> {
             last_evolution = std::time::Instant::now();
         }
     }
-    assert!(counter > 10);
+    assert!(counter > 10, "Counter did not evolve: still {counter} after 10 iterations");
 
     Ok(())
 }

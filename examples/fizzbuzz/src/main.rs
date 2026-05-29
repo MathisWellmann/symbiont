@@ -148,6 +148,5 @@ async fn main() -> symbiont::Result<()> {
         warn!("{passed}/{total} correct after round {round} — retrying.");
     }
 
-    println!("\nDid not converge after {max_rounds} rounds.");
-    Ok(())
+    panic!("Did not converge after {max_rounds} rounds: {passed}/{total} tests passed.")
 }
