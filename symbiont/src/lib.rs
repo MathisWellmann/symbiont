@@ -6,6 +6,7 @@
 
 mod compiler;
 mod decl;
+mod doc_string;
 mod dylib_config;
 mod dylib_dependency;
 mod error;

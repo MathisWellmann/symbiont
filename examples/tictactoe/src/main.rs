@@ -340,7 +340,7 @@ async fn main() -> symbiont::Result<()> {
     let fn_sigs = runtime.fn_sigs();
     info!("fn_sigs: {fn_sigs:?}");
 
-    let agent = symbiont::init_agent()?;
+    let agent = symbiont::init_agent(env!("CARGO_PKG_NAME")).await?;
 
     // -- Round 0: evaluate the default (first-empty-cell) strategy -----------
     println!("\n=== Round 0: default implementation (first empty cell) ===");

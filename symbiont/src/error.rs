@@ -46,6 +46,15 @@ pub enum Error {
         attempts: usize,
         last_error: Box<Error>,
     },
+
+    #[error("Could not run cargo doc command")]
+    CargoDoc,
+
+    #[error("Could not convert json docs to markdown")]
+    MdDoc,
+
+    #[error(transparent)]
+    Fmt(#[from] std::fmt::Error),
 }
 
 /// Result type alias for symbiont operations.

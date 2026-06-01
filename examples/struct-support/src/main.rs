@@ -32,7 +32,7 @@ async fn main() -> symbiont::Result<()> {
     let fn_source = runtime.fn_full_sources();
     info!("fn_prelude: {fn_prelude:#?}, fn_source: {fn_source:#?}");
 
-    let agent = symbiont::init_agent()?;
+    let agent = symbiont::init_agent(env!("CARGO_PKG_NAME")).await?;
 
     let base_prompt = format!(
         "Give an implementation for this evolvable function:\n
