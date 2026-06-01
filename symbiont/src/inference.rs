@@ -3,6 +3,7 @@
 
 use std::env::var;
 
+use owo_colors::OwoColorize;
 use rig::{
     agent::Agent,
     client::CompletionClient,
@@ -11,7 +12,7 @@ use rig::{
         openai::completion::CompletionModel,
     },
 };
-use tracing::debug;
+use tracing::info;
 
 use crate::doc_string::write_prelude_doc_string;
 
@@ -44,12 +45,13 @@ pub async fn init_agent(crate_name: &str) -> crate::Result<Agent<CompletionModel
 
     The following section contains the `cargo doc` generated documentation as markdown, showing the available methods
     which you can call, if any. If the section is empty then you can only use the rust builtin standard library
-    and no other dependencies. Here it is:
+    and no other dependencies. The dylib can optionally depend on a host lib crate which is renamed to `host`
+    and will be available when `use host::prelude::*;` is in scope. Here is the host crate documentation if any:
 
     "
     .to_string();
     write_prelude_doc_string(&mut system_prompt, crate_name).await?;
-    debug!("system_prompt: {system_prompt}");
+    info!("system_prompt: {}", system_prompt.green());
 
     Ok(client.agent(model).preamble(&system_prompt).build())
 }

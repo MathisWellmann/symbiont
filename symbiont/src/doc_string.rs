@@ -27,7 +27,7 @@ pub(crate) async fn write_prelude_doc_string(s: &mut String, crate_name: &str) -
         "-Z",
         "unstable-options",
     ];
-    let output = Command::new("cargo").args(&args).output().await?;
+    let output = Command::new("cargo").args(args).output().await?;
     trace!("output: {output:?}");
     if !output.status.success() {
         return Err(Error::CargoDoc);
