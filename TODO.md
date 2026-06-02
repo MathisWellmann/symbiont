@@ -9,3 +9,4 @@
 - Bidirectionality, like evolving a fractal rendering function using `evolvable` and a UI in the main harness binary shows the results.
 - Capture the number of evolution failures by category, e.g how many compile errors, how many parse errors, how many HTTP errors, etc.
 - Capture the inference cost in the responses, if available.
+- Track the context length of the prompt (system + user) and make it available to query.

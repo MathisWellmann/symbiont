@@ -28,7 +28,7 @@ pub async fn init_agent(crate_name: &str) -> crate::Result<Agent<CompletionModel
         .build()?
         .completions_api(); // Use Chat Completions API instead of Responses API
 
-    let mut system_prompt = r#"# Role
+    let mut system_prompt = "# Role
 
 You are a Rust coding agent running inside the `symbiont` function-evolution harness.
 
@@ -113,7 +113,7 @@ For performance-sensitive functions, avoid unnecessary heap allocation, formatti
 
 The following section contains generated documentation for host APIs available to the evolved code. If empty, only `std` is available.
 
-"#
+"
     .to_string();
     write_prelude_doc_string(&mut system_prompt, crate_name).await?;
     info!("system_prompt: {}", system_prompt.green());
