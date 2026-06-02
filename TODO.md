@@ -4,7 +4,8 @@
 - Support external dependency auto-discovery for generated dylibs.
 - Support disallowing methods, crates or unsafe, enforced by the harness.
 - Proper eval pipeline to compare model performance across tasks.
-- Probably some more prompt engineering can improve results, built on top of eval.
 - Compare examples with SOTA equivalent search strategies, see if it beats any already.
 - Run Harness for my symbolic regression evaluation comparison, to see if it beats SOTA for ~150 optimization targets.
 - Bidirectionality, like evolving a fractal rendering function using `evolvable` and a UI in the main harness binary shows the results.
+- Capture the number of evolution failures by category, e.g how many compile errors, how many parse errors, how many HTTP errors, etc.
+- Capture the inference cost in the responses, if available.
