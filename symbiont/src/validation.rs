@@ -7,7 +7,7 @@ use syn::{
     Type,
     Visibility,
 };
-use tracing::info;
+use tracing::debug;
 
 use crate::{
     Error,
@@ -37,12 +37,12 @@ pub(crate) fn validate_generated_ast(file: &mut syn::File, expected_sigs: &[Stri
 
             // Add `pub` visibility if missing
             if !is_pub(item_fn) {
-                info!("Function `{name}` missing `pub` visibility, adding it");
+                debug!("Function `{name}` missing `pub` visibility, adding it");
                 item_fn.vis = Visibility::Public(syn::token::Pub::default());
             }
             // Add #[unsafe(no_mangle)] if missing
             if !is_no_mangle(item_fn) {
-                info!("Function `{name}` missing #[unsafe(no_mangle)], adding it");
+                debug!("Function `{name}` missing #[unsafe(no_mangle)], adding it");
                 let attr: syn::Attribute = syn::parse_quote!(#[unsafe(no_mangle)]);
                 item_fn.attrs.insert(0, attr);
             }
