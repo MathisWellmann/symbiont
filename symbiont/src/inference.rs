@@ -7,8 +7,8 @@ use rig_core::{
     agent::Agent,
     client::CompletionClient,
     providers::{
-        openai,
-        openai::completion::CompletionModel,
+        openrouter,
+        openrouter::completion::CompletionModel,
     },
 };
 
@@ -20,11 +20,10 @@ pub async fn init_agent(crate_name: &str) -> Result<Agent<CompletionModel>> {
     let base_url = var("BASE_URL").unwrap_or_default();
     let model = var("MODEL").unwrap_or_default();
 
-    let client = openai::Client::builder()
+    let client = openrouter::Client::builder()
         .api_key(api_key)
         .base_url(base_url)
-        .build()?
-        .completions_api(); // Use Chat Completions API instead of Responses API
+        .build()?;
 
     let system_prompt = crate::system_prompt::system_prompt(crate_name).await?;
     Ok(client.agent(model).preamble(&system_prompt).build())
