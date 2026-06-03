@@ -6,7 +6,7 @@ use crate::{
     doc_string::write_prelude_doc_string,
 };
 
-pub(crate) async fn system_prompt(crate_name: &str) -> Result<String> {
+pub(crate) async fn system_prompt(opt_crate_name: Option<&str>) -> Result<String> {
     let mut prompt = "#Role
 
 You are a Rust coding agent running inside the `symbiont` function-evolution harness.
@@ -93,7 +93,9 @@ For performance-sensitive functions, avoid unnecessary heap allocation, formatti
 The following section contains generated documentation for host APIs available to the evolved code. If empty, only `std` is available.
     
 ".to_string();
-    write_prelude_doc_string(&mut prompt, crate_name).await?;
+    if let Some(crate_name) = opt_crate_name {
+        write_prelude_doc_string(&mut prompt, crate_name).await?;
+    }
     info!("system_prompt: {}", prompt.green());
 
     Ok(prompt)

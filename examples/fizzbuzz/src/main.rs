@@ -97,7 +97,7 @@ async fn main() -> symbiont::Result<()> {
     let fn_sigs = runtime.fn_sigs();
     info!("fn_sigs: {fn_sigs:?}");
 
-    let agent = symbiont::init_agent(env!("CARGO_PKG_NAME")).await?;
+    let agent = symbiont::init_agent(None).await?;
 
     // -- Round 0: run the default (wrong) implementation ----------------
     println!("\n=== Round 0: default implementation ===");

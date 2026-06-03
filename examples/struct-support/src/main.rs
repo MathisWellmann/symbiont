@@ -18,12 +18,13 @@ async fn main() -> symbiont::Result<()> {
     symbiont::init_tracing();
 
     info!("SYMBIONT_DECLS: {SYMBIONT_DECLS:#?}");
+    let host_crate = env!("CARGO_PKG_NAME");
     let runtime = Runtime::init(
         SYMBIONT_DECLS,
         SYMBIONT_PRELUDE,
         DylibConfig::host_package(
             symbiont::Profile::Debug,
-            env!("CARGO_PKG_NAME"),
+            host_crate,
             env!("CARGO_MANIFEST_DIR"),
         ),
     )
@@ -32,7 +33,8 @@ async fn main() -> symbiont::Result<()> {
     let fn_source = runtime.fn_full_sources();
     info!("fn_prelude: {fn_prelude:#?}, fn_source: {fn_source:#?}");
 
-    let agent = symbiont::init_agent(env!("CARGO_PKG_NAME")).await?;
+    let doc_crate = Some(host_crate); // Include documentation of the host crate in the system prompt.
+    let agent = symbiont::init_agent(doc_crate).await?;
 
     let base_prompt = format!(
         "Give an implementation for this evolvable function:\n
