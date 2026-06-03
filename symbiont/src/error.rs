@@ -12,10 +12,10 @@ pub enum Error {
     Syn(#[from] syn::Error),
 
     #[error(transparent)]
-    RigPrompt(#[from] rig::completion::PromptError),
+    RigPrompt(#[from] rig_core::completion::PromptError),
 
     #[error(transparent)]
-    RigHttp(#[from] rig::http_client::Error),
+    RigHttp(#[from] rig_core::http_client::Error),
 
     #[error("The text does not contain any rust code.")]
     NoRustCode,

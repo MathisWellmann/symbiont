@@ -3,7 +3,7 @@
 
 use std::env::var;
 
-use rig::{
+use rig_core::{
     agent::Agent,
     client::CompletionClient,
     providers::{

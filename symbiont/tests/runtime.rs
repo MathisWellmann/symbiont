@@ -4,7 +4,7 @@
     reason = "Integration tests don't use them all"
 )]
 
-use rig::completion::Prompt;
+use rig_core::completion::Prompt;
 use symbiont::{
     FullSource,
     Profile,
@@ -72,10 +72,10 @@ struct MockAgent;
 impl Prompt for MockAgent {
     fn prompt(
         &self,
-        _prompt: impl Into<rig::message::Message> + rig::wasm_compat::WasmCompatSend,
+        _prompt: impl Into<rig_core::message::Message> + rig_core::wasm_compat::WasmCompatSend,
     ) -> impl IntoFuture<
-        Output = Result<String, rig::completion::PromptError>,
-        IntoFuture: rig::wasm_compat::WasmCompatSend,
+        Output = Result<String, rig_core::completion::PromptError>,
+        IntoFuture: rig_core::wasm_compat::WasmCompatSend,
     > {
         async {
             Ok("```
