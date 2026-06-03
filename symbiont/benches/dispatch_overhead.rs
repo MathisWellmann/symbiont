@@ -2,15 +2,12 @@
 //! Benchmark comparing direct function calls vs `evolvable!` dispatch
 //! to measure the overhead of the RwLock + dlsym wrapper.
 
-#![expect(
-    unused_crate_dependencies,
-    missing_docs,
-    reason = "benches don't need everything."
-)]
+#![expect(unused_crate_dependencies, reason = "benches don't need everything.")]
+
+use std::hint::black_box;
 
 use criterion::{
     Criterion,
-    black_box,
     criterion_group,
     criterion_main,
 };
