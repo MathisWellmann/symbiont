@@ -63,6 +63,7 @@
       cargo-mutants
       cargo-llvm-cov
       cargo-watch
+      cargo-outdated
       taplo # Toml toolkit with formatter
       yamlfmt
       mermaid-cli
