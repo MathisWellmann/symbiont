@@ -39,6 +39,7 @@
           targets = ["x86_64-unknown-linux-gnu"];
         }
     );
+    cargo-upgrades = pkgs.callPackage ./nix/cargo-upgrades.nix {};
 
     buildInputs = with pkgs; [
       fontconfig
@@ -63,7 +64,7 @@
       cargo-mutants
       cargo-llvm-cov
       cargo-watch
-      cargo-outdated
+      cargo-upgrades
       taplo # Toml toolkit with formatter
       yamlfmt
       mermaid-cli
