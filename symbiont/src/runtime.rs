@@ -34,7 +34,7 @@ use libloading::{
 use minstant::Instant;
 use owo_colors::OwoColorize;
 use prettyplease::unparse;
-use rig::completion::Prompt;
+use rig_core::completion::Prompt;
 use tracing::{
     debug,
     info,
