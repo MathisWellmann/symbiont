@@ -14,6 +14,7 @@ mod inference;
 mod init_tracing;
 mod parser;
 mod runtime;
+mod system_prompt;
 mod unwind;
 mod utils;
 mod validation;
