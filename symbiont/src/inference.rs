@@ -14,21 +14,13 @@ use rig::{
 };
 use tracing::info;
 
-use crate::doc_string::write_prelude_doc_string;
+use crate::{
+    Result,
+    doc_string::write_prelude_doc_string,
+};
 
-/// Initialize the agent using the environment variables.
-pub async fn init_agent(crate_name: &str) -> crate::Result<Agent<CompletionModel>> {
-    let api_key = var("API_KEY").unwrap_or_default();
-    let base_url = var("BASE_URL").unwrap_or_default();
-    let model = var("MODEL").unwrap_or_default();
-
-    let client = openai::Client::builder()
-        .api_key(api_key)
-        .base_url(base_url)
-        .build()?
-        .completions_api(); // Use Chat Completions API instead of Responses API
-
-    let mut system_prompt = "# Role
+async fn system_prompt(crate_name: &str) -> Result<String> {
+    let mut prompt = "#Role
 
 You are a Rust coding agent running inside the `symbiont` function-evolution harness.
 
@@ -112,11 +104,26 @@ For performance-sensitive functions, avoid unnecessary heap allocation, formatti
 # Host API documentation
 
 The following section contains generated documentation for host APIs available to the evolved code. If empty, only `std` is available.
+    
+".to_string();
+    write_prelude_doc_string(&mut prompt, crate_name).await?;
+    info!("system_prompt: {}", prompt.green());
 
-"
-    .to_string();
-    write_prelude_doc_string(&mut system_prompt, crate_name).await?;
-    info!("system_prompt: {}", system_prompt.green());
+    Ok(prompt)
+}
 
+/// Initialize the agent using the environment variables.
+pub async fn init_agent(crate_name: &str) -> Result<Agent<CompletionModel>> {
+    let api_key = var("API_KEY").unwrap_or_default();
+    let base_url = var("BASE_URL").unwrap_or_default();
+    let model = var("MODEL").unwrap_or_default();
+
+    let client = openai::Client::builder()
+        .api_key(api_key)
+        .base_url(base_url)
+        .build()?
+        .completions_api(); // Use Chat Completions API instead of Responses API
+
+    let system_prompt = system_prompt(crate_name).await?;
     Ok(client.agent(model).preamble(&system_prompt).build())
 }
