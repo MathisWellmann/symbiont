@@ -10,3 +10,4 @@
 - Capture the number of evolution failures by category, e.g how many compile errors, how many parse errors, how many HTTP errors, etc.
 - Capture the inference cost in the responses, if available.
 - Track the context length of the prompt (system + user) and make it available to query.
+- Cap the runtime of agent code to a user-specified maximum to prevent infine loops in agent code.
