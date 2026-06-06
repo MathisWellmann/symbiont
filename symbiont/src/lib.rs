@@ -15,6 +15,7 @@ mod error;
 mod inference;
 mod init_tracing;
 mod parser;
+mod profile;
 mod runtime;
 mod system_prompt;
 mod unwind;
@@ -22,7 +23,6 @@ mod update_pointers;
 mod utils;
 mod validation;
 
-pub use compiler::Profile;
 pub use decl::{
     EvolvableDecl,
     FullSource,
@@ -35,6 +35,7 @@ pub use error::{
 };
 pub use inference::init_agent;
 pub use init_tracing::init_tracing;
+pub use profile::Profile;
 use rig_core::providers::openrouter::CompletionModel;
 pub use runtime::Runtime;
 pub use symbiont_macros::evolvable;
