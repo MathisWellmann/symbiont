@@ -5,7 +5,6 @@
 
 use std::{
     collections::hash_map::DefaultHasher,
-    ffi::CString,
     fmt::Write,
     hash::{
         Hash,
@@ -27,10 +26,7 @@ use std::{
     time::Duration,
 };
 
-use libloading::{
-    Library,
-    Symbol,
-};
+use libloading::Library;
 use minstant::Instant;
 use owo_colors::OwoColorize;
 use prettyplease::unparse;
@@ -54,6 +50,7 @@ use crate::{
         Result,
     },
     parser::parse_rust_code,
+    update_pointers::update_fn_ptrs,
     utils::{
         dylib_extension,
         find_so,
@@ -69,9 +66,7 @@ static RUNTIME: OnceLock<Runtime> = OnceLock::new();
 
 /// Cached pointer to the dylib's `__symbiont_take_panic` function.
 /// Updated on each reload alongside the evolvable function pointers.
-static TAKE_PANIC_PTR: AtomicPtr<()> = AtomicPtr::new(std::ptr::null_mut());
-
-// -------------------------------------------------
+pub(crate) static TAKE_PANIC_PTR: AtomicPtr<()> = AtomicPtr::new(std::ptr::null_mut());
 
 /// Manages the lifecycle of the temporary dylib crate: creation, compilation,
 /// loading, and hot-reloading.
@@ -111,35 +106,6 @@ pub struct Runtime {
     prelude: Vec<String>,
     /// The currently active AST of the agent code, in String form, to make it `Send`
     current_clean_ast: Mutex<String>,
-}
-
-/// Look up all declared symbols in `lib` and store their addresses
-/// in the corresponding `AtomicPtr` fields of each declaration.
-///
-/// # Safety
-///
-/// The caller must ensure `lib` is a valid loaded library containing
-/// symbols with signatures matching the declarations.
-unsafe fn update_fn_ptrs(lib: &Library, decls: &[EvolvableDecl]) -> Result<()> {
-    for decl in decls {
-        let c_name =
-            CString::new(decl.name).expect("function name must not contain interior NUL bytes");
-        let sym: Symbol<*const ()> = unsafe {
-            lib.get(c_name.as_bytes_with_nul())
-                .map_err(|e| Error::DylibLoad(format!("symbol '{}' not found: {e}", decl.name)))?
-        };
-        decl.fn_ptr.store(*sym as *mut (), Ordering::Release);
-    }
-
-    // Resolve the panic-retrieval symbol.
-    let panic_sym: Symbol<*const ()> = unsafe {
-        lib.get(b"__symbiont_take_panic\0").map_err(|e| {
-            Error::DylibLoad(format!("symbol '__symbiont_take_panic' not found: {e}"))
-        })?
-    };
-    TAKE_PANIC_PTR.store(*panic_sym as *mut (), Ordering::Release);
-
-    Ok(())
 }
 
 impl Runtime {
