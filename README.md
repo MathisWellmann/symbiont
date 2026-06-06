@@ -46,7 +46,7 @@ symbiont::evolvable! {
 
 #[tokio::main]
 async fn main() -> symbiont::Result<()> {
-    let runtime = symbiont::Runtime::init(SYMBIONT_DECLS, SYMBIONT_PRELUDE, symbiont::Profile::Debug).await?;
+    let runtime = symbiont::Runtime::new(SYMBIONT_DECLS, SYMBIONT_PRELUDE, symbiont::Profile::Debug).await?;
     let agent = symbiont::inference::init_agent(None)?;
     let fn_sigs = runtime.fn_sigs();
     let base_prompt = format!(
