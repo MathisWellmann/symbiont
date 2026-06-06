@@ -18,6 +18,7 @@ mod parser;
 mod runtime;
 mod system_prompt;
 mod unwind;
+mod update_pointers;
 mod utils;
 mod validation;
 
