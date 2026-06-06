@@ -5,6 +5,8 @@
 #![doc = include_str!("../README.md")]
 
 mod compiler;
+#[cfg(debug_assertions)]
+mod debug_call_counter;
 mod decl;
 mod doc_string;
 mod dylib_config;
@@ -45,7 +47,7 @@ pub type Agent = rig_core::agent::Agent<CompletionModel>;
 #[doc(hidden)]
 pub mod __internal {
     #[cfg(debug_assertions)]
-    pub use crate::runtime::{
+    pub use crate::debug_call_counter::{
         CallGuard,
         enter_call,
     };

@@ -71,34 +71,6 @@ static RUNTIME: OnceLock<Runtime> = OnceLock::new();
 /// Updated on each reload alongside the evolvable function pointers.
 static TAKE_PANIC_PTR: AtomicPtr<()> = AtomicPtr::new(std::ptr::null_mut());
 
-// ---------- debug-mode call counter ----------
-//
-// Tracks in-flight evolvable function calls so that `evolve()` can assert
-// none are running. Compiled away entirely in release builds — zero overhead.
-
-#[cfg(debug_assertions)]
-static IN_FLIGHT_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-
-/// RAII guard that decrements the in-flight call counter on drop.
-/// Only exists in debug builds.
-#[cfg(debug_assertions)]
-pub struct CallGuard;
-
-#[cfg(debug_assertions)]
-impl Drop for CallGuard {
-    fn drop(&mut self) {
-        IN_FLIGHT_CALLS.fetch_sub(1, Ordering::Release);
-    }
-}
-
-/// Increment the in-flight call counter and return a guard that decrements
-/// it on drop (including during unwind). Debug builds only.
-#[cfg(debug_assertions)]
-pub fn enter_call() -> CallGuard {
-    IN_FLIGHT_CALLS.fetch_add(1, Ordering::Acquire);
-    CallGuard
-}
-
 // -------------------------------------------------
 
 /// Manages the lifecycle of the temporary dylib crate: creation, compilation,
@@ -278,6 +250,8 @@ impl Runtime {
     {
         #[cfg(debug_assertions)]
         {
+            use crate::debug_call_counter::IN_FLIGHT_CALLS;
+
             let in_flight = IN_FLIGHT_CALLS.load(Ordering::Acquire);
             assert!(
                 in_flight == 0,
