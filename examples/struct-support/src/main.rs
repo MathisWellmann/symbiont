@@ -19,7 +19,7 @@ async fn main() -> symbiont::Result<()> {
 
     info!("SYMBIONT_DECLS: {SYMBIONT_DECLS:#?}");
     let host_crate = env!("CARGO_PKG_NAME");
-    let runtime = Runtime::init(
+    let runtime = Runtime::new(
         SYMBIONT_DECLS,
         SYMBIONT_PRELUDE,
         DylibConfig::host_package(

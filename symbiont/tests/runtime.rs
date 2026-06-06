@@ -20,7 +20,7 @@ async fn runtime() {
             *counter += 1;
         }
     };
-    let rt = Runtime::init(SYMBIONT_DECLS, SYMBIONT_PRELUDE, Profile::Debug)
+    let rt = Runtime::new(SYMBIONT_DECLS, SYMBIONT_PRELUDE, Profile::Debug)
         .await
         .expect("Can init");
     assert_eq!(&rt.fn_sigs(), &["fn step(counter: &mut usize)".to_string()]);
