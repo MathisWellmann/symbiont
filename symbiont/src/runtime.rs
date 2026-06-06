@@ -172,10 +172,9 @@ impl Runtime {
 
         // Write src/lib.rs from all default_source entries
         let lib_rs = generate_lib_rs(decls, &prelude);
-        let mut ast = syn::parse_str(&lib_rs)?;
 
         // Compile
-        compile_dylib(&crate_dir, config.profile(), &mut ast, &lib_rs).await?;
+        compile_dylib(&crate_dir, config.profile(), &lib_rs)?;
 
         // Find and load the .so
         let so_path = find_so(&crate_dir, config.profile())?;
@@ -264,7 +263,7 @@ impl Runtime {
         let t0 = Instant::now();
         let clean_ast_str = unparse(&ast);
         debug!("clean_ast_str: {clean_ast_str}");
-        compile_dylib(&self.crate_dir, self.profile, &mut ast, &clean_ast_str).await?;
+        compile_dylib(&self.crate_dir, self.profile, &clean_ast_str)?;
         {
             *self
                 .current_clean_ast
@@ -326,63 +325,72 @@ impl Runtime {
     /// All evolvable function calls must have returned before this is called.
     /// This is the natural shape of the feedback loop: run functions, collect
     /// results, evolve, repeat.
-    pub async fn evolve<AgentT>(&self, agent: &AgentT, base_prompt: &str) -> Result<()>
+    #[expect(
+        clippy::manual_async_fn,
+        reason = "Ensure the future is `Send` such that it works better with tokios multi-thread runtime"
+    )]
+    pub fn evolve<AgentT>(
+        &self,
+        agent: &AgentT,
+        base_prompt: &str,
+    ) -> impl Future<Output = Result<()>> + Send
     where
         AgentT: Prompt,
     {
-        let mut prompt = base_prompt.to_string();
-        let mut attempts: usize = 0;
-        let mut transient_attempts: usize = 0;
+        async move {
+            let mut prompt = base_prompt.to_string();
+            let mut attempts: usize = 0;
+            let mut transient_attempts: usize = 0;
 
-        loop {
-            attempts += 1;
-            match self.evolve_no_backpressure(agent, &prompt).await {
-                Ok(()) => return Ok(()),
-                Err(e) => {
-                    // Transient HTTP errors (rate limits, overload, gateway
-                    // failures) are not the LLM's fault: retry with
-                    // exponential backoff and don't count against the
-                    // self-healing attempt budget.
-                    if is_transient_http_error(&e) {
-                        if transient_attempts >= Self::MAX_TRANSIENT_RETRIES {
+            loop {
+                attempts += 1;
+                match self.evolve_no_backpressure(agent, &prompt).await {
+                    Ok(()) => return Ok(()),
+                    Err(e) => {
+                        // Transient HTTP errors (rate limits, overload, gateway
+                        // failures) are not the LLM's fault: retry with
+                        // exponential backoff and don't count against the
+                        // self-healing attempt budget.
+                        if is_transient_http_error(&e) {
+                            if transient_attempts >= Self::MAX_TRANSIENT_RETRIES {
+                                warn!(
+                                    "Transient HTTP error retry budget exhausted ({transient_attempts}/{}); giving up. Last error: {e}",
+                                    Self::MAX_TRANSIENT_RETRIES
+                                );
+                                return Err(e);
+                            }
+                            let backoff = Self::transient_backoff(transient_attempts);
+                            transient_attempts += 1;
                             warn!(
-                                "Transient HTTP error retry budget exhausted ({transient_attempts}/{}); giving up. Last error: {e}",
-                                Self::MAX_TRANSIENT_RETRIES
+                                "Transient HTTP error from LLM provider (retry {transient_attempts}/{} in {:?}): {e}",
+                                Self::MAX_TRANSIENT_RETRIES,
+                                backoff,
                             );
-                            return Err(e);
+                            // Don't count this against the self-healing budget.
+                            attempts -= 1;
+                            tokio::time::sleep(backoff).await;
+                            continue;
                         }
-                        let backoff = Self::transient_backoff(transient_attempts);
-                        transient_attempts += 1;
-                        warn!(
-                            "Transient HTTP error from LLM provider (retry {transient_attempts}/{} in {:?}): {e}",
-                            Self::MAX_TRANSIENT_RETRIES,
-                            backoff,
+
+                        if attempts >= Self::MAX_EVOLVE_ATTEMPTS {
+                            warn!(
+                                "Evolution failed after {attempts} attempts; giving up. Last error: {e}"
+                            );
+                            return Err(MaxRetriesExceeded {
+                                attempts,
+                                last_error: Box::new(e),
+                            });
+                        }
+
+                        info!(
+                            "Function evolution error (attempt {attempts}/{}): {e}.\nSelf-healing from error...",
+                            Self::MAX_EVOLVE_ATTEMPTS
                         );
-                        // Don't count this against the self-healing budget.
-                        attempts -= 1;
-                        tokio::time::sleep(backoff).await;
-                        continue;
-                    }
 
-                    if attempts >= Self::MAX_EVOLVE_ATTEMPTS {
-                        warn!(
-                            "Evolution failed after {attempts} attempts; giving up. Last error: {e}"
-                        );
-                        return Err(MaxRetriesExceeded {
-                            attempts,
-                            last_error: Box::new(e),
-                        });
-                    }
+                        prompt = base_prompt.to_string();
 
-                    info!(
-                        "Function evolution error (attempt {attempts}/{}): {e}.\nSelf-healing from error...",
-                        Self::MAX_EVOLVE_ATTEMPTS
-                    );
-
-                    prompt = base_prompt.to_string();
-
-                    use Error::*;
-                    match e {
+                        use Error::*;
+                        match e {
                         NoRustCode => prompt.push_str(
                             "Your response did not contain a rust code block. Please try again and make sure its wrapped like this: ```CODE```",
                         ),
@@ -403,6 +411,7 @@ impl Runtime {
                             warn!("Unhandled error: {e}");
                             return Err(e)
                         },
+                    }
                     }
                 }
             }
