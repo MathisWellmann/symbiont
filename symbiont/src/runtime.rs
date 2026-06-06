@@ -41,10 +41,8 @@ use crate::{
     DylibConfig,
     EvolvableDecl,
     FullSource,
-    compiler::{
-        Profile,
-        compile_dylib,
-    },
+    Profile,
+    compiler::compile_dylib,
     error::{
         Error,
         Result,
