@@ -4,12 +4,8 @@
 use std::env::var;
 
 use rig_core::{
-    agent::Agent,
     client::CompletionClient,
-    providers::{
-        openrouter,
-        openrouter::completion::CompletionModel,
-    },
+    providers::openrouter,
 };
 
 use crate::Result;
@@ -26,7 +22,7 @@ use crate::Result;
 /// - `BASE_URL`: The inference endpoint for `/v1/chat/completions` based requests.
 /// - `MODEL`: The model slug.
 ///
-pub async fn init_agent(opt_crate_name: Option<&str>) -> Result<Agent<CompletionModel>> {
+pub async fn init_agent(opt_crate_name: Option<&str>) -> Result<crate::Agent> {
     let api_key = var("API_KEY").unwrap_or_default();
     let base_url = var("BASE_URL").unwrap_or_default();
     let model = var("MODEL").unwrap_or_default();

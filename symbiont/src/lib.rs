@@ -32,8 +32,12 @@ pub use error::{
 };
 pub use inference::init_agent;
 pub use init_tracing::init_tracing;
+use rig_core::providers::openrouter::CompletionModel;
 pub use runtime::Runtime;
 pub use symbiont_macros::evolvable;
+
+/// type alias for the return type of `init_agent`
+pub type Agent = rig_core::agent::Agent<CompletionModel>;
 
 /// Internal module for macro-generated dispatch code.
 ///
