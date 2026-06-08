@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 620" width="700" height="620">
+  <defs>
+    <radialGradient id="qbg" cx="50%" cy="50%" r="60%">
+      <stop offset="0%" stop-color="#1a1a2e"/>
+      <stop offset="100%" stop-color="#0f0f1a"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="700" height="620" rx="16" fill="url(#qbg)"/>
+
+  <!-- Title -->
+  <text x="350" y="38" text-anchor="middle" font-family="SF Mono, Fira Code, JetBrains Mono, Consolas, monospace" font-size="11" font-weight="600" letter-spacing="0.15em" fill="#e8e6e3" opacity="0.4">POSITIONING QUADRANT — WHEN SYMBIONT WINS</text>
+
+  <g transform="translate(50, 50)">
+    <!-- Axes -->
+    <line x1="80" y1="460" x2="570" y2="460" stroke="#2a2a3a" stroke-width="1.5"/>
+    <line x1="80" y1="460" x2="80" y2="50" stroke="#2a2a3a" stroke-width="1.5"/>
+    <polygon points="570,460 558,455 558,465" fill="#2a2a3a"/>
+    <polygon points="80,50 75,62 85,62" fill="#2a2a3a"/>
+
+    <!-- Axis labels -->
+    <text x="325" y="500" text-anchor="middle" font-family="SF Mono, Fira Code, JetBrains Mono, Consolas, monospace" font-size="11" fill="#e8e6e3" opacity="0.5" letter-spacing="0.1em">STATE COST (setup + data loading time)</text>
+    <text x="24" y="255" text-anchor="middle" font-family="SF Mono, Fira Code, JetBrains Mono, Consolas, monospace" font-size="11" fill="#e8e6e3" opacity="0.5" letter-spacing="0.1em" transform="rotate(-90, 24, 255)">EVAL SPEED REQUIREMENT</text>
+
+    <!-- Axis tick hints -->
+    <text x="130" y="478" text-anchor="middle" font-family="SF Mono, monospace" font-size="8" fill="#e8e6e3" opacity="0.25">cheap</text>
+    <text x="530" y="478" text-anchor="middle" font-family="SF Mono, monospace" font-size="8" fill="#e8e6e3" opacity="0.25">expensive</text>
+    <text x="68" y="440" text-anchor="end" font-family="SF Mono, monospace" font-size="8" fill="#e8e6e3" opacity="0.25">low</text>
+    <text x="68" y="75" text-anchor="end" font-family="SF Mono, monospace" font-size="8" fill="#e8e6e3" opacity="0.25">high</text>
+
+    <!-- Quadrant backgrounds -->
+    <rect x="81" y="51" width="244" height="204" fill="#00D4AA" fill-opacity="0.025" rx="4"/>
+    <rect x="325" y="51" width="244" height="204" fill="#F7931E" fill-opacity="0.06" rx="4"/>
+    <rect x="81" y="255" width="244" height="204" fill="#e8e6e3" fill-opacity="0.012" rx="4"/>
+    <rect x="325" y="255" width="244" height="204" fill="#FF6B35" fill-opacity="0.03" rx="4"/>
+
+    <!-- Dashed border around symbiont zone -->
+    <rect x="325" y="51" width="244" height="204" fill="none" stroke="#F7931E" stroke-width="1.5" stroke-dasharray="6 4" stroke-opacity="0.4" rx="4"/>
+
+    <!-- ===== Quadrant labels — positioned in safe corners ===== -->
+
+    <!-- Upper left: compiled tool — top-left corner of quadrant -->
+    <text x="95" y="72" font-family="SF Mono, Fira Code, JetBrains Mono, Consolas, monospace" font-size="10" fill="#00D4AA" opacity="0.65" font-weight="600" letter-spacing="0.05em">COMPILED TOOL</text>
+    <text x="95" y="87" font-family="system-ui, sans-serif" font-size="9.5" fill="#e8e6e3" opacity="0.3">fast eval, cheap state</text>
+    <text x="95" y="102" font-family="system-ui, sans-serif" font-size="9.5" fill="#e8e6e3" opacity="0.3">just restart the binary</text>
+
+    <!-- Upper right: SYMBIONT — anchored top-right corner of quadrant -->
+    <text x="555" y="72" text-anchor="end" font-family="SF Mono, Fira Code, JetBrains Mono, Consolas, monospace" font-size="11" fill="#F7931E" opacity="0.85" font-weight="700" letter-spacing="0.05em">SYMBIONT ZONE</text>
+    <text x="555" y="87" text-anchor="end" font-family="system-ui, sans-serif" font-size="9.5" fill="#e8e6e3" opacity="0.45">fast eval + expensive state</text>
+    <text x="555" y="102" text-anchor="end" font-family="system-ui, sans-serif" font-size="9.5" fill="#e8e6e3" opacity="0.45">hot-reload is the only option</text>
+
+    <!-- Lower left: Python REPL — top-left of quadrant -->
+    <text x="95" y="275" font-family="SF Mono, Fira Code, JetBrains Mono, Consolas, monospace" font-size="10" fill="#e8e6e3" opacity="0.4" font-weight="600" letter-spacing="0.05em">PYTHON REPL</text>
+    <text x="95" y="290" font-family="system-ui, sans-serif" font-size="9.5" fill="#e8e6e3" opacity="0.25">slow eval OK, cheap state</text>
+    <text x="95" y="305" font-family="system-ui, sans-serif" font-size="9.5" fill="#e8e6e3" opacity="0.25">use exec() or subprocess</text>
+
+    <!-- Lower right: Jupyter — top-right of quadrant -->
+    <text x="555" y="275" text-anchor="end" font-family="SF Mono, Fira Code, JetBrains Mono, Consolas, monospace" font-size="10" fill="#FF6B35" opacity="0.55" font-weight="600" letter-spacing="0.05em">JUPYTER / NOTEBOOK</text>
+    <text x="555" y="290" text-anchor="end" font-family="system-ui, sans-serif" font-size="9.5" fill="#e8e6e3" opacity="0.3">slow eval OK, expensive state</text>
+    <text x="555" y="305" text-anchor="end" font-family="system-ui, sans-serif" font-size="9.5" fill="#e8e6e3" opacity="0.3">keep kernel alive, re-run cells</text>
+
+    <!-- ===== Plot points ===== -->
+
+    <!-- Symbiont zone — points spread across middle/lower area of upper-right quadrant -->
+    <circle cx="460" cy="140" r="9" fill="#F7931E" fill-opacity="0.25" stroke="#F7931E" stroke-width="1.5"/>
+    <text x="477" y="135" font-family="SF Mono, Fira Code, monospace" font-size="9" fill="#F7931E" opacity="0.85" font-weight="600">SAT heuristic</text>
+    <text x="477" y="148" font-family="system-ui, sans-serif" font-size="8" fill="#e8e6e3" opacity="0.35">search</text>
+
+    <circle cx="370" cy="170" r="9" fill="#F7931E" fill-opacity="0.25" stroke="#F7931E" stroke-width="1.5"/>
+    <text x="340" y="190" font-family="SF Mono, Fira Code, monospace" font-size="9" fill="#F7931E" opacity="0.85" font-weight="600">game AI</text>
+
+    <circle cx="520" cy="120" r="9" fill="#F7931E" fill-opacity="0.25" stroke="#F7931E" stroke-width="1.5"/>
+    <text x="537" y="117" font-family="SF Mono, Fira Code, monospace" font-size="9" fill="#F7931E" opacity="0.85" font-weight="600">PDE solver</text>
+    <text x="537" y="130" font-family="system-ui, sans-serif" font-size="8" fill="#e8e6e3" opacity="0.35">mesh in memory</text>
+
+    <circle cx="400" cy="225" r="9" fill="#F7931E" fill-opacity="0.25" stroke="#F7931E" stroke-width="1.5"/>
+    <text x="417" y="222" font-family="SF Mono, Fira Code, monospace" font-size="9" fill="#F7931E" opacity="0.85" font-weight="600">compiler pass</text>
+    <text x="417" y="235" font-family="system-ui, sans-serif" font-size="8" fill="#e8e6e3" opacity="0.35">IR in memory</text>
+
+    <circle cx="500" cy="160" r="9" fill="#F7931E" fill-opacity="0.25" stroke="#F7931E" stroke-width="1.5"/>
+    <text x="517" y="158" font-family="SF Mono, Fira Code, monospace" font-size="9" fill="#F7931E" opacity="0.85" font-weight="600">backtester</text>
+    <text x="517" y="171" font-family="system-ui, sans-serif" font-size="8" fill="#e8e6e3" opacity="0.35">tick data loaded</text>
+
+    <circle cx="440" cy="200" r="9" fill="#F7931E" fill-opacity="0.25" stroke="#F7931E" stroke-width="1.5"/>
+    <text x="457" y="198" font-family="SF Mono, Fira Code, monospace" font-size="9" fill="#F7931E" opacity="0.85" font-weight="600">robotics ctrl</text>
+    <text x="457" y="211" font-family="system-ui, sans-serif" font-size="8" fill="#e8e6e3" opacity="0.35">sim state</text>
+
+    <!-- Python REPL zone (lower left) -->
+    <circle cx="160" cy="380" r="7" fill="#e8e6e3" fill-opacity="0.1" stroke="#e8e6e3" stroke-width="1" stroke-opacity="0.25"/>
+    <text x="175" y="383" font-family="system-ui, sans-serif" font-size="8.5" fill="#e8e6e3" opacity="0.3">web scraper</text>
+
+    <circle cx="210" cy="350" r="7" fill="#e8e6e3" fill-opacity="0.1" stroke="#e8e6e3" stroke-width="1" stroke-opacity="0.25"/>
+    <text x="225" y="353" font-family="system-ui, sans-serif" font-size="8.5" fill="#e8e6e3" opacity="0.3">text processing</text>
+
+    <circle cx="140" cy="410" r="7" fill="#e8e6e3" fill-opacity="0.1" stroke="#e8e6e3" stroke-width="1" stroke-opacity="0.25"/>
+    <text x="155" y="413" font-family="system-ui, sans-serif" font-size="8.5" fill="#e8e6e3" opacity="0.3">API integration</text>
+
+    <!-- Jupyter zone (lower right) -->
+    <circle cx="410" cy="370" r="7" fill="#FF6B35" fill-opacity="0.12" stroke="#FF6B35" stroke-width="1" stroke-opacity="0.3"/>
+    <text x="425" y="373" font-family="system-ui, sans-serif" font-size="8.5" fill="#e8e6e3" opacity="0.3">ML training loop</text>
+
+    <circle cx="460" cy="400" r="7" fill="#FF6B35" fill-opacity="0.12" stroke="#FF6B35" stroke-width="1" stroke-opacity="0.3"/>
+    <text x="475" y="403" font-family="system-ui, sans-serif" font-size="8.5" fill="#e8e6e3" opacity="0.3">data analysis</text>
+
+    <circle cx="380" cy="410" r="7" fill="#FF6B35" fill-opacity="0.12" stroke="#FF6B35" stroke-width="1" stroke-opacity="0.3"/>
+    <text x="395" y="413" font-family="system-ui, sans-serif" font-size="8.5" fill="#e8e6e3" opacity="0.3">EDA notebook</text>
+
+    <!-- Compiled tool zone (upper left) -->
+    <circle cx="170" cy="160" r="7" fill="#00D4AA" fill-opacity="0.12" stroke="#00D4AA" stroke-width="1" stroke-opacity="0.3"/>
+    <text x="185" y="163" font-family="system-ui, sans-serif" font-size="8.5" fill="#e8e6e3" opacity="0.3">CLI tool</text>
+
+    <circle cx="140" cy="195" r="7" fill="#00D4AA" fill-opacity="0.12" stroke="#00D4AA" stroke-width="1" stroke-opacity="0.3"/>
+    <text x="155" y="198" font-family="system-ui, sans-serif" font-size="8.5" fill="#e8e6e3" opacity="0.3">microservice</text>
+
+    <circle cx="200" cy="130" r="7" fill="#00D4AA" fill-opacity="0.12" stroke="#00D4AA" stroke-width="1" stroke-opacity="0.3"/>
+    <text x="215" y="133" font-family="system-ui, sans-serif" font-size="8.5" fill="#e8e6e3" opacity="0.3">codec / parser</text>
+
+  </g>
+
+  <!-- Footer -->
+  <text x="350" y="595" text-anchor="middle" font-family="SF Mono, Fira Code, JetBrains Mono, Consolas, monospace" font-size="9" fill="#e8e6e3" opacity="0.15" letter-spacing="0.05em">symbiont.rs — hot-reload agent harness for Rust</text>
+</svg>

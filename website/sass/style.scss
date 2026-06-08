@@ -303,6 +303,28 @@ section {
   }
 }
 
+// --- Positioning Quadrant ---
+
+.quadrant {
+  text-align: center;
+
+  h2 { margin-bottom: 0.5rem; }
+
+  .quadrant-subtitle {
+    color: $text-muted;
+    max-width: 640px;
+    margin: 0 auto 2rem;
+    font-size: 0.95rem;
+    line-height: 1.6;
+  }
+
+  .quadrant-svg {
+    max-width: 700px;
+    width: 100%;
+    height: auto;
+  }
+}
+
 // --- Examples gallery ---
 
 .examples {
