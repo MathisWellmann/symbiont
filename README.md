@@ -104,21 +104,6 @@ See the [Development setup](#development-setup) section and the `examples/` dire
   Any LLM code that generate a runtime panic will be caught using `catch_unwind`, and the panic message is used
   to provide backpressure in the prompt. See [unwind.rs](symbiont/src/unwind.rs) for details.
 
-## Motivation
-
-Current-generation Agent harnesses such as [Agentica](https://github.com/symbolica-ai/ARC-AGI-3-Agents) achieve SOTA
-on complex long-running tasks like ARC-AGI-3 by providing a persistent Python REPL that the agent lives in.
-This is known as **CodeMode** — it allows the agent to leverage the entire Python ecosystem natively, without MCP.
-
-However, Python's interpreter overhead becomes the bottleneck for compute-heavy workloads.
-If the agent's task is to optimize a well-typed function, evaluation in Python can be 10-100x slower than native execution,
-directly limiting how many iterations the agent can explore in a given time budget.
-
-Symbiont brings a similar agentic code evolution paradigm to Rust.
-Agents write type-safe function bodies that get compiled to native code and hot-swapped into the running binary.
-The Rust compiler enforces memory safety and type correctness,
-while `symbiont`'s constrained generation loop ensures the LLM output always compiles before it reaches execution.
-
 ## When Symbiont wins
 
 <p align="center">
