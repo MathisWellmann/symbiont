@@ -8,6 +8,7 @@ license = "MPL-2.0"
 name = "symbiont-macros"
 repository = "https://github.com/MathisWellmann/symbiont"
 version.workspace = true
+website = "https://symbiont.rs"
 
 [lints]
 workspace = true
