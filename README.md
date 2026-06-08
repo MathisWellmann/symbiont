@@ -119,6 +119,12 @@ Agents write type-safe function bodies that get compiled to native code and hot-
 The Rust compiler enforces memory safety and type correctness,
 while `symbiont`'s constrained generation loop ensures the LLM output always compiles before it reaches execution.
 
+## When Symbiont wins
+
+<p align="center">
+  <img src="assets/symbiont_quadrant.svg" alt="Positioning Quadrant — When Symbiont Wins" width="90%">
+</p>
+
 ## Use cases
 
 - Typed function body search (e.g., find an implementation that satisfies a test suite).
