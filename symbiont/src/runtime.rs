@@ -31,8 +31,12 @@ use minstant::Instant;
 use owo_colors::OwoColorize;
 use prettyplease::unparse;
 use rig_core::{
-    completion::Chat,
-    message::Message,
+    completion::Completion,
+    message::{
+        AssistantContent,
+        Message,
+    },
+    providers::openrouter,
 };
 use tracing::{
     debug,
@@ -221,7 +225,7 @@ impl Runtime {
     /// the caller's responsibility.
     async fn evolve_no_backpressure<AgentT>(&self, agent: &AgentT, prompt: &str) -> Result<()>
     where
-        AgentT: Chat,
+        AgentT: Completion<openrouter::CompletionModel>,
     {
         #[cfg(debug_assertions)]
         {
@@ -247,15 +251,26 @@ impl Runtime {
                 .map_err(|_| Error::MutexPoison)?
                 .clone();
             info!("chat history: {hist:?}");
-            let response = agent.chat(prompt, &mut hist).await?;
+
+            let completion = agent.completion(prompt, &hist).await?.send().await?;
+            // TODO: gather usage from the response.
+
+            let msg = Message::Assistant {
+                id: completion.message_id,
+                content: completion.choice.clone(),
+            };
+            info!("llm_response: {:?}", msg);
+            hist.push(msg);
             *self.chat_history.lock().map_err(|_| Error::MutexPoison)? = hist;
-            response
+            completion.choice
         };
         let llm_time = t0.elapsed().as_millis();
-        info!("llm_response: {}", llm_response.blue());
 
         // Parse Rust from markdown fences
-        let mut ast = parse_rust_code(&llm_response).map_err(|_| Error::CouldNotParseRust)?;
+        let AssistantContent::Text(msg) = llm_response.first() else {
+            return Err(Error::NoRustCode);
+        };
+        let mut ast = parse_rust_code(msg.text()).map_err(|_| Error::CouldNotParseRust)?;
 
         // Validate signatures match declarations
         validate_generated_ast(&mut ast, &self.fn_sigs)?;
@@ -354,7 +369,7 @@ impl Runtime {
         base_prompt: &str,
     ) -> impl Future<Output = Result<()>> + Send
     where
-        AgentT: Chat,
+        AgentT: Completion<openrouter::CompletionModel> + Sync,
     {
         async move {
             let mut prompt = base_prompt.to_string();
