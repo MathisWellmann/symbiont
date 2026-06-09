@@ -4,7 +4,17 @@
     reason = "Integration tests don't use them all"
 )]
 
-use rig_core::completion::Chat;
+use rig_core::{
+    completion::{
+        Chat,
+        Completion,
+        CompletionRequestBuilder,
+    },
+    providers::openrouter::{
+        self,
+        CompletionModel,
+    },
+};
 use symbiont::{
     FullSource,
     Profile,
@@ -68,6 +78,25 @@ async fn runtime() {
 }
 
 struct MockAgent;
+
+impl Completion<CompletionModel> for MockAgent {
+    fn completion<I, T>(
+        &self,
+        prompt: impl Into<rig_core::message::Message> + rig_core::wasm_compat::WasmCompatSend,
+        chat_history: I,
+    ) -> impl Future<
+        Output = Result<
+            CompletionRequestBuilder<CompletionModel>,
+            rig_core::completion::CompletionError,
+        >,
+    > + rig_core::wasm_compat::WasmCompatSend
+    where
+        I: IntoIterator<Item = T> + rig_core::wasm_compat::WasmCompatSend,
+        T: Into<rig_core::message::Message>,
+    {
+        todo!()
+    }
+}
 
 impl Chat for MockAgent {
     fn chat(
