@@ -94,6 +94,9 @@
         )}:/run/opengl-driver/lib";
         CUDA_PATH = "${pkgs.cudatoolkit}";
       };
+      zola = pkgs.mkShell {
+        buildInputs = [pkgs.zola];
+      };
     };
   };
 }
