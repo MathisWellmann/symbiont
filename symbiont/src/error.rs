@@ -17,6 +17,9 @@ pub enum Error {
     #[error(transparent)]
     RigHttp(#[from] rig_core::http_client::Error),
 
+    #[error("The mutex was poisoned")]
+    MutexPoison,
+
     #[error("The text does not contain any rust code.")]
     NoRustCode,
 
