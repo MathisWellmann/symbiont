@@ -30,7 +30,10 @@ use libloading::Library;
 use minstant::Instant;
 use owo_colors::OwoColorize;
 use prettyplease::unparse;
-use rig_core::completion::Prompt;
+use rig_core::{
+    completion::Chat,
+    message::Message,
+};
 use tracing::{
     debug,
     info,
@@ -104,6 +107,8 @@ pub struct Runtime {
     prelude: Vec<String>,
     /// The currently active AST of the agent code, in String form, to make it `Send`
     current_clean_ast: Mutex<String>,
+    /// The chat history behind a Mutex, because the `Runtime` methods can not be `&mut self` as it lives in `static RUNTIME`.
+    chat_history: Mutex<Vec<Message>>,
 }
 
 impl Runtime {
@@ -197,6 +202,7 @@ impl Runtime {
             profile: config.profile(),
             prelude,
             current_clean_ast: Mutex::new(lib_rs),
+            chat_history: Mutex::new(Vec::with_capacity(8)),
         };
 
         RUNTIME
@@ -215,7 +221,7 @@ impl Runtime {
     /// the caller's responsibility.
     async fn evolve_no_backpressure<AgentT>(&self, agent: &AgentT, prompt: &str) -> Result<()>
     where
-        AgentT: Prompt,
+        AgentT: Chat,
     {
         #[cfg(debug_assertions)]
         {
@@ -231,7 +237,20 @@ impl Runtime {
 
         info!("prompt: {}", prompt.green());
         let t0 = Instant::now();
-        let llm_response = agent.prompt(prompt).await?;
+        // code block to drop the mutex guard cleanly and obviously at the end.
+        let llm_response = {
+            // `.clone` the history here to ensure the mutex lock is not held across await points,
+            // which would make this future `!Send`
+            let mut hist = self
+                .chat_history
+                .lock()
+                .map_err(|_| Error::MutexPoison)?
+                .clone();
+            info!("chat history: {hist:?}");
+            let response = agent.chat(prompt, &mut hist).await?;
+            *self.chat_history.lock().map_err(|_| Error::MutexPoison)? = hist;
+            response
+        };
         let llm_time = t0.elapsed().as_millis();
         info!("llm_response: {}", llm_response.blue());
 
@@ -335,7 +354,7 @@ impl Runtime {
         base_prompt: &str,
     ) -> impl Future<Output = Result<()>> + Send
     where
-        AgentT: Prompt,
+        AgentT: Chat,
     {
         async move {
             let mut prompt = base_prompt.to_string();

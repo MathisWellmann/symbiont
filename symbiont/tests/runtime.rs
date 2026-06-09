@@ -4,7 +4,7 @@
     reason = "Integration tests don't use them all"
 )]
 
-use rig_core::completion::Prompt;
+use rig_core::completion::Chat;
 use symbiont::{
     FullSource,
     Profile,
@@ -69,14 +69,13 @@ async fn runtime() {
 
 struct MockAgent;
 
-impl Prompt for MockAgent {
-    fn prompt(
+impl Chat for MockAgent {
+    fn chat(
         &self,
         _prompt: impl Into<rig_core::message::Message> + rig_core::wasm_compat::WasmCompatSend,
-    ) -> impl IntoFuture<
-        Output = Result<String, rig_core::completion::PromptError>,
-        IntoFuture: rig_core::wasm_compat::WasmCompatSend,
-    > {
+        _chat_history: &mut Vec<rig_core::message::Message>,
+    ) -> impl Future<Output = Result<String, rig_core::completion::PromptError>>
+    + rig_core::wasm_compat::WasmCompatSend {
         async {
             Ok("```
             pub fn step(counter: &mut usize) { *counter += 5; }
