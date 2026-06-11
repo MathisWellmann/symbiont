@@ -100,6 +100,23 @@ The LLM must discover features (momentum, volatility, order flow), position sizi
 cargo run -p evolving-trader-example
 ```
 
+## Showcase: evolving a live fractal shader
+
+The [fractal-studio-example](examples/fractal-studio/README.md) is an interactive egui window whose **per-pixel shader is written by the LLM** and hot-swapped into the running binary as optimized native code.
+Type a prompt — *"an animated Julia set, c orbiting the main cardioid, with a glowing sunset palette"* — and the agent implements `fn shade(x: f64, y: f64, t: f64) -> u32`; the live animation morphs in place, no restart:
+
+<p align="center" width="100%">
+<video src="https://github.com/user-attachments/assets/1527ea1d-decd-46a4-9687-5189cac16bd9" width="80%" controls></video>
+</p>
+
+- `shade` is called once per pixel (~0.5M calls/frame at 960×540), parallelized over all cores with rayon — an interpreted agent-code loop would be orders of magnitude too slow to animate.
+- The user is the evaluator: the runtime keeps the chat history, so follow-up prompts refine the current shader.
+- Agent code panics are caught inside the dylib (rendered as black pixels) and fed back into the next evolution prompt.
+
+```bash
+cargo run -p fractal-studio-example --release
+```
+
 ## Core highlights
 
 - **Type-safe agentic code**:
@@ -141,6 +158,8 @@ cargo run -p evolving-trader-example
   - See [sort-example](examples/sort/README.md)
 - Game AI / strategic reasoning through evolved code
   - See [tictactoe-example](examples/tictactoe/README.md)
+- Interactive, human-in-the-loop visual evolution where the user is the evaluator.
+  - See [fractal-studio-example](examples/fractal-studio/README.md)
 - Tool-augmented evolution, where the agent must discover the specification through tool calls before writing code.
   - See [tool-calling-example](examples/tool-calling/src/main.rs)
 - Auto-research workflows with native-speed evaluation.

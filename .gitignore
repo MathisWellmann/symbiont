@@ -7,3 +7,5 @@ mutants.out.old/
 mprocs.log
 # Large trade data csv for the evolving-trader example (downloaded on demand).
 examples/evolving-trader/data/
+README.md
+README.md
