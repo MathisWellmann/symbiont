@@ -50,6 +50,20 @@
     cuda_inputs = with pkgs; [
       cudatoolkit
     ];
+    # Runtime libraries dlopen'ed by winit/eframe for the GUI examples
+    # (e.g. fractal-studio): Wayland client + libxkbcommon for the Wayland
+    # backend, X11 libraries as fallback, and libglvnd (libGL/libEGL) for
+    # OpenGL dispatch. These are not linked at build time, so they must be
+    # on LD_LIBRARY_PATH of the dev shell.
+    gui_inputs = with pkgs; [
+      libGL
+      libx11
+      libxcursor
+      libxi
+      libxkbcommon
+      libxrandr
+      wayland
+    ];
     lsps = with pkgs; [
       marksman # Markdown LSP
       markdown-oxide
@@ -83,6 +97,7 @@
         buildInputs =
           buildInputs
           ++ cuda_inputs
+          ++ gui_inputs
           ++ lsps
           ++ tooling
           ++ nix_tools;
@@ -91,6 +106,7 @@
         LD_LIBRARY_PATH = "${pkgs.lib.makeLibraryPath (
           buildInputs
           ++ cuda_inputs
+          ++ gui_inputs
         )}:/run/opengl-driver/lib";
         CUDA_PATH = "${pkgs.cudatoolkit}";
       };

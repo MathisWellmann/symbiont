@@ -1,0 +1,19 @@
+[package]
+edition = "2024"
+license = "MPL-2.0"
+name = "fractal-studio-example"
+publish = false
+version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+symbiont = { path = "../../symbiont" }
+
+tokio.workspace = true
+tracing.workspace = true
+
+eframe = "0.34"
+egui_extras = { version = "0.34", features = ["syntect"] }
+rayon = "1"
