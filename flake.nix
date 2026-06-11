@@ -50,19 +50,13 @@
     cuda_inputs = with pkgs; [
       cudatoolkit
     ];
-    # Runtime libraries dlopen'ed by winit/eframe for the GUI examples
-    # (e.g. fractal-studio): Wayland client + libxkbcommon for the Wayland
-    # backend, X11 libraries as fallback, and libglvnd (libGL/libEGL) for
-    # OpenGL dispatch. These are not linked at build time, so they must be
-    # on LD_LIBRARY_PATH of the dev shell.
-    gui_inputs = with pkgs; [
-      libGL
-      libx11
-      libxcursor
-      libxi
-      libxkbcommon
-      libxrandr
+    egui_inputs = with pkgs; [
       wayland
+      libxkbcommon
+      libGL
+      # Vulkan loader (libvulkan.so.1) is dlopen'ed by wgpu; the driver ICDs
+      # under /run/opengl-driver are useless without it on LD_LIBRARY_PATH.
+      vulkan-loader
     ];
     lsps = with pkgs; [
       marksman # Markdown LSP
@@ -85,6 +79,7 @@
       devenv
       zola
       llama-cpp
+      vulkan-tools # vulkaninfo, for debugging adapter discovery
     ];
     nix_tools = with pkgs; [
       alejandra # Nix code formatter
@@ -97,7 +92,7 @@
         buildInputs =
           buildInputs
           ++ cuda_inputs
-          ++ gui_inputs
+          ++ egui_inputs
           ++ lsps
           ++ tooling
           ++ nix_tools;
@@ -106,7 +101,7 @@
         LD_LIBRARY_PATH = "${pkgs.lib.makeLibraryPath (
           buildInputs
           ++ cuda_inputs
-          ++ gui_inputs
+          ++ egui_inputs
         )}:/run/opengl-driver/lib";
         CUDA_PATH = "${pkgs.cudatoolkit}";
       };
