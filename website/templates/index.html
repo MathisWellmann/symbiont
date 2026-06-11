@@ -181,6 +181,38 @@
     </div>
   </section>
 
+  <!-- Showcase: Fractal Studio -->
+  <section class="showcase">
+    <div class="container">
+      <h2>Showcase: Fractal Studio</h2>
+      <p class="showcase-intro">
+        An interactive window whose <strong>per-pixel shader is written by the LLM</strong>
+        and hot-swapped into the running binary as optimized native code.
+        Type a prompt &mdash; <em>"an animated Julia set, c orbiting the main cardioid,
+        with a glowing sunset palette"</em> &mdash; and the agent implements
+        <code>fn shade(x: f64, y: f64, t: f64) -&gt; u32</code>;
+        the live animation morphs in place, no restart.
+      </p>
+      <video autoplay muted loop playsinline controls>
+        <source src="/fractal-studio-example.mp4" type="video/mp4">
+      </video>
+      <ul class="showcase-points">
+        <li><code>shade</code> is called once per pixel (~0.5M calls/frame), parallelized
+            over all cores &mdash; an interpreted agent-code loop would be orders of
+            magnitude too slow to animate.</li>
+        <li>The user is the evaluator: the runtime keeps the chat history, so follow-up
+            prompts refine the current shader.</li>
+        <li>Agent code panics are caught inside the dylib (rendered as black pixels)
+            and fed back into the next evolution prompt.</li>
+      </ul>
+      <p class="showcase-cta">
+        <a href="{{ config.extra.github_url }}/tree/main/examples/fractal-studio">
+          Explore the fractal-studio example &rarr;
+        </a>
+      </p>
+    </div>
+  </section>
+
   <!-- Features -->
   <section class="features">
     <div class="container">
