@@ -223,6 +223,64 @@ section {
   }
 }
 
+// --- Showcase (Fractal Studio) ---
+
+.showcase {
+  h2 { text-align: center; margin-bottom: 1.5rem; }
+
+  .showcase-intro {
+    color: $text-muted;
+    max-width: 720px;
+    margin: 0 auto 2rem;
+    text-align: center;
+    font-size: 0.95rem;
+    line-height: 1.7;
+
+    code { color: $teal; }
+  }
+
+  video {
+    display: block;
+    width: 100%;
+    border: 1px solid $border;
+    border-radius: 8px;
+    margin-bottom: 2rem;
+  }
+
+  .showcase-points {
+    list-style: none;
+    max-width: 720px;
+    margin: 0 auto 1.5rem;
+
+    li {
+      position: relative;
+      padding-left: 1.4rem;
+      margin-bottom: 0.6rem;
+      font-size: 0.95rem;
+      color: $text-muted;
+
+      code { color: $teal; }
+
+      &::before {
+        content: '';
+        position: absolute;
+        left: 0;
+        top: 0.45rem;
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: linear-gradient(135deg, $teal, $dark-teal);
+        box-shadow: 0 0 6px rgba(78, 205, 196, 0.4);
+      }
+    }
+  }
+
+  .showcase-cta {
+    text-align: center;
+    font-weight: 600;
+  }
+}
+
 // --- Features ---
 
 .features {
