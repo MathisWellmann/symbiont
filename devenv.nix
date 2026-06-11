@@ -14,8 +14,7 @@ in {
   processes.llama-server = {
     exec = ''
       llama-server \
-        --hf-repo ggml-org/gemma-4-E2B-it-GGUF \
-        --hf-file gemma-4-E2B-it-Q8_0.gguf \
+        -hf LiquidAi/LFM2.5-8B-A1B-GGUF \
         --host 127.0.0.1 \
         --port ${toString port} \
         --n-gpu-layers 999 \
