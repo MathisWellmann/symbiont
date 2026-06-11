@@ -293,6 +293,18 @@
     <div class="container">
       <h2>Examples</h2>
       <div class="gallery">
+        <a href="https://github.com/MathisWellmann/symbiont/tree/main/examples/evolving-trader" class="example">
+          <img src="/img/evolving-trader-example.png"
+               alt="Evolving trader backtest report and equity curve"
+               loading="lazy">
+          <div class="caption">
+            <h3>Evolving Trader &mdash; Quantitative strategy evolution</h3>
+            <p>The LLM evolves a futures trading strategy as compiled Rust
+               against a realistic exchange simulation &mdash; fees, spread and
+               margin included. The best strategy is judged on a held-out
+               test segment.</p>
+          </div>
+        </a>
         <a href="https://github.com/MathisWellmann/symbiont/tree/main/examples/fizzbuzz" class="example">
           <img src="/img/fizzbuzz-example.png"
                alt="FizzBuzz example output"
@@ -344,6 +356,18 @@
             <p>Evolve a quantization function that minimizes
                reconstruction error (MSE) while reducing distinct output
                levels. Tracks a Pareto frontier across 20 rounds.</p>
+          </div>
+        </a>
+        <a href="https://github.com/MathisWellmann/symbiont/tree/main/examples/tool-calling" class="example">
+          <img src="/img/tool-calling-example.png"
+               alt="Tool-calling example log showing probe calls"
+               loading="lazy">
+          <div class="caption">
+            <h3>Tool Calling &mdash; Discover the spec, then code it</h3>
+            <p>The function specification is deliberately withheld. The agent
+               must call a <code>probe</code> tool granting black-box access to
+               a hidden rule, experiment until the behaviour is clear, then
+               implement it as native code.</p>
           </div>
         </a>
         <a href="https://github.com/MathisWellmann/symbiont/tree/main/examples/counter" class="example">
