@@ -244,7 +244,7 @@ impl Runtime {
                 .lock()
                 .map_err(|_| Error::MutexPoison)?
                 .clone();
-            info!("chat history: {hist:?}");
+            debug!("chat history: {hist:?}");
 
             // The agent implementation drives any tool-calling turns to
             // completion internally and returns only the final text.
