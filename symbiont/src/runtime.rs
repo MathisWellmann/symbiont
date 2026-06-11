@@ -30,14 +30,7 @@ use libloading::Library;
 use minstant::Instant;
 use owo_colors::OwoColorize;
 use prettyplease::unparse;
-use rig_core::{
-    completion::Completion,
-    message::{
-        AssistantContent,
-        Message,
-    },
-    providers::openrouter,
-};
+use rig_core::message::Message;
 use tracing::{
     debug,
     info,
@@ -46,6 +39,7 @@ use tracing::{
 
 use crate::{
     DylibConfig,
+    EvolutionAgent,
     EvolvableDecl,
     FullSource,
     Profile,
@@ -225,7 +219,7 @@ impl Runtime {
     /// the caller's responsibility.
     async fn evolve_no_backpressure<AgentT>(&self, agent: &AgentT, prompt: &str) -> Result<()>
     where
-        AgentT: Completion<openrouter::CompletionModel>,
+        AgentT: EvolutionAgent,
     {
         #[cfg(debug_assertions)]
         {
@@ -245,32 +239,31 @@ impl Runtime {
         let llm_response = {
             // `.clone` the history here to ensure the mutex lock is not held across await points,
             // which would make this future `!Send`
-            let mut hist = self
+            let hist = self
                 .chat_history
                 .lock()
                 .map_err(|_| Error::MutexPoison)?
                 .clone();
             info!("chat history: {hist:?}");
 
-            let completion = agent.completion(prompt, &hist).await?.send().await?;
-            // TODO: gather usage from the response.
+            // The agent implementation drives any tool-calling turns to
+            // completion internally and returns only the final text.
+            let run = agent.run(prompt, hist).await?;
+            info!("llm_response: {}", run.output.blue());
+            info!("token usage for this run: {:?}", run.usage);
 
-            let msg = Message::Assistant {
-                id: completion.message_id,
-                content: completion.choice.clone(),
-            };
-            info!("llm_response: {:?}", msg);
-            hist.push(msg);
-            *self.chat_history.lock().map_err(|_| Error::MutexPoison)? = hist;
-            completion.choice
+            // `new_messages` contains the prompt, assistant turns and any
+            // tool exchanges of this run, so extending is sufficient.
+            self.chat_history
+                .lock()
+                .map_err(|_| Error::MutexPoison)?
+                .extend(run.new_messages);
+            run.output
         };
         let llm_time = t0.elapsed().as_millis();
 
         // Parse Rust from markdown fences
-        let AssistantContent::Text(msg) = llm_response.first() else {
-            return Err(Error::NoRustCode);
-        };
-        let mut ast = parse_rust_code(msg.text()).map_err(|_| Error::CouldNotParseRust)?;
+        let mut ast = parse_rust_code(&llm_response).map_err(|_| Error::CouldNotParseRust)?;
 
         // Validate signatures match declarations
         validate_generated_ast(&mut ast, &self.fn_sigs)?;
@@ -369,7 +362,7 @@ impl Runtime {
         base_prompt: &str,
     ) -> impl Future<Output = Result<()>> + Send
     where
-        AgentT: Completion<openrouter::CompletionModel> + Sync,
+        AgentT: EvolutionAgent + Sync,
     {
         async move {
             let mut prompt = base_prompt.to_string();
@@ -430,6 +423,9 @@ impl Runtime {
                         ),
                         CouldNotParseRust => prompt.push_str(
                             "Your response did not contain valid Rust code. Please try again",
+                        ),
+                        RigPrompt(rig_core::completion::PromptError::MaxTurnsError { .. }) => prompt.push_str(
+                            " You exhausted the tool-call turn budget before producing code. Respond with the final Rust code block now.",
                         ),
                         WriteLib(_) => todo!(),
                         SignatureMismatch {

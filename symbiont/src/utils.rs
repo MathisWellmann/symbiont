@@ -177,9 +177,9 @@ pub(crate) fn find_so(crate_dir: &Path, profile: Profile) -> Result<PathBuf> {
 /// safe to retry without modifying the prompt.
 pub(crate) fn is_transient_http_error(err: &Error) -> bool {
     let http_err = match err {
-        Error::RigCompletion(rig_core::completion::CompletionError::HttpError(http_err)) => {
-            http_err
-        }
+        Error::RigPrompt(rig_core::completion::PromptError::CompletionError(
+            rig_core::completion::CompletionError::HttpError(http_err),
+        )) => http_err,
         Error::RigHttp(http_err) => http_err,
         _ => return false,
     };
