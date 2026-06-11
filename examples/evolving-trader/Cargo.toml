@@ -1,0 +1,28 @@
+[package]
+edition = "2024"
+license = "MPL-2.0"
+name = "evolving-trader-example"
+publish = false
+version.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["dylib", "rlib"]
+
+[dependencies]
+symbiont = { path = "../../symbiont" }
+
+tokio.workspace = true
+tracing.workspace = true
+
+lfest = { git = "https://github.com/MathisWellmann/lfest-rs", rev = "7407d86055ae5888edb6606f4d104f4bf90a3549" }
+plotters = { version = "0.3", default-features = false, features = [
+  "bitmap_backend",
+  "bitmap_encoder",
+  "line_series",
+  "ttf",
+] }
+trade_aggregation = "13"
+viuer = { version = "0.11", features = ["print-file"] }

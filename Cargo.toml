@@ -2,6 +2,7 @@
 exclude = ["assets", "website"]
 members = [
   "examples/counter",
+  "examples/evolving-trader",
   "examples/fizzbuzz",
   "examples/quantize",
   "examples/rastrigin",
