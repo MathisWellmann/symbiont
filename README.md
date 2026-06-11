@@ -98,6 +98,10 @@ See the [Development setup](#development-setup) section and the `examples/` dire
   The hot path is fully lock-free and multi-thread safe.
 - **Plug-in inference**:
   Any Inference provider is supported via [rig](https://github.com/0xPlaygrounds/rig).
+- **Tool calling**:
+  Register any rig `Tool` on the agent and it becomes available during evolution — rig drives the multi-turn tool-calling loop internally while the harness consumes only the final code.
+  This lets the agent gather information (run tests, probe black-box systems, query data) before committing to an implementation.
+  See the [tool-calling-example](examples/tool-calling/src/main.rs).
 - **Tiny Core**:
   Only ~1000 LOC for the Agent harness and constrained generation part.
 - **Catches Agent Code Panics**
@@ -119,6 +123,8 @@ See the [Development setup](#development-setup) section and the `examples/` dire
   - See [sort-example](examples/sort/README.md)
 - Game AI / strategic reasoning through evolved code
   - See [tictactoe-example](examples/tictactoe/README.md)
+- Tool-augmented evolution, where the agent must discover the specification through tool calls before writing code.
+  - See [tool-calling-example](examples/tool-calling/src/main.rs)
 - Auto-research workflows with native-speed evaluation.
   - See [quatize-example](examples/quantize/README.md)
 - Black-box optimization of inputs that produce desired outputs, e.g. Parameter Search.
