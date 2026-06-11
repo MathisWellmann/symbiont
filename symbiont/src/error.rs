@@ -23,8 +23,8 @@ pub enum Error {
     #[error("The text does not contain any rust code.")]
     NoRustCode,
 
-    #[error("Could not parse Rust code.")]
-    CouldNotParseRust,
+    #[error("Could not parse Rust code: {err}")]
+    CouldNotParseRust { code: String, err: String },
 
     #[error("Failed to write lib.rs: {0}")]
     WriteLib(String),

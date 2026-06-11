@@ -263,7 +263,7 @@ impl Runtime {
         let llm_time = t0.elapsed().as_millis();
 
         // Parse Rust from markdown fences
-        let mut ast = parse_rust_code(&llm_response).map_err(|_| Error::CouldNotParseRust)?;
+        let mut ast = parse_rust_code(&llm_response)?;
 
         // Validate signatures match declarations
         validate_generated_ast(&mut ast, &self.fn_sigs)?;
@@ -421,9 +421,9 @@ impl Runtime {
                         NoRustCode => prompt.push_str(
                             "Your response did not contain a rust code block. Please try again and make sure its wrapped like this: ```CODE```",
                         ),
-                        CouldNotParseRust => prompt.push_str(
-                            "Your response did not contain valid Rust code. Please try again",
-                        ),
+                        CouldNotParseRust { code, err } => write!(prompt,
+                            " Your generated code ```{}``` is not valid Rust. Parse error: ```{}```. Fix the syntax error and respond with the full corrected code.", code.blue(), err.red()
+                        ).expect("Can write to prompt"),
                         RigPrompt(rig_core::completion::PromptError::MaxTurnsError { .. }) => prompt.push_str(
                             " You exhausted the tool-call turn budget before producing code. Respond with the final Rust code block now.",
                         ),
