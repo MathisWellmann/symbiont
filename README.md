@@ -84,6 +84,22 @@ The harness provides constrained generation and nudges the LLM prompt if necessa
 
 See the [Development setup](#development-setup) section and the `examples/` directory for more.
 
+## Showcase: evolving a trading strategy
+
+The [evolving-trader-example](examples/evolving-trader/README.md) is the most complete demonstration of what symbiont can do.
+An LLM evolves a futures **trading strategy** as compiled Rust against a realistic exchange simulation:
+
+- ~1M raw BitMEX XBTUSD trades are aggregated into information-driven **volume candles** with [trade_aggregation](https://crates.io/crates/trade_aggregation).
+- Executions are simulated with the leveraged futures exchange [lfest](https://crates.io/crates/lfest) — taker fees, bid-ask spread and margin requirements included.
+- The evolvable `fn decide(candles: &[Candle], account: &AccountState) -> Action` receives a sliding window of candles plus the account state and returns a market-order action.
+- Each round, the backtest report (return, buy & hold benchmark, drawdown, Sharpe, fees, rejected orders) is fed back to the LLM; the best strategy is evaluated on a **held-out test segment** it has never seen.
+
+The LLM must discover features (momentum, volatility, order flow), position sizing and fee-awareness — quantitative reasoning expressed as hot-swapped native code.
+
+```bash
+cargo run -p evolving-trader-example
+```
+
 ## Core highlights
 
 - **Type-safe agentic code**:
@@ -116,6 +132,8 @@ See the [Development setup](#development-setup) section and the `examples/` dire
 
 ## Use cases
 
+- Quantitative strategy evolution against a realistic market simulation.
+  - See [evolving-trader-example](examples/evolving-trader/README.md)
 - Typed function body search (e.g., find an implementation that satisfies a test suite).
   - See [fizzbuzz-example](examples/fizzbuzz/README.md)
   - See [rastrigin-example](examples/rastrigin/README.md)
