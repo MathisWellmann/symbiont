@@ -50,7 +50,7 @@ use crate::Result;
 /// }
 ///
 /// # async fn example() -> symbiont::Result<()> {
-/// let agent = symbiont::init_agent_builder(Some("my-crate"))
+/// let agent = symbiont::agent_builder(Some("my-crate"))
 ///     .await?
 ///     .tool(RunTests)
 ///     .default_max_turns(5)
@@ -74,7 +74,7 @@ use crate::Result;
 /// - `BASE_URL`: The inference endpoint for `/v1/chat/completions` based requests.
 /// - `MODEL`: The model slug.
 ///
-pub async fn init_agent_builder(opt_crate_name: Option<&str>) -> Result<crate::AgentBuilder> {
+pub async fn agent_builder(opt_crate_name: Option<&str>) -> Result<crate::AgentBuilder> {
     let api_key = var("API_KEY").unwrap_or_default();
     let base_url = var("BASE_URL").unwrap_or_default();
     let model = var("MODEL").unwrap_or_default();
@@ -90,9 +90,9 @@ pub async fn init_agent_builder(opt_crate_name: Option<&str>) -> Result<crate::A
 
 /// Initialize the agent using the environment variables.
 ///
-/// Convenience wrapper around [`init_agent_builder`] for agents without tools.
+/// Convenience wrapper around [`agent_builder`] for agents without tools.
 /// To register tools or customize the agent (temperature, max turns, hooks),
-/// use [`init_agent_builder`] instead.
+/// use [`agent_builder`] instead.
 ///
 /// # Arguments:
 /// - `opt_crate_name`: If `Some`, then documentation for that crate will be built and included in the system prompt,
@@ -105,7 +105,7 @@ pub async fn init_agent_builder(opt_crate_name: Option<&str>) -> Result<crate::A
 /// - `MODEL`: The model slug.
 ///
 pub async fn init_agent(opt_crate_name: Option<&str>) -> Result<crate::Agent> {
-    Ok(init_agent_builder(opt_crate_name).await?.build())
+    Ok(agent_builder(opt_crate_name).await?.build())
 }
 
 /* TODO: collect the token usage in the runtime and provide summary stats. This test is used for exploring this path.

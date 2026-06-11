@@ -101,7 +101,7 @@ async fn main() -> symbiont::Result<()> {
     // Register the `probe` tool on the pre-configured builder.
     // `default_max_turns` must be >= 1, otherwise rig aborts the run with
     // `MaxTurnsError` as soon as the model chains tool calls.
-    let agent = symbiont::init_agent_builder(None)
+    let agent = symbiont::agent_builder(None)
         .await?
         .tool(Probe)
         .default_max_turns(10)
