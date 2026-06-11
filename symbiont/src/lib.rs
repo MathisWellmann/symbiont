@@ -39,8 +39,8 @@ pub use evolution_agent::{
     EvolutionAgent,
 };
 pub use inference::{
+    agent_builder,
     init_agent,
-    init_agent_builder,
 };
 pub use init_tracing::init_tracing;
 pub use profile::Profile;
@@ -51,7 +51,7 @@ pub use symbiont_macros::evolvable;
 /// type alias for the return type of `init_agent`
 pub type Agent = rig_core::agent::Agent<CompletionModel>;
 
-/// Type alias for the pre-configured agent builder returned by [`init_agent_builder`].
+/// Type alias for the pre-configured agent builder.
 ///
 /// Register your own tools on it with rig's builder API before calling
 /// `.build()`, e.g. `.tool(MyTool).default_max_turns(5).build()`.
