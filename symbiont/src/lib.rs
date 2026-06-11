@@ -12,6 +12,7 @@ mod doc_string;
 mod dylib_config;
 mod dylib_dependency;
 mod error;
+mod evolution_agent;
 mod inference;
 mod init_tracing;
 mod parser;
@@ -32,6 +33,10 @@ pub use dylib_dependency::DylibDependency;
 pub use error::{
     Error,
     Result,
+};
+pub use evolution_agent::{
+    AgentRun,
+    EvolutionAgent,
 };
 pub use inference::init_agent;
 pub use init_tracing::init_tracing;
