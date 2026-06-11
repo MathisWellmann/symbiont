@@ -73,9 +73,19 @@ pub(crate) fn extract_rust_code(input: &str) -> Option<String> {
 ///
 /// This is the public entry point used by main.rs — callers pass the raw
 /// LLM response and this function handles fence extraction + parsing.
+///
+/// On parse failure the returned [`Error::CouldNotParseRust`] carries the
+/// offending code and syn's diagnostic (with line/column), so the evolve
+/// loop can feed a precise nudge back to the LLM.
 pub(crate) fn parse_rust_code(input: &str) -> Result<syn::File> {
     let code = extract_rust_code(input).ok_or(Error::NoRustCode)?;
-    let file = parse_file(&code)?;
+    let file = parse_file(&code).map_err(|e| {
+        let start: proc_macro2::LineColumn = e.span().start();
+        Error::CouldNotParseRust {
+            err: format!("{e} (line {}, column {})", start.line, start.column),
+            code,
+        }
+    })?;
     Ok(file)
 }
 
@@ -159,5 +169,33 @@ pub fn step(state: &mut usize) {
 ```";
         let file = parse_rust_code(input).expect("can parse");
         assert_eq!(file.items.len(), 1);
+    }
+
+    /// Regression test for the cast-then-shift grammar pitfall LLMs run into:
+    /// `r as u8 << 16` is invalid Rust because `<<` after a cast type is
+    /// interpreted as the start of generic arguments (`u8<...`), not a shift.
+    /// The returned error must carry the code and a located diagnostic.
+    #[test]
+    fn test_parse_error_carries_code_and_location() {
+        let input = "```rust
+pub fn shade(x: f64, y: f64, t: f64) -> u32 {
+    let r = (x * 255.0) as u32;
+    (r as u8 << 16) as u32
+}
+```";
+        let err = match parse_rust_code(input) {
+            Err(e) => e,
+            Ok(_) => panic!("cast followed by shift must fail to parse"),
+        };
+        match err {
+            Error::CouldNotParseRust { code, err } => {
+                assert!(
+                    code.contains("r as u8 << 16"),
+                    "code must be echoed: {code}"
+                );
+                assert!(err.contains("line "), "error must carry a location: {err}");
+            }
+            other => panic!("expected CouldNotParseRust, got: {other}"),
+        }
     }
 }

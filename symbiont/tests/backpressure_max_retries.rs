@@ -53,8 +53,8 @@ async fn retry_budget_is_bounded_and_nudges_do_not_accumulate() {
         } => {
             assert_eq!(attempts, Runtime::MAX_EVOLVE_ATTEMPTS);
             assert!(
-                matches!(*last_error, Error::CouldNotParseRust),
-                "last error should be the parse failure, got: {last_error}"
+                matches!(*last_error, Error::NoRustCode),
+                "last error should be the missing-code-block failure, got: {last_error}"
             );
         }
         other => panic!("expected MaxRetriesExceeded, got: {other}"),
@@ -67,7 +67,7 @@ async fn retry_budget_is_bounded_and_nudges_do_not_accumulate() {
     );
 
     // The nudge is appended to the *base* prompt each time — it never stacks.
-    const NUDGE: &str = "did not contain valid Rust code";
+    const NUDGE: &str = "did not contain a rust code block";
     let last = agent.prompt(Runtime::MAX_EVOLVE_ATTEMPTS - 1);
     assert_eq!(
         last,

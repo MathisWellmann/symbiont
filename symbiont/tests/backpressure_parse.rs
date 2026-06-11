@@ -34,8 +34,12 @@ async fn parse_failure_is_fed_back_and_recovered_from() {
         .expect("Can init runtime");
 
     let agent = ScriptedAgent::new([
-        // Attempt 1: prose without any code fence -> `CouldNotParseRust`.
-        Turn::reply("Sure thing! I would increment the counter by a nice number."),
+        // Attempt 1: a fenced code block that is NOT valid Rust — `as u8 << 16`
+        // fails to parse because `<<` after a cast type is interpreted as the
+        // start of generic arguments (`u8<...`), not a shift.
+        Turn::reply(
+            "```rust\npub fn bp_parse_step(counter: &mut usize) { *counter = (*counter as u8 << 1) as usize; }\n```",
+        ),
         // Attempt 2: valid code -> success.
         Turn::reply("```rust\npub fn bp_parse_step(counter: &mut usize) { *counter += 41; }\n```"),
     ]);
@@ -50,15 +54,24 @@ async fn parse_failure_is_fed_back_and_recovered_from() {
     assert_eq!(agent.prompt(0), BASE_PROMPT);
     assert_eq!(agent.history_len(0), 0);
 
-    // Attempt 2 receives base prompt + the parse-failure nudge appended.
+    // Attempt 2 receives base prompt + the parse-failure nudge appended,
+    // including the offending code and syn's located diagnostic.
     let retry_prompt = agent.prompt(1);
     assert!(
         retry_prompt.starts_with(BASE_PROMPT),
         "retry prompt must start with the base prompt, got: {retry_prompt}"
     );
     assert!(
-        retry_prompt.contains("did not contain valid Rust code"),
+        retry_prompt.contains("is not valid Rust"),
         "retry prompt must contain the parse-failure nudge, got: {retry_prompt}"
+    );
+    assert!(
+        retry_prompt.contains("as u8 << 1"),
+        "retry prompt must echo the offending code, got: {retry_prompt}"
+    );
+    assert!(
+        retry_prompt.contains("line "),
+        "retry prompt must carry the parse error location, got: {retry_prompt}"
     );
 
     // The failed attempt is still part of the chat history (user + assistant).
