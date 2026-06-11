@@ -8,6 +8,7 @@ members = [
   "examples/sort",
   "examples/struct-support",
   "examples/tictactoe",
+  "examples/tool-calling",
   "symbiont",
   "symbiont-macros",
 ]
