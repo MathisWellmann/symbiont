@@ -38,7 +38,10 @@ pub use evolution_agent::{
     AgentRun,
     EvolutionAgent,
 };
-pub use inference::init_agent;
+pub use inference::{
+    init_agent,
+    init_agent_builder,
+};
 pub use init_tracing::init_tracing;
 pub use profile::Profile;
 use rig_core::providers::openrouter::CompletionModel;
@@ -47,6 +50,15 @@ pub use symbiont_macros::evolvable;
 
 /// type alias for the return type of `init_agent`
 pub type Agent = rig_core::agent::Agent<CompletionModel>;
+
+/// Type alias for the pre-configured agent builder returned by [`init_agent_builder`].
+///
+/// Register your own tools on it with rig's builder API before calling
+/// `.build()`, e.g. `.tool(MyTool).default_max_turns(5).build()`.
+/// Note that registering the first tool transitions the builder's typestate
+/// (to `AgentBuilder<_, _, WithBuilderTools>`); the resulting [`Agent`] is
+/// unchanged and works with [`Runtime::evolve`] either way.
+pub type AgentBuilder = rig_core::agent::AgentBuilder<CompletionModel>;
 
 /// Internal module for macro-generated dispatch code.
 ///
