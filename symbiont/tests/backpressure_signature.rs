@@ -53,12 +53,16 @@ async fn signature_mismatch_is_fed_back_and_recovered_from() {
         "retry prompt must start with the base prompt, got: {retry_prompt}"
     );
     assert!(
-        retry_prompt.contains("signature miss-match"),
+        retry_prompt.contains("Signature mismatch in"),
         "retry prompt must contain the signature-mismatch nudge, got: {retry_prompt}"
     );
     assert!(
         retry_prompt.contains("fn bp_sig_step(counter: &mut usize)"),
         "retry prompt must contain the expected signature, got: {retry_prompt}"
+    );
+    assert!(
+        retry_prompt.contains("fn bp_sig_step(&mut u64)"),
+        "retry prompt must name the generated signature, got: {retry_prompt}"
     );
     assert!(
         retry_prompt.contains("&mut u64"),

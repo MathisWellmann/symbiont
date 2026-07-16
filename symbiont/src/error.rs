@@ -29,8 +29,12 @@ pub enum Error {
     #[error("Failed to write lib.rs: {0}")]
     WriteLib(String),
 
-    #[error("Validation failed: signature mismatch. Expected: {expected}")]
-    SignatureMismatch { code: String, expected: String },
+    #[error("Validation failed: signature mismatch in {got}. Expected: {expected}")]
+    SignatureMismatch {
+        code: String,
+        expected: String,
+        got: String,
+    },
 
     #[error("Compilation failed:\n{err}")]
     CompilationFailed { code: String, err: String },
