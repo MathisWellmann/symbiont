@@ -431,8 +431,9 @@ impl Runtime {
                         SignatureMismatch {
                             code,
                             expected,
+                            got,
                         } => write!(prompt,
-                            " Generated function signature miss-match. Expected ```{expected}```, Got Code ```{code}```",
+                            " Signature mismatch in {got}. Expected `{expected}`. Fix ONLY this function's signature (argument types and return type must match exactly; argument names may differ). Full code: ```{code}```",
                         ).expect("Can write to prompt"),
                         CompilationFailed{code, err} => write!(prompt,
                             " Your generated code ```{}``` failed to compile. Compiler output:\n```\n{}\n```\nPlease fix the compilation errors.", code.blue(), err.red()

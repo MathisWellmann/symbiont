@@ -17,7 +17,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.15.0"
+version = "0.15.1"
 
 [workspace.lints.rust]
 # checks for cases that are confusing between a negative literal and a negation that's not part of the literal.

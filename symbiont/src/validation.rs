@@ -23,6 +23,11 @@ use crate::{
 /// - All functions have `#[unsafe(no_mangle)]`)
 /// - All function signatures match the expected signatures from lib.rs.
 ///
+/// Signatures are compared by function name, argument **types**, and return
+/// type. Argument names are ignored: they carry no meaning at the dylib ABI
+/// boundary (symbol lookup is by function name only), so renaming an unused
+/// parameter (e.g. to `_market_state`) is not a mismatch.
+///
 /// Returns `Err` with a descriptive message if any check fails.
 pub(crate) fn validate_generated_ast(file: &mut syn::File, expected_sigs: &[String]) -> Result<()> {
     if expected_sigs.is_empty() {
@@ -47,26 +52,61 @@ pub(crate) fn validate_generated_ast(file: &mut syn::File, expected_sigs: &[Stri
                 item_fn.attrs.insert(0, attr);
             }
 
-            // Format the signature and check it matches one of the expected ones
             let sig = format_signature(&item_fn.sig)
                 .unwrap_or_else(|| format!("fn {}(...)", item_fn.sig.ident));
-            found_sigs.push(sig.clone());
+            found_sigs.push(sig);
         }
     }
-    // Ensure all expected signatures were found
+
+    // Compare each expected signature against the generated function of the
+    // same name, so the error pinpoints the offending function instead of the
+    // first expected signature that had no exact match. Expected signatures
+    // retain argument names for prompts; only this compatibility comparison
+    // canonicalizes them to argument types.
     for expected in expected_sigs {
-        if !found_sigs.contains(expected) {
-            return Err(Error::SignatureMismatch {
-                code: unparse(file),
-                expected: expected.clone(),
-            });
+        let Some(fn_name) = expected_fn_name(expected) else {
+            continue;
+        };
+        let expected_canonical = syn::parse_str::<Signature>(expected)
+            .ok()
+            .and_then(|sig| format_signature(&sig))
+            .unwrap_or_else(|| expected.clone());
+        let found = found_sigs
+            .iter()
+            .find(|sig| expected_fn_name(sig) == Some(fn_name));
+        match found {
+            Some(sig) if sig == &expected_canonical => {}
+            Some(sig) => {
+                return Err(Error::SignatureMismatch {
+                    code: unparse(file),
+                    expected: expected.clone(),
+                    got: sig.clone(),
+                });
+            }
+            None => {
+                return Err(Error::SignatureMismatch {
+                    code: unparse(file),
+                    expected: expected.clone(),
+                    got: format!("function `{fn_name}` not found"),
+                });
+            }
         }
     }
 
     Ok(())
 }
 
-/// Format a `syn::Signature` into a human-readable string (same format as function_parser).
+/// Extract the function name from a signature rendered by [`format_signature`],
+/// e.g. `fn step(&mut usize)` -> `step`.
+fn expected_fn_name(sig: &str) -> Option<&str> {
+    sig.strip_prefix("fn ")?.split('(').next()
+}
+
+/// Format a `syn::Signature` into a canonical string for comparison.
+///
+/// Renders `fn name(ty0, ty1, ...) -> ret` **without argument names**: two
+/// signatures that differ only in argument names are the same function at the
+/// dylib boundary and must compare equal.
 fn format_signature(sig: &Signature) -> Option<String> {
     let mut out = String::from("fn ");
     out.push_str(&sig.ident.to_string());
@@ -98,11 +138,7 @@ fn format_fn_arg(arg: &FnArg) -> String {
                 "&self".into()
             }
         }
-        Typed(pat) => {
-            let name = pat.pat.to_token_stream().to_string();
-            let ty = normalize_tokens(pat.ty.to_token_stream().to_string());
-            format!("{name}: {ty}")
-        }
+        Typed(pat) => normalize_tokens(pat.ty.to_token_stream().to_string()),
     }
 }
 
@@ -199,12 +235,61 @@ pub fn add(a: i32, b: i32) -> i32 {
         let err = validate_generated_ast(&mut file, &expected).expect_err("should error");
         dbg!(&err);
         match err {
-            Error::SignatureMismatch { code, expected } => {
+            Error::SignatureMismatch {
+                code,
+                expected,
+                got,
+            } => {
                 assert_eq!(
                     &code,
                     "#[unsafe(no_mangle)]\npub fn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n"
                 );
                 assert_eq!(expected, "fn step(counter: &mut usize)");
+                assert_eq!(got, "function `step` not found");
+            }
+            _ => panic!("Invalid error"),
+        }
+    }
+
+    #[test]
+    fn argument_names_are_ignored() {
+        // Renaming an argument (e.g. marking it unused) is ABI-compatible:
+        // dylib dispatch is by function name only.
+        let input = "```rust
+#[unsafe(no_mangle)]
+pub fn step(_counter: &mut usize) {
+    *_counter += 1;
+}
+```";
+        let mut file = parse_rust_code(input).expect("can parse");
+        let expected = vec!["fn step(counter: &mut usize)".to_string()];
+        validate_generated_ast(&mut file, &expected).expect("renamed argument must validate");
+    }
+
+    #[test]
+    fn mismatch_names_the_offending_function() {
+        // `action` matches but `on_order_update` does not; the error must
+        // point at `on_order_update`, not at the first expected signature.
+        let input = "```rust
+#[unsafe(no_mangle)]
+pub fn action(tick: &Tick) {
+    let _ = tick;
+}
+#[unsafe(no_mangle)]
+pub fn on_order_update(update: &Update, extra: bool) {
+    let _ = (update, extra);
+}
+```";
+        let mut file = parse_rust_code(input).expect("can parse");
+        let expected = vec![
+            "fn action(tick: & Tick)".to_string(),
+            "fn on_order_update(update: & Update)".to_string(),
+        ];
+        let err = validate_generated_ast(&mut file, &expected).expect_err("should error");
+        match err {
+            Error::SignatureMismatch { expected, got, .. } => {
+                assert_eq!(expected, "fn on_order_update(update: & Update)");
+                assert_eq!(got, "fn on_order_update(& Update, bool)");
             }
             _ => panic!("Invalid error"),
         }
@@ -221,6 +306,39 @@ pub fn step(counter: &mut usize) {
         let mut file = parse_rust_code(input).expect("can parse");
         let expected = vec!["fn step(counter: &mut usize)".to_string()];
         validate_generated_ast(&mut file, &expected).expect("#[unsafe(no_mangle)] should be valid");
+    }
+
+    #[test]
+    fn multi_fn_with_renamed_unused_argument_validates() {
+        // Regression test for a stuck self-healing loop: the generated
+        // `on_order_update` renamed the unused `market_state` parameter to
+        // `_market_state`, which must not be a signature mismatch.
+        let input = "```rust
+#[unsafe(no_mangle)]
+pub fn action(
+    step_data: &TickData,
+    account: &Account<i64, DECIMALS, Cur, UserOrderId>,
+    market_state: &MarketState<i64, DECIMALS>,
+    account_tracker: &FullAccountTracker<DECIMALS, Cur>,
+    commands: &mut CommandBuffer<DECIMALS, Cur>,
+) {
+}
+#[unsafe(no_mangle)]
+pub fn on_order_update(
+    order_update: OrderUpdate<DECIMALS, Cur>,
+    account: &Account<i64, DECIMALS, Cur, UserOrderId>,
+    _market_state: &MarketState<i64, DECIMALS>,
+    commands: &mut CommandBuffer<DECIMALS, Cur>,
+) {
+}
+```";
+        let mut file = parse_rust_code(input).expect("can parse");
+        let expected = vec![
+            "fn action(step_data: & TickData, account: & Account < i64, DECIMALS, Cur, UserOrderId >, market_state: & MarketState < i64, DECIMALS >, account_tracker: & FullAccountTracker < DECIMALS, Cur >, commands: &mut CommandBuffer < DECIMALS, Cur >)".to_string(),
+            "fn on_order_update(order_update: OrderUpdate < DECIMALS, Cur >, account: & Account < i64, DECIMALS, Cur, UserOrderId >, market_state: & MarketState < i64, DECIMALS >, commands: &mut CommandBuffer < DECIMALS, Cur >)".to_string(),
+        ];
+        validate_generated_ast(&mut file, &expected)
+            .expect("renamed `_market_state` argument must validate");
     }
 
     #[test]

@@ -7,7 +7,8 @@ use syn::{
 
 /// Format a `syn::Signature` into a human-readable string like `"fn step(counter: &mut usize)"`.
 ///
-/// This mirrors the format used by `symbiont`'s validation module
+/// This mirrors the source-like format used in prompts. Validation separately
+/// canonicalizes signatures to ignore argument names for ABI compatibility.
 pub(crate) fn format_signature(sig: &Signature) -> String {
     let mut out = String::from("fn ");
     out.push_str(&sig.ident.to_string());
