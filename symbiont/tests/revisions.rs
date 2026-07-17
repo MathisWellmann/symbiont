@@ -22,6 +22,10 @@ use symbiont::{
 /// re-activated later without parsing or compiling anything.
 #[tokio::test]
 #[tracing_test::traced_test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "The Runtime singleton allows one runtime per process, so the whole lifecycle lives in one sequential test"
+)]
 async fn revisions_are_retained_and_activatable() {
     symbiont::evolvable! {
         fn rev_step(counter: &mut usize) {
@@ -42,6 +46,9 @@ async fn revisions_are_retained_and_activatable() {
         Turn::reply("```rust\npub fn rev_step(counter: &mut usize) { *counter += 5; }\n```"),
         Turn::reply("```rust\npub fn rev_step(counter: &mut usize) { *counter += 7; }\n```"),
         Turn::reply("```rust\npub fn rev_step(counter: &mut usize) { *counter += 9; }\n```"),
+        Turn::reply(
+            "```rust\npub fn rev_step(counter: &mut usize) { let _ = counter; panic!(\"boom\") }\n```",
+        ),
     ]);
 
     let rev_plus_5 = rt
@@ -115,4 +122,86 @@ async fn revisions_are_retained_and_activatable() {
     counter = 0;
     rev_step(&mut counter);
     assert_eq!(counter, 9);
+
+    // -- Typed per-revision handles (RevisionFn) -------------------------------
+
+    // Handles execute their own revision, independent of the active one.
+    let plus_5 = rev_step_fn(rev_plus_5).expect("revision 1 is retained");
+    let plus_7 = rev_step_fn(rev_plus_7).expect("revision 2 is retained");
+    assert_eq!(plus_5.revision(), rev_plus_5);
+    let f5 = plus_5.get();
+    let f7 = plus_7.get();
+    counter = 0;
+    f5(&mut counter);
+    assert_eq!(counter, 5, "the handle executes its own revision");
+    counter = 0;
+    f7(&mut counter);
+    assert_eq!(
+        counter, 7,
+        "handles of different revisions run side by side"
+    );
+    counter = 0;
+    rev_step(&mut counter);
+    assert_eq!(
+        counter, 9,
+        "the active dispatch is unaffected by handle calls"
+    );
+    assert!(
+        rev_step_fn(Revision::new(99)).is_none(),
+        "unknown revisions yield no handle"
+    );
+
+    // Handles are Send + Clone: hammer two revisions from two threads while
+    // the main thread swaps the active revision. Handle calls never read the
+    // swappable dispatch pointers, so they are exempt from the feedback-loop
+    // contract and may run concurrently with activate_revision.
+    let t5 = std::thread::spawn({
+        let handle = plus_5.clone();
+        move || {
+            let f = handle.get();
+            let mut counter = 0;
+            for _ in 0..10_000 {
+                f(&mut counter);
+            }
+            counter
+        }
+    });
+    let t7 = std::thread::spawn({
+        let handle = plus_7.clone();
+        move || {
+            let f = handle.get();
+            let mut counter = 0;
+            for _ in 0..10_000 {
+                f(&mut counter);
+            }
+            counter
+        }
+    });
+    for _ in 0..100 {
+        rt.activate_revision(rev_plus_5).expect("Can activate");
+        rt.activate_revision(rev_plus_9).expect("Can activate");
+    }
+    assert_eq!(t5.join().expect("thread finished"), 50_000);
+    assert_eq!(t7.join().expect("thread finished"), 70_000);
+
+    // -- Per-revision panic routing ---------------------------------------------
+
+    // Evolve a panicking implementation, then make a different revision
+    // active: the handle call's panic must land in ITS revision's buffer.
+    let rev_panic = rt.evolve(&agent, "panic please").await.expect("Can evolve");
+    rt.activate_revision(rev_plus_5).expect("Can activate");
+    let panicking = rev_step_fn(rev_panic).expect("revision is retained");
+    counter = 0;
+    (panicking.get())(&mut counter);
+    assert_eq!(counter, 0, "the panic fired before any increment");
+    let msg = panicking.take_panic().expect("the handle call panicked");
+    assert!(msg.contains("boom"), "panic message is preserved: {msg}");
+    assert!(
+        rt.take_panic().is_none(),
+        "the active revision's buffer is untouched by handle calls"
+    );
+    assert!(
+        panicking.take_panic().is_none(),
+        "the stored message is cleared on read"
+    );
 }
