@@ -17,10 +17,10 @@ mod inference;
 mod init_tracing;
 mod parser;
 mod profile;
+mod revision;
 mod runtime;
 mod system_prompt;
 mod unwind;
-mod update_pointers;
 mod utils;
 mod validation;
 
@@ -44,6 +44,7 @@ pub use inference::{
 };
 pub use init_tracing::init_tracing;
 pub use profile::Profile;
+pub use revision::Revision;
 use rig_core::providers::openrouter::CompletionModel;
 pub use runtime::Runtime;
 pub use symbiont_macros::evolvable;

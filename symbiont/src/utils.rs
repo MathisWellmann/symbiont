@@ -146,6 +146,15 @@ pub(crate) fn dylib_extension() -> &'static str {
     }
 }
 
+/// Path of the retained copy of a revision's compiled shared library.
+/// One file per revision id, which also defeats `dlopen` path caching.
+pub(crate) fn versioned_so_path(crate_dir: &Path, revision_id: u64) -> PathBuf {
+    crate_dir.join(format!(
+        "libsymbiont_evolvable_v{revision_id}{}",
+        dylib_extension()
+    ))
+}
+
 /// Find the compiled shared library in the temp crate's target directory.
 pub(crate) fn find_so(crate_dir: &Path, profile: Profile) -> Result<PathBuf> {
     let subdir = match profile {
