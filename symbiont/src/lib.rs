@@ -44,7 +44,10 @@ pub use inference::{
 };
 pub use init_tracing::init_tracing;
 pub use profile::Profile;
-pub use revision::Revision;
+pub use revision::{
+    Revision,
+    RevisionFn,
+};
 use rig_core::providers::openrouter::CompletionModel;
 pub use runtime::Runtime;
 pub use symbiont_macros::evolvable;
@@ -71,6 +74,7 @@ pub mod __internal {
         CallGuard,
         enter_call,
     };
+    pub use crate::runtime::revision_fn_lookup;
 }
 
 #[cfg(test)]
