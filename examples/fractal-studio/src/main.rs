@@ -323,12 +323,15 @@ fn spawn_evolution_worker(
                 {
                     let mut s = shared.lock().expect("shared state mutex is not poisoned");
                     match result {
-                        Ok(()) => {
+                        Ok(revision) => {
                             s.code = runtime.current_code();
                             s.evolutions += 1;
                             s.last_evolve_secs = Some(evolve_start.elapsed().as_secs_f64());
                             s.panic_msg = None;
-                            info!("Evolution #{} hot-swapped successfully.", s.evolutions);
+                            info!(
+                                "Evolution #{} hot-swapped successfully (revision {revision}).",
+                                s.evolutions
+                            );
                         }
                         Err(e) => {
                             warn!("Evolution failed: {e}");
