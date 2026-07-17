@@ -386,36 +386,63 @@ impl<'a> RustApiSynopsis<'a> {
             return;
         };
 
-        let methods = impl_ids
-            .iter()
-            .filter_map(|impl_id| self.crate_data.index.get(impl_id))
-            .filter_map(|item| match &item.inner {
-                ItemEnum::Impl(impl_block) if impl_block.trait_.is_none() => Some(impl_block),
-                _ => None,
-            })
-            .flat_map(|impl_block| impl_block.items.iter())
-            .filter_map(|method_id| self.crate_data.index.get(method_id))
-            .filter(|method| is_public(method))
-            .filter_map(|method| {
-                self.source_snippet(method)
-                    .and_then(|s| elide_body(&s))
-                    .map(|s| dedent(&s))
-                    .or_else(|| synthesized_fn_signature(method))
-            })
-            .collect::<Vec<_>>();
+        for impl_id in impl_ids {
+            let Some(impl_item) = self.crate_data.index.get(impl_id) else {
+                continue;
+            };
+            let ItemEnum::Impl(impl_block) = &impl_item.inner else {
+                continue;
+            };
+            if impl_block.trait_.is_some() {
+                continue;
+            }
 
-        if methods.is_empty() {
-            return;
-        }
+            let methods = impl_block
+                .items
+                .iter()
+                .filter_map(|method_id| self.crate_data.index.get(method_id))
+                .filter(|method| is_public(method))
+                .filter_map(|method| {
+                    self.source_snippet(method)
+                        .and_then(|s| elide_body(&s))
+                        .map(|s| dedent(&s))
+                        .or_else(|| synthesized_fn_signature(method))
+                })
+                .collect::<Vec<_>>();
+            if methods.is_empty() {
+                continue;
+            }
 
-        write_indent(out, indent);
-        let _ = writeln!(out, "impl {type_name} {{");
-        for method in methods {
-            let method = normalize_local_paths(&method, &self.local_crate_alias);
-            write_snippet_lines(out, &method, indent + 1);
+            // Render the impl header with its concrete self type and bounds so
+            // methods only callable in certain generic contexts (e.g. typestate
+            // parameters) are visibly associated with those contexts.
+            let mut header = self
+                .impl_header_snippet(impl_item)
+                .or_else(|| {
+                    render_type(&impl_block.for_).map(|for_type| format!("impl {for_type}"))
+                })
+                .unwrap_or_else(|| format!("impl {type_name}"));
+            header = normalize_local_paths(&header, &self.local_crate_alias);
+            header.push_str(if header.contains('\n') { "\n{" } else { " {" });
+
+            write_snippet_lines(out, &header, indent);
+            for method in methods {
+                let method = normalize_local_paths(&method, &self.local_crate_alias);
+                write_snippet_lines(out, &method, indent + 1);
+            }
+            write_indent(out, indent);
+            out.push_str("}\n\n");
         }
-        write_indent(out, indent);
-        out.push_str("}\n\n");
+    }
+
+    /// Extract the header (everything before the body) of an `impl` block from
+    /// its source span. Returns `None` for macro-generated impls whose spans do
+    /// not point at an actual `impl` item.
+    fn impl_header_snippet(&mut self, impl_item: &Item) -> Option<String> {
+        let snippet = self.source_snippet(impl_item)?;
+        let (open, _) = outer_brace_pair(&snippet)?;
+        let header = snippet[..open].trim_end();
+        header.contains("impl").then(|| dedent(header))
     }
 
     /// Renders a trait declaration with associated item signatures, eliding
@@ -799,7 +826,16 @@ fn render_type(ty: &Type) -> Option<String> {
 }
 
 fn render_path(path: &rustdoc_types::Path) -> Option<String> {
-    let mut out = path.path.clone();
+    // Rustdoc records paths as used at the definition site (e.g.
+    // `super::order_status::NewOrder`, `crate::utils::NoUserOrderId`). Those
+    // qualifiers are meaningless to generated code, which imports everything
+    // unqualified through the prelude glob, so keep only the type name.
+    let mut out = path
+        .path
+        .rsplit("::")
+        .next()
+        .unwrap_or(path.path.as_str())
+        .to_string();
     if let Some(args) = path.args.as_deref() {
         out.push_str(&render_generic_args(args)?);
     }
@@ -1468,6 +1504,119 @@ mod tests {
             "impl Book {\n    /// Create a new book.\n    pub fn new() -> Self;\n    pub fn num_orders(&self) -> usize;\n}"
         ));
         assert!(!rendered.api.contains("        /// Create a new book."));
+    }
+
+    #[test]
+    fn doc_string_render_type_uses_unqualified_type_names() {
+        let rendered = render_type(&resolved_path(
+            "super::order_status::NewOrder",
+            Vec::new(),
+        ))
+        .expect("type can be rendered");
+        assert_eq!(rendered, "NewOrder");
+
+        let rendered = render_type(&resolved_path(
+            "crate::utils::NoUserOrderId",
+            Vec::new(),
+        ))
+        .expect("type can be rendered");
+        assert_eq!(rendered, "NoUserOrderId");
+    }
+
+    #[test]
+    fn doc_string_renders_state_dependent_impl_blocks_separately() {
+        let source = temp_source_file(
+            "typestate_impls",
+            "pub struct Order<S>(S);\n\
+             impl Order<New> {\n    \
+                 /// Only for new orders.\n    \
+                 pub fn submit(&self) {\n        \
+                     ()\n    \
+                 }\n\
+             }\n\
+             impl Order<Filled> {\n    \
+                 /// Only for filled orders.\n    \
+                 pub fn fill_price(&self) -> f64 {\n        \
+                     0.0\n    \
+                 }\n\
+             }\n\
+             impl<S> Order<S>\n\
+             where\n    \
+                 S: Copy,\n\
+             {\n    \
+                 /// Available for any state.\n    \
+                 pub fn state(&self) -> &S {\n        \
+                     &self.0\n    \
+                 }\n\
+             }\n",
+        );
+
+        let impl_block = |items: Vec<Id>| {
+            ItemEnum::Impl(rustdoc_types::Impl {
+                is_unsafe: false,
+                generics: empty_generics(),
+                provided_trait_methods: Vec::new(),
+                trait_: None,
+                for_: resolved_path("Order", Vec::new()),
+                items,
+                is_negative: false,
+                is_synthetic: false,
+                blanket_impl: None,
+            })
+        };
+
+        let index = prelude_crate_with(
+            Use {
+                source: "crate::order::Order".to_string(),
+                name: "Order".to_string(),
+                id: Some(Id(3)),
+                is_glob: false,
+            },
+            vec![
+                spanned_item(
+                    3,
+                    Some("Order"),
+                    ItemEnum::Struct(rustdoc_types::Struct {
+                        kind: rustdoc_types::StructKind::Unit,
+                        generics: empty_generics(),
+                        impls: vec![Id(4), Id(6), Id(8)],
+                    }),
+                    span(&source, (1, 1), (1, 24)),
+                ),
+                spanned_item(4, None, impl_block(vec![Id(5)]), span(&source, (2, 1), (7, 2))),
+                spanned_item(5, Some("submit"), function_decl(), span(&source, (4, 5), (6, 6))),
+                spanned_item(6, None, impl_block(vec![Id(7)]), span(&source, (8, 1), (13, 2))),
+                spanned_item(
+                    7,
+                    Some("fill_price"),
+                    function_decl(),
+                    span(&source, (10, 5), (12, 6)),
+                ),
+                spanned_item(8, None, impl_block(vec![Id(9)]), span(&source, (14, 1), (22, 2))),
+                spanned_item(9, Some("state"), function_decl(), span(&source, (19, 5), (21, 6))),
+            ],
+        );
+        let paths = HashMap::from([(
+            Id(3),
+            local_path_entry(
+                &["host_crate", "order", "Order"],
+                rustdoc_types::ItemKind::Struct,
+            ),
+        )]);
+        let crate_data = crate_data(index, paths, HashMap::new());
+
+        let rendered = RustApiSynopsis::new(&crate_data).render_host_facade();
+
+        assert!(rendered.api.contains(
+            "impl Order<New> {\n    /// Only for new orders.\n    pub fn submit(&self);\n}"
+        ));
+        assert!(rendered.api.contains(
+            "impl Order<Filled> {\n    /// Only for filled orders.\n    pub fn fill_price(&self) -> f64;\n}"
+        ));
+        assert!(rendered.api.contains(
+            "impl<S> Order<S>\nwhere\n    S: Copy,\n{\n    /// Available for any state.\n    pub fn state(&self) -> &S;\n}"
+        ));
+        assert!(!rendered.api.contains("impl Order {"));
     }
 
     #[test]
