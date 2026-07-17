@@ -45,6 +45,8 @@ pub(crate) async fn write_prelude_doc_string(s: &mut String, crate_name: &str) -
 
     let mut pending = rendered.external_facades;
     let mut rendered_facades = BTreeSet::new();
+    let mut crate_cache: HashMap<String, Option<RustdocCrate>> = HashMap::new();
+    let mut rendered_ids: HashMap<String, HashSet<Id>> = HashMap::new();
     while let Some(crate_name) = pending.keys().next().cloned() {
         let requests = pending.remove(&crate_name).unwrap_or_default();
         let requests = requests
@@ -55,27 +57,36 @@ pub(crate) async fn write_prelude_doc_string(s: &mut String, crate_name: &str) -
             continue;
         }
 
-        let package_candidates = package_candidates_for_crate(&crate_name);
-        let package_candidates = Vec::from_iter(package_candidates.iter().map(String::as_str));
-        match rustdoc_json(&crate_name, &package_candidates).await {
-            Ok(crate_data) => {
-                let rendered = RustApiSynopsis::new(&crate_data)
-                    .render_external_facade(&crate_name, &requests);
-                trace!("reachable {crate_name} facade synopsis: {}", rendered.api);
-                if !rendered.api.is_empty() {
-                    s.push('\n');
-                    s.push_str(&rendered.api);
+        if !crate_cache.contains_key(&crate_name) {
+            let package_candidates = package_candidates_for_crate(&crate_name);
+            let package_candidates = Vec::from_iter(package_candidates.iter().map(String::as_str));
+            let crate_data = match rustdoc_json(&crate_name, &package_candidates).await {
+                Ok(crate_data) => Some(crate_data),
+                Err(err) => {
+                    trace!("could not document reachable crate {crate_name}: {err}");
+                    let _ = writeln!(
+                        s,
+                        "\nCould not generate rustdoc JSON for reachable crate `{crate_name}`."
+                    );
+                    None
                 }
-                merge_facades(&mut pending, rendered.external_facades);
-            }
-            Err(err) => {
-                trace!("could not document reachable crate {crate_name}: {err}");
-                let _ = writeln!(
-                    s,
-                    "\nCould not generate rustdoc JSON for reachable crate `{crate_name}`."
-                );
-            }
+            };
+            crate_cache.insert(crate_name.clone(), crate_data);
         }
+        let Some(crate_data) = crate_cache.get(&crate_name).and_then(Option::as_ref) else {
+            continue;
+        };
+
+        let rendered = RustApiSynopsis::new(crate_data)
+            .with_rendered_items(rendered_ids.remove(&crate_name).unwrap_or_default())
+            .render_external_facade(&crate_name, &requests);
+        trace!("reachable {crate_name} facade synopsis: {}", rendered.api);
+        if !rendered.api.is_empty() {
+            s.push('\n');
+            s.push_str(&rendered.api);
+        }
+        rendered_ids.insert(crate_name.clone(), rendered.rendered_items);
+        merge_facades(&mut pending, rendered.external_facades);
     }
 
     Ok(())
@@ -137,6 +148,10 @@ enum FacadeRequest {
 struct RenderedApiSynopsis {
     api: String,
     external_facades: BTreeMap<String, BTreeSet<FacadeRequest>>,
+    /// Ids rendered by this synopsis pass, merged with any seeded ids. Used to
+    /// avoid re-rendering items when the same crate is documented in multiple
+    /// facade batches.
+    rendered_items: HashSet<Id>,
 }
 
 /// Small rustdoc-JSON adapter that emits source-like public API snippets.
@@ -168,6 +183,13 @@ impl<'a> RustApiSynopsis<'a> {
         }
     }
 
+    /// Seeds the set of already rendered item ids so repeated renders of the
+    /// same crate do not duplicate items.
+    fn with_rendered_items(mut self, rendered_items: HashSet<Id>) -> Self {
+        self.rendered_items = rendered_items;
+        self
+    }
+
     fn render_host_facade(mut self) -> RenderedApiSynopsis {
         self.local_crate_alias = "host".to_string();
         let mut out = "The harness injects `use host::prelude::*;`. The following is the complete API imported by that statement. Items not shown are not available. Use these names unqualified and do not emit imports.\n\n```rust\n// Reachable host facade; bodies and large constant initializers are omitted.\n\n".to_string();
@@ -181,6 +203,7 @@ impl<'a> RustApiSynopsis<'a> {
         RenderedApiSynopsis {
             api: out,
             external_facades: self.external_facades,
+            rendered_items: self.rendered_items,
         }
     }
 
@@ -217,6 +240,7 @@ impl<'a> RustApiSynopsis<'a> {
         RenderedApiSynopsis {
             api,
             external_facades: self.external_facades,
+            rendered_items: self.rendered_items,
         }
     }
 
@@ -1126,6 +1150,61 @@ mod tests {
 
         assert!(rendered.api.contains("pub mod rsi"));
         assert!(!rendered.api.contains("pub mod indicators"));
+    }
+
+    #[test]
+    fn doc_string_seeded_rendered_items_prevent_duplicate_facade_output() {
+        let source = temp_source_file("dedup_struct", "pub struct RollingSum;\n");
+        let index = HashMap::from([
+            (
+                Id(0),
+                item(
+                    0,
+                    Some("sliding_features"),
+                    ItemEnum::Module(rustdoc_types::Module {
+                        is_crate: true,
+                        items: vec![Id(1)],
+                        is_stripped: false,
+                    }),
+                ),
+            ),
+            (
+                Id(1),
+                spanned_item(
+                    1,
+                    Some("RollingSum"),
+                    ItemEnum::Struct(rustdoc_types::Struct {
+                        kind: rustdoc_types::StructKind::Unit,
+                        generics: empty_generics(),
+                        impls: Vec::new(),
+                    }),
+                    span(&source, (1, 1), (1, 23)),
+                ),
+            ),
+        ]);
+        let paths = HashMap::from([(
+            Id(1),
+            local_path_entry(
+                &["sliding_features", "RollingSum"],
+                rustdoc_types::ItemKind::Struct,
+            ),
+        )]);
+        let crate_data = crate_data(index, paths, HashMap::new());
+
+        let first = RustApiSynopsis::new(&crate_data).render_external_facade(
+            "sliding_features",
+            &BTreeSet::from([FacadeRequest::Item(vec!["RollingSum".to_string()])]),
+        );
+        assert!(first.api.contains("pub struct RollingSum;"));
+        assert!(first.rendered_items.contains(&Id(1)));
+
+        let second = RustApiSynopsis::new(&crate_data)
+            .with_rendered_items(first.rendered_items)
+            .render_external_facade(
+                "sliding_features",
+                &BTreeSet::from([FacadeRequest::Module(Vec::new())]),
+            );
+        assert!(second.api.is_empty());
     }
 
     #[test]
