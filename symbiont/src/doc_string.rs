@@ -192,12 +192,18 @@ impl<'a> RustApiSynopsis<'a> {
 
     fn render_host_facade(mut self) -> RenderedApiSynopsis {
         self.local_crate_alias = "host".to_string();
-        let mut out = "The harness injects `use host::prelude::*;`. The following is the complete API imported by that statement. Items not shown are not available. Use these names unqualified and do not emit imports.\n\n```rust\n// Reachable host facade; bodies and large constant initializers are omitted.\n\n".to_string();
+        let Some(prelude) = self.find_module(&["prelude".to_string()]) else {
+            trace!("host crate exposes no `prelude` module; nothing to document");
+            return RenderedApiSynopsis {
+                api: "The host crate does not expose a `prelude` module, so `use host::prelude::*;` imports nothing. No host API is available beyond explicit `host::...` paths.\n".to_string(),
+                external_facades: self.external_facades,
+                rendered_items: self.rendered_items,
+            };
+        };
 
-        if let Some(prelude) = self.find_module(&["prelude".to_string()]) {
-            self.write_module_items(&mut out, &prelude, 0);
-            self.write_pending_reexports(&mut out);
-        }
+        let mut out = "The harness injects `use host::prelude::*;`. The following is the complete API imported by that statement. Items not shown are not available. Use these names unqualified and do not emit imports.\n\n```rust\n// Reachable host facade; bodies and large constant initializers are omitted.\n\n".to_string();
+        self.write_module_items(&mut out, &prelude, 0);
+        self.write_pending_reexports(&mut out);
 
         out.push_str("```\n");
         RenderedApiSynopsis {
@@ -1205,6 +1211,34 @@ mod tests {
                 &BTreeSet::from([FacadeRequest::Module(Vec::new())]),
             );
         assert!(second.api.is_empty());
+    }
+
+    #[test]
+    fn doc_string_host_render_reports_missing_prelude_module() {
+        let index = HashMap::from([(
+            Id(0),
+            item(
+                0,
+                Some("host_crate"),
+                ItemEnum::Module(rustdoc_types::Module {
+                    is_crate: true,
+                    items: Vec::new(),
+                    is_stripped: false,
+                }),
+            ),
+        )]);
+        let crate_data = crate_data(index, HashMap::new(), HashMap::new());
+
+        let rendered = RustApiSynopsis::new(&crate_data).render_host_facade();
+
+        assert!(
+            rendered
+                .api
+                .contains("does not expose a `prelude` module")
+        );
+        assert!(!rendered.api.contains("complete API"));
+        assert!(!rendered.api.contains("```rust"));
+        assert!(rendered.external_facades.is_empty());
     }
 
     #[test]
