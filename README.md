@@ -129,6 +129,12 @@ cargo run -p fractal-studio-example --release
   Every successfully hot-swapped dylib stays loaded and is addressable as a `Revision`.
   `evolve()` returns the new revision's id, and `activate_revision` rolls the process back to
   any earlier implementation with a few atomic pointer stores — no re-parsing, no recompilation.
+- **Typed revision handles**:
+  `evolvable!` also generates `<name>_fn(revision)` accessors returning a typed `RevisionFn`
+  pinned to any retained revision. Run several evolved implementations concurrently —
+  ensembles, tournaments, A/B comparisons — or mix functions from different revisions;
+  handle calls dispatch at active-pointer speed.
+  See the [evolving-trader-example](examples/evolving-trader/README.md)'s top-3 ensemble.
 - **Bare-metal performance**:
   Evolved functions run as native compiled code.
   The dispatch overhead is **~1 ns per call** (a single atomic pointer load + indirect call).
@@ -200,13 +206,15 @@ cargo run -p counter-example
 ## Dispatch overhead
 
 Function pointers are cached in `AtomicPtr` statics after each load — callers never touch a lock or perform a symbol lookup.
+A `RevisionFn` handle goes one step further: it hoists its revision's function pointer once (`handle.get()`), so per-call dispatch skips even the atomic load.
 
-|                       | Time per call |
-|-----------------------|---------------|
-| Direct function call  | 0.91 ns       |
-| `evolvable!` dispatch | 1.64 ns       |
+|                          | Time per call |
+|--------------------------|---------------|
+| Direct function call     | 0.94 ns       |
+| `evolvable!` dispatch    | 1.50 ns       |
+| `RevisionFn` handle call | 1.47 ns       |
 
-Benchmark: `cargo bench -p symbiont --bench dispatch_overhead`
+Benchmark: `cargo bench -p symbiont --bench dispatch_overhead` (dylib compiled with `Profile::Release`)
 
 On reload, the runtime updates the atomic pointers and retains the old library in the revision registry (keep-all).
 Earlier revisions therefore stay callable: `activate_revision` re-publishes their cached pointers without touching the compiler.
@@ -243,6 +251,7 @@ These constraints arise from the binary/dylib interaction boundary. The harness 
   All evolvable function calls must have returned before `evolve()` or `activate_revision()` is called.
   Retained revisions are never unmapped, so a violating in-flight call executes stale but still-mapped code rather than UB — the contract remains so a swap cannot publish a torn set of pointers from two different revisions.
   This matches the intended usage pattern (run functions, collect results, evolve, repeat) and is enforced with an assertion in debug builds at zero cost in release.
+  Calls through `RevisionFn` handles are exempt: they pin their revision and never read the swapped pointers, so they may run concurrently with `evolve()` / `activate_revision()` and with each other.
   Multi-threading is possible, but requires extra care.
 - **Same toolchain required**:
   Rust has no stable ABI. The binary and dylib must be compiled with the same `rustc` version to guarantee matching calling conventions and memory layouts. The harness ensures this by compiling the dylib on the same machine with the same toolchain.
