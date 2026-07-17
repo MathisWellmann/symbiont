@@ -426,8 +426,11 @@ impl<'a> RustApiSynopsis<'a> {
             header.push_str(if header.contains('\n') { "\n{" } else { " {" });
 
             write_snippet_lines(out, &header, indent);
-            for method in methods {
-                let method = normalize_local_paths(&method, &self.local_crate_alias);
+            for (i, method) in methods.iter().enumerate() {
+                if i > 0 {
+                    out.push('\n');
+                }
+                let method = normalize_local_paths(method, &self.local_crate_alias);
                 write_snippet_lines(out, &method, indent + 1);
             }
             write_indent(out, indent);
@@ -474,7 +477,10 @@ impl<'a> RustApiSynopsis<'a> {
             return out;
         }
         out.push_str(" {\n");
-        for assoc_item in assoc_items {
+        for (i, assoc_item) in assoc_items.iter().enumerate() {
+            if i > 0 {
+                out.push('\n');
+            }
             for line in assoc_item.trim().lines() {
                 out.push_str("    ");
                 out.push_str(line.trim_start());
@@ -1501,25 +1507,19 @@ mod tests {
         let rendered = RustApiSynopsis::new(&crate_data).render_host_facade();
 
         assert!(rendered.api.contains(
-            "impl Book {\n    /// Create a new book.\n    pub fn new() -> Self;\n    pub fn num_orders(&self) -> usize;\n}"
+            "impl Book {\n    /// Create a new book.\n    pub fn new() -> Self;\n\n    pub fn num_orders(&self) -> usize;\n}"
         ));
         assert!(!rendered.api.contains("        /// Create a new book."));
     }
 
     #[test]
     fn doc_string_render_type_uses_unqualified_type_names() {
-        let rendered = render_type(&resolved_path(
-            "super::order_status::NewOrder",
-            Vec::new(),
-        ))
-        .expect("type can be rendered");
+        let rendered = render_type(&resolved_path("super::order_status::NewOrder", Vec::new()))
+            .expect("type can be rendered");
         assert_eq!(rendered, "NewOrder");
 
-        let rendered = render_type(&resolved_path(
-            "crate::utils::NoUserOrderId",
-            Vec::new(),
-        ))
-        .expect("type can be rendered");
+        let rendered = render_type(&resolved_path("crate::utils::NoUserOrderId", Vec::new()))
+            .expect("type can be rendered");
         assert_eq!(rendered, "NoUserOrderId");
     }
 
@@ -1583,17 +1583,42 @@ mod tests {
                     }),
                     span(&source, (1, 1), (1, 24)),
                 ),
-                spanned_item(4, None, impl_block(vec![Id(5)]), span(&source, (2, 1), (7, 2))),
-                spanned_item(5, Some("submit"), function_decl(), span(&source, (4, 5), (6, 6))),
-                spanned_item(6, None, impl_block(vec![Id(7)]), span(&source, (8, 1), (13, 2))),
+                spanned_item(
+                    4,
+                    None,
+                    impl_block(vec![Id(5)]),
+                    span(&source, (2, 1), (7, 2)),
+                ),
+                spanned_item(
+                    5,
+                    Some("submit"),
+                    function_decl(),
+                    span(&source, (4, 5), (6, 6)),
+                ),
+                spanned_item(
+                    6,
+                    None,
+                    impl_block(vec![Id(7)]),
+                    span(&source, (8, 1), (13, 2)),
+                ),
                 spanned_item(
                     7,
                     Some("fill_price"),
                     function_decl(),
                     span(&source, (10, 5), (12, 6)),
                 ),
-                spanned_item(8, None, impl_block(vec![Id(9)]), span(&source, (14, 1), (22, 2))),
-                spanned_item(9, Some("state"), function_decl(), span(&source, (19, 5), (21, 6))),
+                spanned_item(
+                    8,
+                    None,
+                    impl_block(vec![Id(9)]),
+                    span(&source, (14, 1), (22, 2)),
+                ),
+                spanned_item(
+                    9,
+                    Some("state"),
+                    function_decl(),
+                    span(&source, (19, 5), (21, 6)),
+                ),
             ],
         );
         let paths = HashMap::from([(
