@@ -440,9 +440,14 @@ impl<'a> RustApiSynopsis<'a> {
 
     fn queue_use_targets(&mut self, use_item: &Use) {
         let Some(id) = use_item.id else {
+            self.queue_unresolved_use(use_item);
             return;
         };
         let Some(summary) = self.crate_data.paths.get(&id) else {
+            // The paths table has gaps (e.g. items reachable only through
+            // re-exports); fall back to rendering the target from the local
+            // index if present there.
+            self.queue_reexport(id, use_item.is_glob);
             return;
         };
         let Some(external_crate) = self.crate_data.external_crates.get(&summary.crate_id) else {
@@ -463,6 +468,37 @@ impl<'a> RustApiSynopsis<'a> {
             .entry(external_crate.name.clone())
             .or_default()
             .insert(request);
+    }
+
+    /// Fallback for `use` items rustdoc could not resolve to an id: derive the
+    /// facade request from the source path of a glob import.
+    fn queue_unresolved_use(&mut self, use_item: &Use) {
+        if !use_item.is_glob {
+            return;
+        }
+        let mut segments = use_item.source.split("::");
+        let Some(crate_name) = segments.next() else {
+            return;
+        };
+        if matches!(crate_name, "crate" | "self" | "super") || crate_name == self.local_crate_alias
+        {
+            return;
+        }
+        let is_documentable = self
+            .crate_data
+            .external_crates
+            .values()
+            .any(|external_crate| {
+                external_crate.name == crate_name && is_documentable_external_crate(external_crate)
+            });
+        if !is_documentable {
+            return;
+        }
+        let path = segments.map(str::to_string).collect::<Vec<_>>();
+        self.external_facades
+            .entry(crate_name.to_string())
+            .or_default()
+            .insert(FacadeRequest::Module(path));
     }
 
     fn source_snippet(&mut self, item: &Item) -> Option<String> {
@@ -997,6 +1033,99 @@ mod tests {
 
         assert!(rendered.api.contains("/// Exponential moving average."));
         assert!(rendered.api.contains("macro_rules! ema {"));
+    }
+
+    #[test]
+    fn doc_string_host_render_falls_back_to_source_path_for_unresolved_glob() {
+        let index = prelude_crate_with(
+            Use {
+                source: "sliding_features::pure_functions".to_string(),
+                name: "pure_functions".to_string(),
+                id: None,
+                is_glob: true,
+            },
+            Vec::new(),
+        );
+        let external_crates = HashMap::from([(
+            1,
+            rustdoc_types::ExternalCrate {
+                name: "sliding_features".to_string(),
+                html_root_url: None,
+                path: PathBuf::from("target/debug/deps/libsliding_features.rmeta"),
+            },
+        )]);
+        let crate_data = crate_data(index, HashMap::new(), external_crates);
+
+        let rendered = RustApiSynopsis::new(&crate_data).render_host_facade();
+
+        assert_eq!(
+            rendered.external_facades["sliding_features"],
+            BTreeSet::from([FacadeRequest::Module(vec!["pure_functions".to_string()])])
+        );
+    }
+
+    #[test]
+    fn doc_string_host_render_documents_local_reexport_missing_from_paths() {
+        let index = prelude_crate_with(
+            Use {
+                source: "crate::indicators".to_string(),
+                name: "indicators".to_string(),
+                id: Some(Id(3)),
+                is_glob: false,
+            },
+            vec![item(
+                3,
+                Some("indicators"),
+                ItemEnum::Module(rustdoc_types::Module {
+                    is_crate: false,
+                    items: Vec::new(),
+                    is_stripped: false,
+                }),
+            )],
+        );
+        let crate_data = crate_data(index, HashMap::new(), HashMap::new());
+
+        let rendered = RustApiSynopsis::new(&crate_data).render_host_facade();
+
+        assert!(rendered.api.contains("pub mod indicators"));
+    }
+
+    #[test]
+    fn doc_string_host_render_flattens_local_glob_reexport_missing_from_paths() {
+        let index = prelude_crate_with(
+            Use {
+                source: "crate::indicators".to_string(),
+                name: "indicators".to_string(),
+                id: Some(Id(3)),
+                is_glob: true,
+            },
+            vec![
+                item(
+                    3,
+                    Some("indicators"),
+                    ItemEnum::Module(rustdoc_types::Module {
+                        is_crate: false,
+                        items: vec![Id(4)],
+                        is_stripped: false,
+                    }),
+                ),
+                item(
+                    4,
+                    Some("rsi"),
+                    ItemEnum::Module(rustdoc_types::Module {
+                        is_crate: false,
+                        items: Vec::new(),
+                        is_stripped: false,
+                    }),
+                ),
+            ],
+        );
+        let crate_data = crate_data(index, HashMap::new(), HashMap::new());
+
+        let rendered = RustApiSynopsis::new(&crate_data).render_host_facade();
+
+        assert!(rendered.api.contains("pub mod rsi"));
+        assert!(!rendered.api.contains("pub mod indicators"));
     }
 
     #[test]
