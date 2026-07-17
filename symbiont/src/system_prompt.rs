@@ -28,9 +28,9 @@ Do not write prose, explanations, markdown tables, or additional code blocks out
 
 Emit complete Rust function item(s), not just function bodies.
 
-Preserve every required function signature exactly:
+Preserve every ABI-relevant part of each required function signature:
 - same function name
-- same parameter names
+- parameter names may differ
 - same parameter types
 - same return type
 - same parameter order

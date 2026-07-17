@@ -49,8 +49,8 @@ async fn signature_mismatch_is_fed_back_and_recovered_from() {
 
     let retry_prompt = agent.prompt(1);
     assert!(
-        retry_prompt.starts_with(BASE_PROMPT),
-        "retry prompt must start with the base prompt, got: {retry_prompt}"
+        !retry_prompt.contains(BASE_PROMPT),
+        "retry prompt must contain only the correction, got: {retry_prompt}"
     );
     assert!(
         retry_prompt.contains("Signature mismatch in"),
