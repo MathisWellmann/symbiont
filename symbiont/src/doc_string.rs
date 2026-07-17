@@ -17,10 +17,15 @@ use std::{
 
 use rustdoc_types::{
     Crate as RustdocCrate,
+    GenericArg,
+    GenericArgs,
+    GenericBound,
     Id,
     Item,
     ItemEnum,
     Span,
+    TraitBoundModifier,
+    Type,
     Use,
     Visibility,
 };
@@ -338,7 +343,11 @@ impl<'a> RustApiSynopsis<'a> {
                 }
             }
             ItemEnum::Function(_) => {
-                if let Some(snippet) = self.source_snippet(item).and_then(|s| elide_body(&s)) {
+                if let Some(snippet) = self
+                    .source_snippet(item)
+                    .and_then(|s| elide_body(&s))
+                    .or_else(|| synthesized_fn_signature(item))
+                {
                     self.write_snippet(out, &snippet, indent);
                 }
             }
@@ -387,7 +396,11 @@ impl<'a> RustApiSynopsis<'a> {
             .flat_map(|impl_block| impl_block.items.iter())
             .filter_map(|method_id| self.crate_data.index.get(method_id))
             .filter(|method| is_public(method))
-            .filter_map(|method| self.source_snippet(method).and_then(|s| elide_body(&s)))
+            .filter_map(|method| {
+                self.source_snippet(method)
+                    .and_then(|s| elide_body(&s))
+                    .or_else(|| synthesized_fn_signature(method))
+            })
             .collect::<Vec<_>>();
 
         if methods.is_empty() {
@@ -672,6 +685,179 @@ fn column_to_byte(line: &str, one_indexed_col: usize) -> usize {
         .unwrap_or(line.len())
 }
 
+/// Render a minimal `pub fn` signature from rustdoc JSON type data.
+///
+/// This is the fallback for macro-generated methods (e.g. getset-derived
+/// accessors) whose source spans point at the derive attribute or struct field
+/// instead of a function item. The span-based rendering fails for those, which
+/// previously caused such methods to be silently omitted from the synopsis.
+fn synthesized_fn_signature(item: &Item) -> Option<String> {
+    let ItemEnum::Function(function) = &item.inner else {
+        return None;
+    };
+    let name = item.name.as_deref()?;
+    // Functions with their own generics are beyond this minimal renderer.
+    if !function.generics.params.is_empty() || !function.generics.where_predicates.is_empty() {
+        return None;
+    }
+
+    let mut sig = String::new();
+    write_doc_comment(&mut sig, item.docs.as_deref(), 0);
+    let _ = write!(sig, "pub fn {name}(");
+    for (i, (arg_name, ty)) in function.sig.inputs.iter().enumerate() {
+        if i > 0 {
+            sig.push_str(", ");
+        }
+        if i == 0 && arg_name == "self" {
+            match ty {
+                Type::BorrowedRef {
+                    is_mutable: true, ..
+                } => sig.push_str("&mut self"),
+                Type::BorrowedRef {
+                    is_mutable: false, ..
+                } => sig.push_str("&self"),
+                _ => sig.push_str("self"),
+            }
+        } else {
+            let _ = write!(sig, "{arg_name}: {}", render_type(ty)?);
+        }
+    }
+    sig.push(')');
+    if let Some(output) = &function.sig.output {
+        let _ = write!(sig, " -> {}", render_type(output)?);
+    }
+    sig.push(';');
+    Some(sig)
+}
+
+/// Best-effort rendering of a rustdoc JSON type. Returns `None` for exotic
+/// types so callers can skip the item instead of emitting a wrong signature.
+fn render_type(ty: &Type) -> Option<String> {
+    Some(match ty {
+        Type::ResolvedPath(path) => render_path(path)?,
+        Type::DynTrait(dyn_trait) => {
+            let mut parts = Vec::with_capacity(dyn_trait.traits.len() + 1);
+            for poly_trait in &dyn_trait.traits {
+                if !poly_trait.generic_params.is_empty() {
+                    return None;
+                }
+                parts.push(render_path(&poly_trait.trait_)?);
+            }
+            parts.extend(dyn_trait.lifetime.clone());
+            format!("dyn {}", parts.join(" + "))
+        }
+        Type::Generic(name) | Type::Primitive(name) => name.clone(),
+        Type::Tuple(types) => {
+            let inner = types.iter().map(render_type).collect::<Option<Vec<_>>>()?;
+            format!("({})", inner.join(", "))
+        }
+        Type::Slice(inner) => format!("[{}]", render_type(inner)?),
+        Type::Array { type_, len } => format!("[{}; {len}]", render_type(type_)?),
+        Type::ImplTrait(bounds) => {
+            let rendered = bounds
+                .iter()
+                .map(render_generic_bound)
+                .collect::<Option<Vec<_>>>()?;
+            format!("impl {}", rendered.join(" + "))
+        }
+        Type::Infer => "_".to_string(),
+        Type::RawPointer { is_mutable, type_ } => {
+            let mutability = if *is_mutable { "mut" } else { "const" };
+            format!("*{mutability} {}", render_type(type_)?)
+        }
+        Type::BorrowedRef {
+            lifetime,
+            is_mutable,
+            type_,
+        } => {
+            let mut out = "&".to_string();
+            if let Some(lifetime) = lifetime {
+                let _ = write!(out, "{lifetime} ");
+            }
+            if *is_mutable {
+                out.push_str("mut ");
+            }
+            out.push_str(&render_type(type_)?);
+            out
+        }
+        Type::QualifiedPath {
+            name,
+            self_type,
+            trait_,
+            ..
+        } => match trait_ {
+            Some(trait_path) => format!(
+                "<{} as {}>::{name}",
+                render_type(self_type)?,
+                render_path(trait_path)?
+            ),
+            None => format!("{}::{name}", render_type(self_type)?),
+        },
+        Type::FunctionPointer(_) | Type::Pat { .. } => return None,
+    })
+}
+
+fn render_path(path: &rustdoc_types::Path) -> Option<String> {
+    let mut out = path.path.clone();
+    if let Some(args) = path.args.as_deref() {
+        out.push_str(&render_generic_args(args)?);
+    }
+    Some(out)
+}
+
+fn render_generic_args(args: &GenericArgs) -> Option<String> {
+    match args {
+        GenericArgs::AngleBracketed { args, constraints } => {
+            if !constraints.is_empty() {
+                return None;
+            }
+            if args.is_empty() {
+                return Some(String::new());
+            }
+            let rendered = args
+                .iter()
+                .map(render_generic_arg)
+                .collect::<Option<Vec<_>>>()?;
+            Some(format!("<{}>", rendered.join(", ")))
+        }
+        GenericArgs::Parenthesized { inputs, output } => {
+            let inputs = inputs.iter().map(render_type).collect::<Option<Vec<_>>>()?;
+            let mut out = format!("({})", inputs.join(", "));
+            if let Some(output) = output {
+                let _ = write!(out, " -> {}", render_type(output)?);
+            }
+            Some(out)
+        }
+        GenericArgs::ReturnTypeNotation => None,
+    }
+}
+
+fn render_generic_arg(arg: &GenericArg) -> Option<String> {
+    Some(match arg {
+        GenericArg::Lifetime(lifetime) => lifetime.clone(),
+        GenericArg::Type(ty) => render_type(ty)?,
+        GenericArg::Const(constant) => constant.expr.clone(),
+        GenericArg::Infer => "_".to_string(),
+    })
+}
+
+fn render_generic_bound(bound: &GenericBound) -> Option<String> {
+    match bound {
+        GenericBound::TraitBound {
+            trait_,
+            generic_params,
+            modifier,
+        } => {
+            if !generic_params.is_empty() || !matches!(modifier, TraitBoundModifier::None) {
+                return None;
+            }
+            render_path(trait_)
+        }
+        GenericBound::Outlives(lifetime) => Some(lifetime.clone()),
+        GenericBound::Use(_) => None,
+    }
+}
+
 fn elide_body(snippet: &str) -> Option<String> {
     let (open, close) = outer_brace_pair(snippet)?;
     if !snippet[close + 1..].trim().is_empty() {
@@ -894,6 +1080,44 @@ mod tests {
         })
     }
 
+    fn getter_decl(receiver_mutable: bool, output: Type) -> ItemEnum {
+        ItemEnum::Function(rustdoc_types::Function {
+            sig: rustdoc_types::FunctionSignature {
+                inputs: vec![(
+                    "self".to_string(),
+                    Type::BorrowedRef {
+                        lifetime: None,
+                        is_mutable: receiver_mutable,
+                        type_: Box::new(Type::Generic("Self".to_string())),
+                    },
+                )],
+                output: Some(output),
+                is_c_variadic: false,
+            },
+            generics: empty_generics(),
+            header: rustdoc_types::FunctionHeader {
+                is_const: false,
+                is_unsafe: false,
+                is_async: false,
+                abi: rustdoc_types::Abi::Rust,
+            },
+            has_body: true,
+        })
+    }
+
+    fn resolved_path(path: &str, args: Vec<GenericArg>) -> Type {
+        Type::ResolvedPath(rustdoc_types::Path {
+            path: path.to_string(),
+            id: Id(9999),
+            args: (!args.is_empty()).then(|| {
+                Box::new(GenericArgs::AngleBracketed {
+                    args,
+                    constraints: Vec::new(),
+                })
+            }),
+        })
+    }
+
     fn trait_decl(items: Vec<Id>) -> ItemEnum {
         ItemEnum::Trait(rustdoc_types::Trait {
             is_auto: false,
@@ -1030,6 +1254,97 @@ mod tests {
         assert!(rendered.api.contains("fn update(&mut self, val: f64);"));
         assert!(rendered.api.contains("fn last(&self) -> Option<f64>;"));
         assert!(!rendered.api.contains("None"));
+    }
+
+    #[test]
+    fn doc_string_synthesizes_signature_for_spanless_getter_method() {
+        let output = Type::BorrowedRef {
+            lifetime: None,
+            is_mutable: false,
+            type_: Box::new(resolved_path(
+                "SortedOrders",
+                vec![
+                    GenericArg::Type(Type::Generic("I".to_string())),
+                    GenericArg::Const(rustdoc_types::Constant {
+                        expr: "D".to_string(),
+                        value: None,
+                        is_literal: false,
+                    }),
+                    GenericArg::Type(Type::Generic("BaseOrQuote".to_string())),
+                ],
+            )),
+        };
+        let method = Item {
+            docs: Some("The sorted bid orders.".to_string()),
+            ..item(5, Some("bids"), getter_decl(false, output))
+        };
+
+        let signature = synthesized_fn_signature(&method).expect("signature can be synthesized");
+
+        assert_eq!(
+            signature,
+            "/// The sorted bid orders.\npub fn bids(&self) -> &SortedOrders<I, D, BaseOrQuote>;"
+        );
+    }
+
+    #[test]
+    fn doc_string_inherent_impl_falls_back_to_synthesized_signature() {
+        let source = temp_source_file("spanless_getter", "pub struct Book;\n");
+
+        let index = prelude_crate_with(
+            Use {
+                source: "crate::book::Book".to_string(),
+                name: "Book".to_string(),
+                id: Some(Id(3)),
+                is_glob: false,
+            },
+            vec![
+                spanned_item(
+                    3,
+                    Some("Book"),
+                    ItemEnum::Struct(rustdoc_types::Struct {
+                        kind: rustdoc_types::StructKind::Unit,
+                        generics: empty_generics(),
+                        impls: vec![Id(4)],
+                    }),
+                    span(&source, (1, 1), (1, 17)),
+                ),
+                item(
+                    4,
+                    None,
+                    ItemEnum::Impl(rustdoc_types::Impl {
+                        is_unsafe: false,
+                        generics: empty_generics(),
+                        provided_trait_methods: Vec::new(),
+                        trait_: None,
+                        for_: resolved_path("Book", Vec::new()),
+                        items: vec![Id(5)],
+                        is_negative: false,
+                        is_synthetic: false,
+                        blanket_impl: None,
+                    }),
+                ),
+                item(
+                    5,
+                    Some("num_orders"),
+                    getter_decl(false, Type::Primitive("usize".to_string())),
+                ),
+            ],
+        );
+        let paths = HashMap::from([(
+            Id(3),
+            local_path_entry(
+                &["host_crate", "book", "Book"],
+                rustdoc_types::ItemKind::Struct,
+            ),
+        )]);
+        let crate_data = crate_data(index, paths, HashMap::new());
+
+        let rendered = RustApiSynopsis::new(&crate_data).render_host_facade();
+
+        assert!(rendered.api.contains("pub struct Book;"));
+        assert!(rendered.api.contains("impl Book {"));
+        assert!(rendered.api.contains("pub fn num_orders(&self) -> usize;"));
     }
 
     #[test]
