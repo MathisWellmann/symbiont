@@ -317,7 +317,17 @@ impl<'a> RustApiSynopsis<'a> {
                     self.write_snippet(out, &snippet, indent);
                 }
             }
-            ItemEnum::TypeAlias(_) => {
+            ItemEnum::Trait(trait_def) => {
+                if let Some(snippet) = self.source_snippet(item) {
+                    let rendered = self.elide_trait_items(&snippet, &trait_def.items);
+                    self.write_snippet(out, &rendered, indent);
+                }
+            }
+            ItemEnum::Macro(macro_source) => {
+                write_doc_comment(out, item.docs.as_deref(), indent);
+                self.write_snippet(out, macro_source, indent);
+            }
+            ItemEnum::TypeAlias(_) | ItemEnum::TraitAlias(_) => {
                 if let Some(snippet) = self.source_snippet(item) {
                     self.write_snippet(out, &snippet, indent);
                 }
@@ -362,6 +372,46 @@ impl<'a> RustApiSynopsis<'a> {
         }
         write_indent(out, indent);
         out.push_str("}\n\n");
+    }
+
+    /// Renders a trait declaration with associated item signatures, eliding
+    /// default method bodies and associated constant initializers.
+    fn elide_trait_items(&mut self, snippet: &str, item_ids: &[Id]) -> String {
+        let header = match outer_brace_pair(snippet) {
+            Some((open, _)) => snippet[..open].trim_end(),
+            None => snippet.trim_end().trim_end_matches(';').trim_end(),
+        }
+        .to_string();
+
+        let assoc_items = item_ids
+            .iter()
+            .filter_map(|id| self.crate_data.index.get(id))
+            .filter_map(|assoc| {
+                let assoc_snippet = self.source_snippet(assoc)?;
+                match &assoc.inner {
+                    ItemEnum::Function(_) => {
+                        Some(elide_body(&assoc_snippet).unwrap_or(assoc_snippet))
+                    }
+                    _ => Some(elide_initializer(&assoc_snippet)),
+                }
+            })
+            .collect::<Vec<_>>();
+
+        let mut out = header;
+        if assoc_items.is_empty() {
+            out.push_str(" {}");
+            return out;
+        }
+        out.push_str(" {\n");
+        for assoc_item in assoc_items {
+            for line in assoc_item.trim().lines() {
+                out.push_str("    ");
+                out.push_str(line.trim_start());
+                out.push('\n');
+            }
+        }
+        out.push('}');
+        out
     }
 
     fn write_pending_reexports(&mut self, out: &mut String) {
@@ -734,6 +784,219 @@ mod tests {
             deprecation: None,
             inner,
         }
+    }
+
+    fn spanned_item(id: u32, name: Option<&str>, inner: ItemEnum, span: Span) -> Item {
+        Item {
+            span: Some(span),
+            ..item(id, name, inner)
+        }
+    }
+
+    fn span(filename: &Path, begin: (usize, usize), end: (usize, usize)) -> Span {
+        Span {
+            filename: filename.to_path_buf(),
+            begin,
+            end,
+        }
+    }
+
+    fn temp_source_file(tag: &str, contents: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "symbiont_doc_string_{tag}_{}.rs",
+            std::process::id()
+        ));
+        std::fs::write(&path, contents).expect("test source file is writable");
+        path
+    }
+
+    fn function_decl() -> ItemEnum {
+        ItemEnum::Function(rustdoc_types::Function {
+            sig: rustdoc_types::FunctionSignature {
+                inputs: Vec::new(),
+                output: None,
+                is_c_variadic: false,
+            },
+            generics: empty_generics(),
+            header: rustdoc_types::FunctionHeader {
+                is_const: false,
+                is_unsafe: false,
+                is_async: false,
+                abi: rustdoc_types::Abi::Rust,
+            },
+            has_body: false,
+        })
+    }
+
+    fn trait_decl(items: Vec<Id>) -> ItemEnum {
+        ItemEnum::Trait(rustdoc_types::Trait {
+            is_auto: false,
+            is_unsafe: false,
+            is_dyn_compatible: true,
+            items,
+            generics: empty_generics(),
+            bounds: Vec::new(),
+            implementations: Vec::new(),
+        })
+    }
+
+    fn empty_generics() -> rustdoc_types::Generics {
+        rustdoc_types::Generics {
+            params: Vec::new(),
+            where_predicates: Vec::new(),
+        }
+    }
+
+    fn local_path_entry(
+        path: &[&str],
+        kind: rustdoc_types::ItemKind,
+    ) -> rustdoc_types::ItemSummary {
+        rustdoc_types::ItemSummary {
+            crate_id: 0,
+            path: path.iter().map(|s| s.to_string()).collect(),
+            kind,
+        }
+    }
+
+    fn crate_data(
+        index: HashMap<Id, Item>,
+        paths: HashMap<Id, rustdoc_types::ItemSummary>,
+        external_crates: HashMap<u32, rustdoc_types::ExternalCrate>,
+    ) -> RustdocCrate {
+        RustdocCrate {
+            root: Id(0),
+            crate_version: None,
+            includes_private: false,
+            index,
+            paths,
+            external_crates,
+            target: rustdoc_types::Target {
+                triple: "x86_64-unknown-linux-gnu".to_string(),
+                target_features: Vec::new(),
+            },
+            format_version: rustdoc_types::FORMAT_VERSION,
+        }
+    }
+
+    fn prelude_crate_with(use_item: Use, extra_items: Vec<Item>) -> HashMap<Id, Item> {
+        let mut index = HashMap::from([
+            (
+                Id(0),
+                item(
+                    0,
+                    Some("host_crate"),
+                    ItemEnum::Module(rustdoc_types::Module {
+                        is_crate: true,
+                        items: vec![Id(1)],
+                        is_stripped: false,
+                    }),
+                ),
+            ),
+            (
+                Id(1),
+                item(
+                    1,
+                    Some("prelude"),
+                    ItemEnum::Module(rustdoc_types::Module {
+                        is_crate: false,
+                        items: vec![Id(2)],
+                        is_stripped: false,
+                    }),
+                ),
+            ),
+            (Id(2), item(2, None, ItemEnum::Use(use_item))),
+        ]);
+        for extra in extra_items {
+            index.insert(extra.id, extra);
+        }
+        index
+    }
+
+    #[test]
+    fn doc_string_host_render_documents_reexported_trait_with_elided_bodies() {
+        let source = temp_source_file(
+            "trait_view",
+            "/// Observe a sliding window.\npub trait View {\n    /// Push a new value.\n    fn update(&mut self, val: f64);\n    fn last(&self) -> Option<f64> {\n        None\n    }\n}\n",
+        );
+
+        let index = prelude_crate_with(
+            Use {
+                source: "crate::traits::View".to_string(),
+                name: "View".to_string(),
+                id: Some(Id(3)),
+                is_glob: false,
+            },
+            vec![
+                spanned_item(
+                    3,
+                    Some("View"),
+                    trait_decl(vec![Id(4), Id(5)]),
+                    span(&source, (2, 1), (8, 2)),
+                ),
+                spanned_item(
+                    4,
+                    Some("update"),
+                    function_decl(),
+                    span(&source, (4, 5), (4, 200)),
+                ),
+                spanned_item(
+                    5,
+                    Some("last"),
+                    function_decl(),
+                    span(&source, (5, 5), (7, 6)),
+                ),
+            ],
+        );
+        let paths = HashMap::from([(
+            Id(3),
+            local_path_entry(
+                &["host_crate", "traits", "View"],
+                rustdoc_types::ItemKind::Trait,
+            ),
+        )]);
+        let crate_data = crate_data(index, paths, HashMap::new());
+
+        let rendered = RustApiSynopsis::new(&crate_data).render_host_facade();
+
+        assert!(rendered.api.contains("/// Observe a sliding window."));
+        assert!(rendered.api.contains("pub trait View {"));
+        assert!(rendered.api.contains("/// Push a new value."));
+        assert!(rendered.api.contains("fn update(&mut self, val: f64);"));
+        assert!(rendered.api.contains("fn last(&self) -> Option<f64>;"));
+        assert!(!rendered.api.contains("None"));
+    }
+
+    #[test]
+    fn doc_string_host_render_documents_reexported_macro_source() {
+        let index = prelude_crate_with(
+            Use {
+                source: "crate::macros::ema".to_string(),
+                name: "ema".to_string(),
+                id: Some(Id(3)),
+                is_glob: false,
+            },
+            vec![Item {
+                docs: Some("Exponential moving average.".to_string()),
+                ..item(
+                    3,
+                    Some("ema"),
+                    ItemEnum::Macro("macro_rules! ema {\n    ($x:expr) => { ... };\n}".to_string()),
+                )
+            }],
+        );
+        let paths = HashMap::from([(
+            Id(3),
+            local_path_entry(
+                &["host_crate", "macros", "ema"],
+                rustdoc_types::ItemKind::Macro,
+            ),
+        )]);
+        let crate_data = crate_data(index, paths, HashMap::new());
+
+        let rendered = RustApiSynopsis::new(&crate_data).render_host_facade();
+
+        assert!(rendered.api.contains("/// Exponential moving average."));
+        assert!(rendered.api.contains("macro_rules! ema {"));
     }
 
     #[test]
