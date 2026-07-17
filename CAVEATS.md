@@ -129,5 +129,12 @@ it as a "foreign exception" and aborts. The harness handles this
 by wrapping every evolvable function body in `catch_unwind`
 *inside the dylib* and exposing the panic message through an
 exported symbol (`__symbiont_take_panic`). Use
-`symbiont::catch_panic` to retrieve panic messages after each
+`Runtime::take_panic` to retrieve panic messages after each
 call.
+
+Each revision has its own panic buffer. `Runtime::take_panic`
+reads the **active** revision's buffer; panics from calls through
+a `RevisionFn` handle land in that handle's revision — read them
+with `RevisionFn::take_panic`. A buffer holds only the most
+recent message, so concurrent panicking calls into the same
+revision overwrite each other.
