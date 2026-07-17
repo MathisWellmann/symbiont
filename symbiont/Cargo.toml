@@ -16,7 +16,7 @@ website = "https://symbiont.rs"
 workspace = true
 
 [dependencies]
-symbiont-macros = { version = "0.16.0", path = "../symbiont-macros" }
+symbiont-macros = { version = "0.17.0", path = "../symbiont-macros" }
 
 rig-core.workspace = true
 tokio.workspace = true
