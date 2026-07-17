@@ -238,17 +238,7 @@ impl Runtime {
     where
         AgentT: EvolutionAgent,
     {
-        #[cfg(debug_assertions)]
-        {
-            use crate::debug_call_counter::IN_FLIGHT_CALLS;
-
-            let in_flight = IN_FLIGHT_CALLS.load(Ordering::Acquire);
-            assert!(
-                in_flight == 0,
-                "evolve() called while {in_flight} evolvable function(s) are still executing. \
-                 All callers must return before evolving — this is the feedback loop contract."
-            );
-        }
+        Self::assert_no_calls_in_flight();
 
         info!("prompt: {}", prompt.green());
         let t0 = Instant::now();
@@ -349,6 +339,25 @@ impl Runtime {
     fn next_revision_id(&self) -> Result<u64> {
         let revisions = self.revisions.read().map_err(|_| Error::MutexPoison)?;
         Ok(u64::try_from(revisions.len()).expect("registry length fits in u64"))
+    }
+
+    /// Assert (debug builds only) that no evolvable function calls are in
+    /// flight. Retained revisions are never unmapped, so a violation is no
+    /// longer a use-after-unload — but a swap concurrent with running calls
+    /// could still publish a torn set of pointers from two different
+    /// revisions, so the feedback-loop contract remains.
+    fn assert_no_calls_in_flight() {
+        #[cfg(debug_assertions)]
+        {
+            use crate::debug_call_counter::IN_FLIGHT_CALLS;
+
+            let in_flight = IN_FLIGHT_CALLS.load(Ordering::Acquire);
+            assert!(
+                in_flight == 0,
+                "the active revision was swapped while {in_flight} evolvable function(s) are still executing. \
+                 All callers must return before evolve() or activate_revision() — this is the feedback loop contract."
+            );
+        }
     }
 
     /// Exponential backoff (capped at 30s) for transient retry attempt `n`.
@@ -563,6 +572,46 @@ impl Runtime {
             .read()
             .expect("revisions RwLock is not poisoned");
         revisions.get(idx).map(|entry| entry.source().to_owned())
+    }
+
+    /// Re-activate a previously registered revision.
+    ///
+    /// Republishes the revision's function pointers, which were resolved once
+    /// when its dylib was first loaded: afterwards all `evolvable!` call
+    /// sites dispatch to `revision`'s code and [`Runtime::current_code`]
+    /// returns its source. No parsing or compilation is involved — the dylib
+    /// has stayed loaded since it was hot-swapped, so activation costs a
+    /// handful of atomic stores instead of an evolution round.
+    ///
+    /// Use it to roll back to the best revision a search discovered, to
+    /// implement undo, or to re-deploy a known-good implementation for a
+    /// final evaluation. The chat history is not modified.
+    ///
+    /// Returns [`Error::UnknownRevision`] if `revision` was never registered;
+    /// the active revision is left unchanged in that case.
+    ///
+    /// # Contract
+    ///
+    /// Same as [`Runtime::evolve`]: all evolvable function calls must have
+    /// returned before this is called. Enforced with an assertion in debug
+    /// builds, zero-cost in release.
+    pub fn activate_revision(&self, revision: Revision) -> Result<()> {
+        Self::assert_no_calls_in_flight();
+
+        let revisions = self.revisions.read().map_err(|_| Error::MutexPoison)?;
+        let entry = usize::try_from(revision.as_u64())
+            .ok()
+            .and_then(|idx| revisions.get(idx))
+            .ok_or_else(|| Error::UnknownRevision {
+                requested: revision,
+                latest: Revision::new(
+                    u64::try_from(revisions.len()).expect("registry length fits in u64") - 1,
+                ),
+            })?;
+        entry.publish(self.decls);
+        self.active.store(revision.as_u64(), Ordering::Release);
+        info!("Activated revision {revision}.");
+        Ok(())
     }
 
     /// Return the function signature and body for a single function base on its `fn_name`
