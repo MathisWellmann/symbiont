@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
-//! Benchmark comparing direct function calls vs `evolvable!` dispatch
-//! to measure the overhead of the RwLock + dlsym wrapper.
+//! Benchmark comparing direct function calls, `evolvable!` dispatch
+//! (atomic pointer load + indirect call), and calls through a hoisted
+//! [`symbiont::RevisionFn`] handle.
 
 #![expect(unused_crate_dependencies, reason = "benches don't need everything.")]
 
@@ -26,10 +27,12 @@ symbiont::evolvable! {
 }
 
 fn bench_dispatch_overhead(c: &mut Criterion) {
-    // Initialize the symbiont runtime (compiles the temp dylib).
+    // Initialize the symbiont runtime. Compile the dylib in release so the
+    // callee is as optimized as the direct baseline and the measured
+    // difference is pure dispatch overhead, not debug codegen.
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
     rt.block_on(async {
-        symbiont::Runtime::new(SYMBIONT_DECLS, SYMBIONT_PRELUDE, symbiont::Profile::Debug)
+        symbiont::Runtime::new(SYMBIONT_DECLS, SYMBIONT_PRELUDE, symbiont::Profile::Release)
             .await
             .expect("runtime init")
     });
@@ -47,6 +50,18 @@ fn bench_dispatch_overhead(c: &mut Criterion) {
         let mut counter = 0usize;
         b.iter(|| {
             step_evolvable(black_box(&mut counter));
+        });
+    });
+
+    group.bench_function("revision_handle", |b| {
+        // Fetch once (registry read + Arc clone), hoist the bare fn pointer,
+        // then every call is a plain indirect call — no atomic load.
+        let handle =
+            step_evolvable_fn(symbiont::Revision::INITIAL).expect("initial revision is retained");
+        let f = handle.get();
+        let mut counter = 0usize;
+        b.iter(|| {
+            f(black_box(&mut counter));
         });
     });
 
