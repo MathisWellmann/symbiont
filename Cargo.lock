@@ -1334,7 +1334,7 @@ dependencies = [
 
 [[package]]
 name = "counter-example"
-version = "0.15.1"
+version = "0.16.0"
 dependencies = [
  "symbiont",
  "tokio",
@@ -2083,7 +2083,7 @@ dependencies = [
 
 [[package]]
 name = "evolving-trader-example"
-version = "0.15.1"
+version = "0.16.0"
 dependencies = [
  "lfest",
  "plotters",
@@ -2191,7 +2191,7 @@ dependencies = [
 
 [[package]]
 name = "fizzbuzz-example"
-version = "0.15.1"
+version = "0.16.0"
 dependencies = [
  "rig-core",
  "symbiont",
@@ -2305,7 +2305,7 @@ dependencies = [
 
 [[package]]
 name = "fractal-studio-example"
-version = "0.15.1"
+version = "0.16.0"
 dependencies = [
  "eframe",
  "egui_extras",
@@ -4672,7 +4672,7 @@ dependencies = [
 
 [[package]]
 name = "quantize-example"
-version = "0.15.1"
+version = "0.16.0"
 dependencies = [
  "colorgrad",
  "derive_more",
@@ -4860,7 +4860,7 @@ checksum = "ca45419789ae5a7899559e9512e58ca889e41f04f1f2445e9f4b290ceccd1d08"
 
 [[package]]
 name = "rastrigin-example"
-version = "0.15.1"
+version = "0.16.0"
 dependencies = [
  "rig-core",
  "romu",
@@ -5762,7 +5762,7 @@ dependencies = [
 
 [[package]]
 name = "sort-example"
-version = "0.15.1"
+version = "0.16.0"
 dependencies = [
  "rig-core",
  "romu",
@@ -5806,7 +5806,7 @@ checksum = "73473c0e59e6d5812c5dfe2a064a6444949f089e20eec9a2e5506596494e4623"
 
 [[package]]
 name = "struct-support-example"
-version = "0.15.1"
+version = "0.16.0"
 dependencies = [
  "symbiont",
  "tokio",
@@ -5821,7 +5821,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "symbiont"
-version = "0.15.1"
+version = "0.16.0"
 dependencies = [
  "criterion",
  "getset",
@@ -5845,7 +5845,7 @@ dependencies = [
 
 [[package]]
 name = "symbiont-macros"
-version = "0.15.1"
+version = "0.16.0"
 dependencies = [
  "prettyplease",
  "proc-macro2",
@@ -6016,7 +6016,7 @@ dependencies = [
 
 [[package]]
 name = "tictactoe-example"
-version = "0.15.1"
+version = "0.16.0"
 dependencies = [
  "romu",
  "symbiont",
@@ -6245,7 +6245,7 @@ dependencies = [
 
 [[package]]
 name = "tool-calling-example"
-version = "0.15.1"
+version = "0.16.0"
 dependencies = [
  "rig-core",
  "serde",
