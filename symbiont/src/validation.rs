@@ -34,7 +34,7 @@ pub(crate) fn validate_generated_ast(file: &mut syn::File, expected_sigs: &[Stri
         return Ok(());
     }
 
-    let mut found_sigs: Vec<String> = Vec::with_capacity(4);
+    let mut found_sigs: Vec<(String, String)> = Vec::with_capacity(4);
 
     for item in &mut file.items {
         if let syn::Item::Fn(item_fn) = item {
@@ -53,8 +53,8 @@ pub(crate) fn validate_generated_ast(file: &mut syn::File, expected_sigs: &[Stri
             }
 
             let sig = format_signature(&item_fn.sig)
-                .unwrap_or_else(|| format!("fn {}(...)", item_fn.sig.ident));
-            found_sigs.push(sig);
+                .unwrap_or_else(|| normalize_tokens(item_fn.sig.to_token_stream().to_string()));
+            found_sigs.push((name, sig));
         }
     }
 
@@ -71,12 +71,10 @@ pub(crate) fn validate_generated_ast(file: &mut syn::File, expected_sigs: &[Stri
             .ok()
             .and_then(|sig| format_signature(&sig))
             .unwrap_or_else(|| expected.clone());
-        let found = found_sigs
-            .iter()
-            .find(|sig| expected_fn_name(sig) == Some(fn_name));
+        let found = found_sigs.iter().find(|(name, _)| name == fn_name);
         match found {
-            Some(sig) if sig == &expected_canonical => {}
-            Some(sig) => {
+            Some((_, sig)) if sig == &expected_canonical => {}
+            Some((_, sig)) => {
                 return Err(Error::SignatureMismatch {
                     code: unparse(file),
                     expected: expected.clone(),
@@ -272,21 +270,29 @@ pub fn step(_counter: &mut usize) {
     }
 
     #[test]
-    fn abi_incompatible_modifiers_are_rejected() {
-        for input in [
-            "pub async fn step(counter: &mut usize) {}",
-            "pub unsafe fn step(counter: &mut usize) {}",
-            "pub extern \"C\" fn step(counter: &mut usize) {}",
-            "pub unsafe extern \"C\" fn step(counter: &mut usize, ...) {}",
+    fn abi_incompatible_modifiers_are_reported() {
+        for (input, modifier) in [
+            ("pub async fn step(counter: &mut usize) {}", "async"),
+            ("pub unsafe fn step(counter: &mut usize) {}", "unsafe"),
+            (
+                "pub extern \"C\" fn step(counter: &mut usize) {}",
+                "extern \"C\"",
+            ),
+            (
+                "pub unsafe extern \"C\" fn step(counter: &mut usize, ...) {}",
+                "...",
+            ),
         ] {
             let mut file = syn::parse_str(input).expect("can parse");
             let expected = vec!["fn step(counter: &mut usize)".to_string()];
+            let err = validate_generated_ast(&mut file, &expected)
+                .expect_err("incompatible signature must be rejected");
             assert!(
                 matches!(
-                    validate_generated_ast(&mut file, &expected),
-                    Err(Error::SignatureMismatch { .. })
+                    err,
+                    Error::SignatureMismatch { ref got, .. } if got.contains(modifier)
                 ),
-                "incompatible signature must be rejected: {input}"
+                "feedback must identify `{modifier}` in {input}: {err}"
             );
         }
     }

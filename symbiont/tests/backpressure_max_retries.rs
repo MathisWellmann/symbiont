@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 //! Backpressure integration test: a persistently misbehaving agent exhausts
 //! the self-healing budget and `evolve` returns `MaxRetriesExceeded` instead
-//! of looping forever. Also pins down that nudges are appended to the *base*
-//! prompt each attempt and never accumulate.
+//! of looping forever. Also pins down that each retry sends only the latest
+//! correction and corrections never accumulate.
 //!
 //! One test per binary: [`symbiont::Runtime`] is a process-wide singleton.
 #![expect(
@@ -66,13 +66,17 @@ async fn retry_budget_is_bounded_and_nudges_do_not_accumulate() {
         "agent must be called exactly once per attempt"
     );
 
-    // The nudge is appended to the *base* prompt each time — it never stacks.
+    // Each retry contains only the latest correction — it never stacks.
     const NUDGE: &str = "did not contain a rust code block";
     let last = agent.prompt(Runtime::MAX_EVOLVE_ATTEMPTS - 1);
     assert_eq!(
         last,
         agent.prompt(1),
-        "retry prompts must be identical across attempts (no accumulation)"
+        "retry corrections must be identical across attempts"
+    );
+    assert!(
+        !last.contains(BASE_PROMPT),
+        "retry must not repeat the base prompt, got: {last}"
     );
     assert_eq!(
         last.matches(NUDGE).count(),

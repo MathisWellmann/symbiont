@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 //! Backpressure integration test: a rig `MaxTurnsError` (tool-call turn
-//! budget exhausted) gets the turn-budget nudge appended, and the agent
+//! budget exhausted) gets a concise turn-budget correction, and the agent
 //! recovers.
 //!
 //! One test per binary: [`symbiont::Runtime`] is a process-wide singleton.
@@ -58,8 +58,8 @@ async fn max_turns_error_is_nudged_and_recovered_from() {
 
     let retry_prompt = agent.prompt(1);
     assert!(
-        retry_prompt.starts_with(BASE_PROMPT),
-        "retry prompt must start with the base prompt, got: {retry_prompt}"
+        !retry_prompt.contains(BASE_PROMPT),
+        "retry prompt must contain only the correction, got: {retry_prompt}"
     );
     assert!(
         retry_prompt.contains("exhausted the tool-call turn budget"),

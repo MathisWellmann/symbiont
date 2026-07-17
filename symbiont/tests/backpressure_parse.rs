@@ -54,12 +54,12 @@ async fn parse_failure_is_fed_back_and_recovered_from() {
     assert_eq!(agent.prompt(0), BASE_PROMPT);
     assert_eq!(agent.history_len(0), 0);
 
-    // Attempt 2 receives base prompt + the parse-failure nudge appended,
-    // including the offending code and syn's located diagnostic.
+    // Attempt 2 receives only the latest correction; the original request is
+    // available in history. The correction includes the code and diagnostic.
     let retry_prompt = agent.prompt(1);
     assert!(
-        retry_prompt.starts_with(BASE_PROMPT),
-        "retry prompt must start with the base prompt, got: {retry_prompt}"
+        !retry_prompt.contains(BASE_PROMPT),
+        "retry prompt must contain only the correction, got: {retry_prompt}"
     );
     assert!(
         retry_prompt.contains("is not valid Rust"),

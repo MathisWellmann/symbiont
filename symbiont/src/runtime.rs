@@ -336,10 +336,11 @@ impl Runtime {
 
     /// Prompt the LLM, validate the response, compile, and hot-swap.
     ///
-    /// If the constrained generation fails (parse error, signature mismatch,
-    /// compilation failure), the error is appended to the prompt and the LLM
-    /// retries until it produces valid code, up to [`Self::MAX_EVOLVE_ATTEMPTS`]
-    /// attempts. After that, [`Error::MaxRetriesExceeded`] is returned so a
+    /// If constrained generation fails (parse error, signature mismatch, or
+    /// compilation failure), the next turn contains only the latest correction;
+    /// prior context remains available in chat history. The LLM retries until it
+    /// produces valid code, up to [`Self::MAX_EVOLVE_ATTEMPTS`] attempts. After
+    /// that, [`Error::MaxRetriesExceeded`] is returned so a
     /// misbehaving agent cannot hang the runtime indefinitely.
     ///
     /// Transient HTTP errors from the LLM provider (HTTP 429, 5xx, 529
@@ -414,7 +415,7 @@ impl Runtime {
                             Self::MAX_EVOLVE_ATTEMPTS
                         );
 
-                        prompt = base_prompt.to_string();
+                        prompt.clear();
 
                         use Error::*;
                         match e {
@@ -422,10 +423,10 @@ impl Runtime {
                             "Your response did not contain a rust code block. Please try again and make sure its wrapped like this: ```CODE```",
                         ),
                         CouldNotParseRust { code, err } => write!(prompt,
-                            " Your generated code ```{}``` is not valid Rust. Parse error: ```{}```. Fix the syntax error and respond with the full corrected code.", code.blue(), err.red()
+                            "Your generated code ```{}``` is not valid Rust. Parse error: ```{}```. Fix the syntax error and respond with the full corrected code.", code.blue(), err.red()
                         ).expect("Can write to prompt"),
                         RigPrompt(rig_core::completion::PromptError::MaxTurnsError { .. }) => prompt.push_str(
-                            " You exhausted the tool-call turn budget before producing code. Respond with the final Rust code block now.",
+                            "You exhausted the tool-call turn budget before producing code. Respond with the final Rust code block now.",
                         ),
                         WriteLib(_) => todo!(),
                         SignatureMismatch {
@@ -433,10 +434,10 @@ impl Runtime {
                             expected,
                             got,
                         } => write!(prompt,
-                            " Signature mismatch in {got}. Expected `{expected}`. Fix ONLY this function's signature (argument types and return type must match exactly; argument names may differ). Full code: ```{code}```",
+                            "Signature mismatch in {got}. Expected `{expected}`. Fix ONLY this function's signature (argument types and return type must match exactly; argument names may differ). Full code: ```{code}```",
                         ).expect("Can write to prompt"),
                         CompilationFailed{code, err} => write!(prompt,
-                            " Your generated code ```{}``` failed to compile. Compiler output:\n```\n{}\n```\nPlease fix the compilation errors.", code.blue(), err.red()
+                            "Your generated code ```{}``` failed to compile. Compiler output:\n```\n{}\n```\nPlease fix the compilation errors.", code.blue(), err.red()
                         ).expect("Can write to prompt"),
                         e => {
                             warn!("Unhandled error: {e}");

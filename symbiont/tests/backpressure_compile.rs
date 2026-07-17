@@ -53,8 +53,8 @@ async fn compile_failure_feeds_compiler_diagnostics_back() {
 
     let retry_prompt = agent.prompt(1);
     assert!(
-        retry_prompt.starts_with(BASE_PROMPT),
-        "retry prompt must start with the base prompt, got: {retry_prompt}"
+        !retry_prompt.contains(BASE_PROMPT),
+        "retry prompt must contain only the correction, got: {retry_prompt}"
     );
     assert!(
         retry_prompt.contains("failed to compile"),
