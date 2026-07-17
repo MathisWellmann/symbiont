@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 //! Errors of this crate.
 
+use crate::Revision;
+
 /// Errors that can occur during symbiont runtime operations.
 #[derive(Debug, thiserror::Error)]
 #[expect(missing_docs, reason = "Self explaining")]
@@ -47,6 +49,12 @@ pub enum Error {
 
     #[error("Failed to load dylib: {0}")]
     DylibLoad(String),
+
+    #[error("Unknown revision {requested}; the latest registered revision is {latest}")]
+    UnknownRevision {
+        requested: Revision,
+        latest: Revision,
+    },
 
     #[error("Evolution failed after {attempts} attempts. Last error: {last_error}")]
     MaxRetriesExceeded {
