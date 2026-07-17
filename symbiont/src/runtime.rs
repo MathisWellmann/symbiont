@@ -226,12 +226,15 @@ impl Runtime {
     /// Generate LLM response, then parse, validate, compile, and hot-swap.
     /// It does not catch validation errors and feed it back to the LLM, allowing the user to customize prompting behaviour.
     ///
+    /// On success, returns the [`Revision`] the new implementation was
+    /// registered under.
+    ///
     /// # Contract
     ///
     /// All evolvable function calls must have returned before this is called.
     /// In debug builds this is enforced with an assertion; in release it is
     /// the caller's responsibility.
-    async fn evolve_no_backpressure<AgentT>(&self, agent: &AgentT, prompt: &str) -> Result<()>
+    async fn evolve_no_backpressure<AgentT>(&self, agent: &AgentT, prompt: &str) -> Result<Revision>
     where
         AgentT: EvolutionAgent,
     {
@@ -339,7 +342,7 @@ impl Runtime {
             "Hot-reloaded evolvable dylib (revision {id}). Timings: LLM generation: {llm_time}ms, compilation: {compile_time}ms.",
         );
 
-        Ok(())
+        Ok(Revision::new(id))
     }
 
     /// The id the next successfully loaded revision will be registered under.
@@ -355,6 +358,10 @@ impl Runtime {
     }
 
     /// Prompt the LLM, validate the response, compile, and hot-swap.
+    ///
+    /// On success, returns the [`Revision`] the new implementation was
+    /// registered under. The revision stays loaded for the lifetime of the
+    /// process, so it can be pointed at again later.
     ///
     /// If constrained generation fails (parse error, signature mismatch, or
     /// compilation failure), the next turn contains only the latest correction;
@@ -381,7 +388,7 @@ impl Runtime {
         &self,
         agent: &AgentT,
         base_prompt: &str,
-    ) -> impl Future<Output = Result<()>> + Send
+    ) -> impl Future<Output = Result<Revision>> + Send
     where
         AgentT: EvolutionAgent + Sync,
     {
@@ -393,7 +400,7 @@ impl Runtime {
             loop {
                 attempts += 1;
                 match self.evolve_no_backpressure(agent, &prompt).await {
-                    Ok(()) => return Ok(()),
+                    Ok(revision) => return Ok(revision),
                     Err(e) => {
                         // Transient HTTP errors (rate limits, overload, gateway
                         // failures) are not the LLM's fault: retry with

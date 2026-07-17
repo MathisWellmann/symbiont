@@ -16,6 +16,7 @@ use symbiont::{
     EvolutionAgent,
     FullSource,
     Profile,
+    Revision,
     Runtime,
 };
 
@@ -51,9 +52,15 @@ async fn runtime() {
     step(&mut counter);
     assert_eq!(counter, 1);
 
+    assert_eq!(rt.active_revision(), Revision::INITIAL);
+    assert_eq!(rt.revision_count(), 1);
+
     let agent = MockAgent;
     let prompt = format!("Implement this function in rust: ```{}```", rt.fn_sigs()[0]);
-    rt.evolve(&agent, &prompt).await.expect("Can evolve");
+    let revision = rt.evolve(&agent, &prompt).await.expect("Can evolve");
+    assert_eq!(revision, Revision::new(1));
+    assert_eq!(rt.active_revision(), revision);
+    assert_eq!(rt.revision_count(), 2);
     assert_eq!(&rt.fn_sigs(), &["fn step(counter: &mut usize)".to_string()]);
     assert_eq!(
         &rt.fn_full_sources(),
