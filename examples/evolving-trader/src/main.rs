@@ -15,6 +15,9 @@
 //! drawdown, Sharpe, fees, rejected orders) back to the LLM. After the search,
 //! the best revision is re-activated — its dylib stayed loaded, so no
 //! recompilation — and only then evaluated on the held-out test segment.
+//! Finally, the top revisions run side by side as an equal-weight **ensemble**
+//! on the test segment via typed `RevisionFn` handles: several evolved
+//! strategies executing concurrently as compiled code in one process.
 //!
 //! This showcases symbiont evolving **quantitative reasoning** through code:
 //! the LLM must discover features (momentum, volatility, order flow), position
@@ -91,6 +94,8 @@ const TAKER_FEE: f64 = 0.0006;
 const TRAIN_FRACTION: f64 = 0.7;
 /// Number of LLM evolution rounds.
 const MAX_ROUNDS: usize = 10;
+/// Number of top strategies (by training return) combined into the ensemble.
+const TOP_K: usize = 3;
 
 /// Default location of the raw trade data csv file.
 const DEFAULT_DATA_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/data/Bitmex_XBTUSD_1M.csv");
@@ -282,12 +287,27 @@ fn sharpe(curve: &[f64]) -> f64 {
     }
 }
 
-/// Backtest the currently loaded `decide` implementation over `candles`.
+/// Backtest the currently active `decide` implementation over `candles`.
+fn run_backtest(runtime: &Runtime, candles: &[Candle]) -> EvalResult {
+    run_backtest_with(decide, || runtime.take_panic(), candles)
+}
+
+/// Backtest an arbitrary decision function over `candles`.
+///
+/// `decide_impl` is called once per candle and `take_panic` is checked after
+/// each call, so panics caught inside a dylib abort the run. Taking the
+/// decision as a closure is what allows backtesting [`symbiont::RevisionFn`]
+/// handles of retained revisions — including several combined into an
+/// ensemble — without touching the active revision.
 ///
 /// Prices are fed to the exchange via [`Exchange::set_best_bid_and_ask`] from
 /// each candle close — a reasonable execution proxy when only market orders
 /// are used: buys fill at the ask, sells at the bid, both pay the taker fee.
-fn run_backtest(runtime: &Runtime, candles: &[Candle]) -> EvalResult {
+fn run_backtest_with(
+    decide_impl: impl Fn(&[Candle], &AccountState) -> Action,
+    take_panic: impl Fn() -> Option<String>,
+    candles: &[Candle],
+) -> EvalResult {
     assert!(candles.len() > WINDOW, "Not enough candles for the window");
     let mut exchange = new_exchange();
     let mut equity_curve = Vec::with_capacity(candles.len() - WINDOW + 2);
@@ -322,8 +342,8 @@ fn run_backtest(runtime: &Runtime, candles: &[Candle]) -> EvalResult {
         };
         equity_curve.push(state.equity + unrealized_pnl);
 
-        let action = decide(window, &state);
-        if let Some(msg) = runtime.take_panic() {
+        let action = decide_impl(window, &state);
+        if let Some(msg) = take_panic() {
             panic_msg = Some(msg);
             break;
         }
@@ -380,19 +400,22 @@ fn run_backtest(runtime: &Runtime, candles: &[Candle]) -> EvalResult {
 
 // -- Prompting -----------------------------------------------------------------
 
-/// The best strategy discovered so far.
+/// A strategy that earned a seat in the top-K list during the search.
 ///
 /// Only training-segment information is kept during the search; the held-out
-/// test segment is evaluated once at the end, after re-activating `rev`.
+/// test segment is evaluated once at the end, after re-activating `rev` (and
+/// running the top-K seats side by side as an ensemble).
 struct BestStrategy {
     /// The registered revision of the strategy's compiled dylib. Revisions
-    /// stay loaded, so the best one can be re-activated after the search
+    /// stay loaded, so any of them can be re-run after the search
     /// without recompiling anything.
     rev: Revision,
     /// The strategy's code, fed back into later prompts as "best so far".
     code: String,
     /// Training-segment report, fed back into later prompts.
     train_report: String,
+    /// Training-segment score used to rank strategies.
+    score: f64,
 }
 
 fn build_prompt(
@@ -614,15 +637,17 @@ async fn main() -> symbiont::Result<()> {
     let mut result = run_backtest(runtime, train);
     println!("{result}");
 
-    let mut best_score = result.score();
-    let mut best: Option<BestStrategy> = None;
+    let default_score = result.score();
+    let mut best_score = default_score;
+    // Top strategies so far, sorted by descending training score.
+    let mut top: Vec<BestStrategy> = Vec::new();
     let mut last_code = String::new();
 
     // -- Evolution loop --------------------------------------------------------
     for round in 1..=MAX_ROUNDS {
         println!("\n=== Round {round}: evolving via LLM ===");
 
-        let prompt = build_prompt(&task, &last_code, &result, best.as_ref());
+        let prompt = build_prompt(&task, &last_code, &result, top.first());
         let rev = match runtime.evolve(&agent, &prompt).await {
             Ok(rev) => rev,
             Err(e) => {
@@ -635,34 +660,41 @@ async fn main() -> symbiont::Result<()> {
         result = run_backtest(runtime, train);
         println!("{result}");
 
-        if result.score() > best_score {
-            best_score = result.score();
-            info!("New best strategy (revision {rev}) with {best_score:.2}% training return");
-            best = Some(BestStrategy {
+        let score = result.score();
+        if score > default_score {
+            // Any strategy that beats the round-0 default competes for one of
+            // the TOP_K ensemble seats.
+            top.push(BestStrategy {
                 rev,
                 code: last_code.clone(),
                 train_report: result.to_string(),
+                score,
             });
+            top.sort_by(|a, b| b.score.total_cmp(&a.score));
+            top.truncate(TOP_K);
+        }
+        if score > best_score {
+            best_score = score;
+            info!("New best strategy (revision {rev}) with {best_score:.2}% training return");
         }
     }
 
     // -- Final report: evaluate the best strategy out-of-sample ----------------
-    match best {
-        Some(best) => report_best(runtime, best, best_score, &candles, test, split)?,
-        None => println!(
-            "\nNo evolution improved on the default Hold strategy after {MAX_ROUNDS} rounds."
-        ),
+    if top.is_empty() {
+        println!("\nNo evolution improved on the default Hold strategy after {MAX_ROUNDS} rounds.");
+    } else {
+        report_best(runtime, &top, &candles, test, split)?;
     }
 
     Ok(())
 }
 
-/// Re-activate the best revision, evaluate it on the held-out test segment
-/// and the full dataset, and print + plot the final report.
+/// Re-activate the single best revision, evaluate it on the held-out test
+/// segment and the full dataset, print + plot the report, and pit it against
+/// an equal-weight ensemble of all top revisions.
 fn report_best(
     runtime: &Runtime,
-    best: BestStrategy,
-    best_score: f64,
+    top: &[BestStrategy],
     candles: &[Candle],
     test: &[Candle],
     split: usize,
@@ -670,17 +702,20 @@ fn report_best(
     // Re-activate the best revision — its dylib is still loaded, so this is
     // a pointer swap without recompilation — and only now run the held-out
     // test segment: out-of-sample results never influence the search.
+    let best = &top[0];
     runtime.activate_revision(best.rev)?;
     let test_result = run_backtest(runtime, test);
     let full_result = run_backtest(runtime, candles);
 
     println!(
-        "\n=== Best strategy (revision {}, training return: {best_score:.2}%) ===",
-        best.rev
+        "\n=== Best strategy (revision {}, training return: {:.2}%) ===",
+        best.rev, best.score
     );
     println!("```rust\n{}\n```", best.code);
     println!("\nIn-sample (train):\n{}", best.train_report);
     println!("Out-of-sample (test):\n{test_result}");
+
+    report_ensemble(top, test);
 
     let bh_curve = buy_hold_curve(candles);
     let split_curve_idx = split.saturating_sub(WINDOW - 1);
@@ -688,4 +723,62 @@ fn report_best(
         warn!("Failed to render equity curve plot: {e}");
     }
     Ok(())
+}
+
+/// Evaluate an equal-weight ensemble of the top revisions on the held-out
+/// test segment.
+///
+/// `decide_fn(rev)` (generated by `evolvable!`) returns a typed
+/// [`symbiont::RevisionFn`] handle pinning its revision's dylib: all members
+/// stay callable side by side as compiled code, independent of which revision
+/// is currently active. Each candle, every member votes and the signed
+/// quantities are averaged into one net market order.
+fn report_ensemble(top: &[BestStrategy], test: &[Candle]) {
+    if top.len() < 2 {
+        println!("(only one strategy beat the default — no ensemble to run)");
+        return;
+    }
+    let handles = Vec::from_iter(
+        top.iter()
+            .map(|b| decide_fn(b.rev).expect("top revisions are retained by the registry")),
+    );
+    // Hoist the bare fn pointers once; the per-candle calls below are plain
+    // indirect calls into each member's dylib.
+    let members = Vec::from_iter(handles.iter().map(symbiont::RevisionFn::get));
+
+    let result = run_backtest_with(
+        |window, state| combine_actions(members.iter().map(|f| f(window, state)), members.len()),
+        || handles.iter().find_map(|h| h.take_panic()),
+        test,
+    );
+
+    let revisions = Vec::from_iter(top.iter().map(|b| b.rev.to_string()));
+    println!(
+        "Equal-weight ensemble of revisions [{}] out-of-sample (test):\n{result}",
+        revisions.join(", ")
+    );
+}
+
+/// Combine the ensemble members' actions into one equal-weight order:
+/// average the signed quantities (buy = `+qty`, sell = `-qty`, hold = `0`)
+/// and emit the net as a single market order. Nets below the exchange's
+/// 0.0001 BTC quantity step become [`Action::Hold`].
+fn combine_actions(actions: impl Iterator<Item = Action>, members: usize) -> Action {
+    const MIN_QTY: f64 = 0.0001;
+    let mut net = 0.0;
+    for action in actions {
+        match action {
+            Action::Buy { qty } => net += qty,
+            Action::Sell { qty } => net -= qty,
+            Action::Hold => {}
+        }
+    }
+    let avg = net / members as f64;
+    if avg >= MIN_QTY {
+        Action::Buy { qty: avg }
+    } else if avg <= -MIN_QTY {
+        Action::Sell { qty: -avg }
+    } else {
+        Action::Hold
+    }
 }
