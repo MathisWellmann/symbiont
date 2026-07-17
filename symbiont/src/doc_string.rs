@@ -3,6 +3,7 @@
 
 use std::{
     collections::{
+        BTreeMap,
         BTreeSet,
         HashMap,
         HashSet,
@@ -35,36 +36,58 @@ use crate::{
     Result,
 };
 
-/// Document the prelude crate to give the LLM context about available types and methods.
+/// Document the exact API imported by `use host::prelude::*;`.
 pub(crate) async fn write_prelude_doc_string(s: &mut String, crate_name: &str) -> Result<()> {
     let crate_data = rustdoc_json(crate_name, &[crate_name]).await?;
-    let rendered = RustApiSynopsis::new(&crate_data).render(ApiSynopsisSubject::Host);
-    trace!("api synopsis: {}", rendered.api);
-
+    let rendered = RustApiSynopsis::new(&crate_data).render_host_facade();
+    trace!("host facade synopsis: {}", rendered.api);
     s.push_str(&rendered.api);
 
-    for reexported_crate in rendered.external_crates {
-        let package_candidates = package_candidates_for_crate(&reexported_crate);
+    let mut pending = rendered.external_facades;
+    let mut rendered_facades = BTreeSet::new();
+    while let Some(crate_name) = pending.keys().next().cloned() {
+        let requests = pending.remove(&crate_name).unwrap_or_default();
+        let requests = requests
+            .into_iter()
+            .filter(|request| rendered_facades.insert((crate_name.clone(), request.clone())))
+            .collect::<BTreeSet<_>>();
+        if requests.is_empty() {
+            continue;
+        }
+
+        let package_candidates = package_candidates_for_crate(&crate_name);
         let package_candidates = Vec::from_iter(package_candidates.iter().map(String::as_str));
-        match rustdoc_json(&reexported_crate, &package_candidates).await {
+        match rustdoc_json(&crate_name, &package_candidates).await {
             Ok(crate_data) => {
-                let rendered =
-                    RustApiSynopsis::new(&crate_data).render(ApiSynopsisSubject::ReexportedCrate);
-                trace!("re-exported crate api synopsis: {}", rendered.api);
-                s.push('\n');
-                s.push_str(&rendered.api);
+                let rendered = RustApiSynopsis::new(&crate_data)
+                    .render_external_facade(&crate_name, &requests);
+                trace!("reachable {crate_name} facade synopsis: {}", rendered.api);
+                if !rendered.api.is_empty() {
+                    s.push('\n');
+                    s.push_str(&rendered.api);
+                }
+                merge_facades(&mut pending, rendered.external_facades);
             }
             Err(err) => {
-                trace!("could not document re-exported crate {reexported_crate}: {err}");
+                trace!("could not document reachable crate {crate_name}: {err}");
                 let _ = writeln!(
                     s,
-                    "\nCould not generate rustdoc JSON for re-exported crate `{reexported_crate}`."
+                    "\nCould not generate rustdoc JSON for reachable crate `{crate_name}`."
                 );
             }
         }
     }
 
     Ok(())
+}
+
+fn merge_facades(
+    target: &mut BTreeMap<String, BTreeSet<FacadeRequest>>,
+    source: BTreeMap<String, BTreeSet<FacadeRequest>>,
+) {
+    for (crate_name, requests) in source {
+        target.entry(crate_name).or_default().extend(requests);
+    }
 }
 
 async fn rustdoc_json(crate_name: &str, package_candidates: &[&str]) -> Result<RustdocCrate> {
@@ -105,15 +128,15 @@ fn package_candidates_for_crate(crate_name: &str) -> Vec<String> {
     candidates
 }
 
-#[derive(Clone, Copy)]
-enum ApiSynopsisSubject {
-    Host,
-    ReexportedCrate,
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum FacadeRequest {
+    Module(Vec<String>),
+    Item(Vec<String>),
 }
 
 struct RenderedApiSynopsis {
     api: String,
-    external_crates: Vec<String>,
+    external_facades: BTreeMap<String, BTreeSet<FacadeRequest>>,
 }
 
 /// Small rustdoc-JSON adapter that emits source-like public API snippets.
@@ -126,9 +149,9 @@ struct RustApiSynopsis<'a> {
     crate_data: &'a RustdocCrate,
     source_cache: HashMap<PathBuf, String>,
     rendered_items: HashSet<Id>,
-    queued_reexports: HashSet<Id>,
-    pending_reexports: Vec<Id>,
-    external_crates_to_document: BTreeSet<String>,
+    queued_reexports: HashSet<(Id, bool)>,
+    pending_reexports: Vec<(Id, bool)>,
+    external_facades: BTreeMap<String, BTreeSet<FacadeRequest>>,
     local_crate_alias: String,
 }
 
@@ -140,52 +163,94 @@ impl<'a> RustApiSynopsis<'a> {
             rendered_items: HashSet::new(),
             queued_reexports: HashSet::new(),
             pending_reexports: Vec::new(),
-            external_crates_to_document: BTreeSet::new(),
+            external_facades: BTreeMap::new(),
             local_crate_alias: "host".to_string(),
         }
     }
 
-    fn render(mut self, subject: ApiSynopsisSubject) -> RenderedApiSynopsis {
-        let mut out = String::new();
-        let root = self.crate_data.index.get(&self.crate_data.root);
-        let crate_name = root.and_then(|item| item.name.as_deref()).unwrap_or("host");
+    fn render_host_facade(mut self) -> RenderedApiSynopsis {
+        self.local_crate_alias = "host".to_string();
+        let mut out = "The harness injects `use host::prelude::*;`. The following is the complete API imported by that statement. Items not shown are not available. Use these names unqualified and do not emit imports.\n\n```rust\n// Reachable host facade; bodies and large constant initializers are omitted.\n\n".to_string();
 
-        match subject {
-            ApiSynopsisSubject::Host => {
-                self.local_crate_alias = "host".to_string();
-                out.push_str("This is a Rust-style synopsis of the public host API available to generated code.\n");
-                out.push_str("It is for reference only; do not copy the whole block. Call these APIs from the evolved function.\n");
-                out.push_str("The generated dylib depends on this crate as `host` and injects `use host::prelude::*;`; do not emit that import yourself.\n");
-                out.push_str("Public dependency crates re-exported by `host::prelude` are documented below for API reference, but are not direct dylib dependencies. Use their re-exported items unqualified, not through dependency crate paths.\n\n");
-                out.push_str("```rust\n");
-                let _ = writeln!(out, "// API synopsis for host crate `{crate_name}`.");
-            }
-            ApiSynopsisSubject::ReexportedCrate => {
-                self.local_crate_alias = crate_name.to_string();
-                let _ = writeln!(
-                    out,
-                    "This is a Rust-style synopsis of the public API for dependency crate `{crate_name}`, re-exported by the host prelude."
-                );
-                out.push_str("This is API reference for items re-exported into scope by `host::prelude::*`; the dependency crate path itself is not available. Use documented re-exported items unqualified.\n\n");
-                out.push_str("```rust\n");
-                let _ = writeln!(
-                    out,
-                    "// API synopsis for re-exported dependency crate `{crate_name}`."
-                );
-            }
+        if let Some(prelude) = self.find_module(&["prelude".to_string()]) {
+            self.write_module_items(&mut out, &prelude, 0);
+            self.write_pending_reexports(&mut out);
         }
-        out.push_str("// Bodies and large constant initializers are omitted.\n\n");
-
-        if let Some(root) = root {
-            self.write_module_items(&mut out, root, 0);
-        }
-        self.write_pending_reexports(&mut out);
 
         out.push_str("```\n");
         RenderedApiSynopsis {
             api: out,
-            external_crates: self.external_crates_to_document.into_iter().collect(),
+            external_facades: self.external_facades,
         }
+    }
+
+    fn render_external_facade(
+        mut self,
+        crate_name: &str,
+        requests: &BTreeSet<FacadeRequest>,
+    ) -> RenderedApiSynopsis {
+        self.local_crate_alias = crate_name.to_string();
+        let mut body = String::new();
+        for request in requests {
+            match request {
+                FacadeRequest::Module(path) => {
+                    if let Some(module) = self.find_module(path) {
+                        self.write_module_items(&mut body, &module, 0);
+                    }
+                }
+                FacadeRequest::Item(path) => {
+                    if let Some(item) = self.find_item(path) {
+                        self.write_item(&mut body, &item, 0);
+                    }
+                }
+            }
+        }
+        self.write_pending_reexports(&mut body);
+
+        let api = if body.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "Reachable items re-exported from `{crate_name}` (the crate path itself is not available):\n\n```rust\n// Use these items unqualified.\n\n{body}```\n"
+            )
+        };
+        RenderedApiSynopsis {
+            api,
+            external_facades: self.external_facades,
+        }
+    }
+
+    fn find_module(&self, path: &[String]) -> Option<Item> {
+        if path.is_empty() {
+            return self.crate_data.index.get(&self.crate_data.root).cloned();
+        }
+        self.find_item(path)
+            .filter(|item| matches!(item.inner, ItemEnum::Module(_)))
+    }
+
+    fn find_item(&self, path: &[String]) -> Option<Item> {
+        if let Some(item) = self.crate_data.paths.iter().find_map(|(id, summary)| {
+            (summary.path.get(1..) == Some(path))
+                .then(|| self.crate_data.index.get(id).cloned())
+                .flatten()
+        }) {
+            return Some(item);
+        }
+
+        let mut item = self.crate_data.index.get(&self.crate_data.root)?.clone();
+        for segment in path {
+            let ItemEnum::Module(module) = &item.inner else {
+                return None;
+            };
+            item = module.items.iter().find_map(|id| {
+                self.crate_data
+                    .index
+                    .get(id)
+                    .filter(|child| child.name.as_ref() == Some(segment))
+                    .cloned()
+            })?;
+        }
+        Some(item)
     }
 
     fn write_module_items(&mut self, out: &mut String, module_item: &Item, indent: usize) {
@@ -212,14 +277,7 @@ impl<'a> RustApiSynopsis<'a> {
         }
 
         match &item.inner {
-            ItemEnum::Use(use_item) => {
-                self.write_snippet(
-                    out,
-                    &synthesize_use(use_item, &self.local_crate_alias),
-                    indent,
-                );
-                self.queue_use_targets(use_item);
-            }
+            ItemEnum::Use(use_item) => self.queue_use_targets(use_item),
             ItemEnum::Module(_) => {
                 let Some(name) = &item.name else {
                     return;
@@ -307,66 +365,54 @@ impl<'a> RustApiSynopsis<'a> {
     }
 
     fn write_pending_reexports(&mut self, out: &mut String) {
-        while let Some(id) = self.pending_reexports.pop() {
-            let Some(item) = self.crate_data.index.get(&id) else {
+        while let Some((id, flatten_module)) = self.pending_reexports.pop() {
+            let Some(item) = self.crate_data.index.get(&id).cloned() else {
                 continue;
             };
-            if !is_public(item) || self.rendered_items.contains(&id) {
+            if !is_public(&item) || (!flatten_module && self.rendered_items.contains(&id)) {
                 continue;
             }
-            self.write_item(out, item, 0);
+            if flatten_module {
+                self.write_module_items(out, &item, 0);
+            } else {
+                self.write_item(out, &item, 0);
+            }
         }
     }
 
-    fn queue_reexport(&mut self, id: Id) {
-        if self.rendered_items.contains(&id) || !self.queued_reexports.insert(id) {
+    fn queue_reexport(&mut self, id: Id, flatten_module: bool) {
+        if self.rendered_items.contains(&id) || !self.queued_reexports.insert((id, flatten_module))
+        {
             return;
         }
-        self.pending_reexports.push(id);
+        self.pending_reexports.push((id, flatten_module));
     }
 
     fn queue_use_targets(&mut self, use_item: &Use) {
-        if let Some(id) = use_item.id {
-            self.queue_reexport(id);
-            self.queue_external_crate_for_id(id);
-            return;
-        }
-
-        if !use_item.is_glob {
-            return;
-        }
-
-        let Some(first_segment) = use_item.source.split("::").next() else {
+        let Some(id) = use_item.id else {
             return;
         };
-        if matches!(first_segment, "crate" | "self" | "super" | "host") {
-            return;
-        }
-        if self
-            .crate_data
-            .external_crates
-            .values()
-            .any(|external_crate| {
-                external_crate.name == first_segment
-                    && is_documentable_external_crate(external_crate)
-            })
-        {
-            self.external_crates_to_document
-                .insert(first_segment.to_string());
-        }
-    }
-
-    fn queue_external_crate_for_id(&mut self, id: Id) {
         let Some(summary) = self.crate_data.paths.get(&id) else {
             return;
         };
         let Some(external_crate) = self.crate_data.external_crates.get(&summary.crate_id) else {
+            self.queue_reexport(id, use_item.is_glob);
             return;
         };
-        if is_documentable_external_crate(external_crate) {
-            self.external_crates_to_document
-                .insert(external_crate.name.clone());
+        if !is_documentable_external_crate(external_crate) {
+            return;
         }
+
+        let path = summary.path.iter().skip(1).cloned().collect::<Vec<_>>();
+        let request = if use_item.is_glob {
+            FacadeRequest::Module(path)
+        } else {
+            FacadeRequest::Item(path)
+        };
+        self.external_facades
+            .entry(external_crate.name.clone())
+            .or_default()
+            .insert(request);
     }
 
     fn source_snippet(&mut self, item: &Item) -> Option<String> {
@@ -391,17 +437,6 @@ impl<'a> RustApiSynopsis<'a> {
         let snippet = normalize_local_paths(snippet.trim(), &self.local_crate_alias);
         write_snippet_lines(out, &snippet, indent);
         out.push('\n');
-    }
-}
-
-fn synthesize_use(use_item: &Use, local_crate_alias: &str) -> String {
-    let source = normalize_local_paths(&use_item.source, local_crate_alias);
-    if use_item.is_glob {
-        format!("pub use {source}::*;")
-    } else if source.ends_with(&format!("::{}", use_item.name)) {
-        format!("pub use {source};")
-    } else {
-        format!("pub use {source} as {};", use_item.name)
     }
 }
 
@@ -769,11 +804,12 @@ mod tests {
             format_version: rustdoc_types::FORMAT_VERSION,
         };
 
-        let rendered = RustApiSynopsis::new(&crate_data).render(ApiSynopsisSubject::Host);
+        let rendered = RustApiSynopsis::new(&crate_data).render_host_facade();
 
-        assert!(rendered.api.contains("pub mod prelude"));
-        assert!(rendered.api.contains("pub use sliding_features::*;"));
-        assert_eq!(rendered.external_crates, vec!["sliding_features"]);
+        assert_eq!(
+            rendered.external_facades["sliding_features"],
+            BTreeSet::from([FacadeRequest::Module(Vec::new())])
+        );
     }
 
     #[test]
@@ -844,14 +880,12 @@ mod tests {
             format_version: rustdoc_types::FORMAT_VERSION,
         };
 
-        let rendered = RustApiSynopsis::new(&crate_data).render(ApiSynopsisSubject::Host);
+        let rendered = RustApiSynopsis::new(&crate_data).render_host_facade();
 
-        assert!(
-            rendered
-                .api
-                .contains("pub use sliding_features::RollingSum;")
+        assert_eq!(
+            rendered.external_facades["sliding_features"],
+            BTreeSet::from([FacadeRequest::Item(vec!["RollingSum".to_string()])])
         );
-        assert_eq!(rendered.external_crates, vec!["sliding_features"]);
     }
 
     #[test]
@@ -922,10 +956,9 @@ mod tests {
             format_version: rustdoc_types::FORMAT_VERSION,
         };
 
-        let rendered = RustApiSynopsis::new(&crate_data).render(ApiSynopsisSubject::Host);
+        let rendered = RustApiSynopsis::new(&crate_data).render_host_facade();
 
-        assert!(rendered.api.contains("pub use std::fmt::Debug;"));
-        assert!(rendered.external_crates.is_empty());
+        assert!(rendered.external_facades.is_empty());
     }
 
     #[test]
@@ -998,15 +1031,12 @@ mod tests {
             format_version: rustdoc_types::FORMAT_VERSION,
         };
 
-        let rendered =
-            RustApiSynopsis::new(&crate_data).render(ApiSynopsisSubject::ReexportedCrate);
-
-        assert!(rendered.api.contains("dependency crate `sliding_features`"));
-        assert!(
-            rendered
-                .api
-                .contains("pub use sliding_features::RollingSum;")
+        let rendered = RustApiSynopsis::new(&crate_data).render_external_facade(
+            "sliding_features",
+            &BTreeSet::from([FacadeRequest::Module(Vec::new())]),
         );
+
+        assert!(rendered.external_facades.is_empty());
         assert!(!rendered.api.contains("host::RollingSum"));
     }
 
