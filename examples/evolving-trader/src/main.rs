@@ -12,8 +12,9 @@
 //! the current account state and returns an [`Action`] (hold / market buy /
 //! market sell). Each round the harness backtests the evolved strategy on the
 //! training segment of the data and feeds the performance report (return,
-//! drawdown, Sharpe, fees, rejected orders) back to the LLM. The best strategy
-//! is finally evaluated on the held-out test segment.
+//! drawdown, Sharpe, fees, rejected orders) back to the LLM. After the search,
+//! the best revision is re-activated — its dylib stayed loaded, so no
+//! recompilation — and only then evaluated on the held-out test segment.
 //!
 //! This showcases symbiont evolving **quantitative reasoning** through code:
 //! the LLM must discover features (momentum, volatility, order flow), position
@@ -47,6 +48,7 @@ use lfest::prelude::{
 use plotters::prelude::*;
 use symbiont::{
     DylibConfig,
+    Revision,
     Runtime,
 };
 use tracing::{
@@ -379,13 +381,18 @@ fn run_backtest(runtime: &Runtime, candles: &[Candle]) -> EvalResult {
 // -- Prompting -----------------------------------------------------------------
 
 /// The best strategy discovered so far.
+///
+/// Only training-segment information is kept during the search; the held-out
+/// test segment is evaluated once at the end, after re-activating `rev`.
 struct BestStrategy {
+    /// The registered revision of the strategy's compiled dylib. Revisions
+    /// stay loaded, so the best one can be re-activated after the search
+    /// without recompiling anything.
+    rev: Revision,
+    /// The strategy's code, fed back into later prompts as "best so far".
     code: String,
+    /// Training-segment report, fed back into later prompts.
     train_report: String,
-    /// Out-of-sample result. Never fed back to the LLM to avoid leakage.
-    test_report: String,
-    /// Equity curve of a run over the full dataset (train + test), for plotting.
-    full_curve: Vec<f64>,
 }
 
 fn build_prompt(
@@ -616,10 +623,13 @@ async fn main() -> symbiont::Result<()> {
         println!("\n=== Round {round}: evolving via LLM ===");
 
         let prompt = build_prompt(&task, &last_code, &result, best.as_ref());
-        if let Err(e) = runtime.evolve(&agent, &prompt).await {
-            warn!("Evolution failed: {e} — retrying next round.");
-            continue;
-        }
+        let rev = match runtime.evolve(&agent, &prompt).await {
+            Ok(rev) => rev,
+            Err(e) => {
+                warn!("Evolution failed: {e} — retrying next round.");
+                continue;
+            }
+        };
         last_code = runtime.current_code();
 
         result = run_backtest(runtime, train);
@@ -627,38 +637,55 @@ async fn main() -> symbiont::Result<()> {
 
         if result.score() > best_score {
             best_score = result.score();
-            info!("New best strategy with {best_score:.2}% training return");
-            // Evaluate out-of-sample and over the full dataset for the final
-            // report. These results are *not* fed back into the prompt.
-            let test_result = run_backtest(runtime, test);
-            let full_result = run_backtest(runtime, &candles);
+            info!("New best strategy (revision {rev}) with {best_score:.2}% training return");
             best = Some(BestStrategy {
+                rev,
                 code: last_code.clone(),
                 train_report: result.to_string(),
-                test_report: test_result.to_string(),
-                full_curve: full_result.equity_curve,
             });
         }
     }
 
     // -- Final report: evaluate the best strategy out-of-sample ----------------
     match best {
-        Some(best) => {
-            println!("\n=== Best strategy (training return: {best_score:.2}%) ===");
-            println!("```rust\n{}\n```", best.code);
-            println!("\nIn-sample (train):\n{}", best.train_report);
-            println!("Out-of-sample (test):\n{}", best.test_report);
-
-            let bh_curve = buy_hold_curve(&candles);
-            let split_curve_idx = split.saturating_sub(WINDOW - 1);
-            if let Err(e) = plot_equity_curves(&best.full_curve, &bh_curve, split_curve_idx) {
-                warn!("Failed to render equity curve plot: {e}");
-            }
-        }
+        Some(best) => report_best(runtime, best, best_score, &candles, test, split)?,
         None => println!(
             "\nNo evolution improved on the default Hold strategy after {MAX_ROUNDS} rounds."
         ),
     }
 
+    Ok(())
+}
+
+/// Re-activate the best revision, evaluate it on the held-out test segment
+/// and the full dataset, and print + plot the final report.
+fn report_best(
+    runtime: &Runtime,
+    best: BestStrategy,
+    best_score: f64,
+    candles: &[Candle],
+    test: &[Candle],
+    split: usize,
+) -> symbiont::Result<()> {
+    // Re-activate the best revision — its dylib is still loaded, so this is
+    // a pointer swap without recompilation — and only now run the held-out
+    // test segment: out-of-sample results never influence the search.
+    runtime.activate_revision(best.rev)?;
+    let test_result = run_backtest(runtime, test);
+    let full_result = run_backtest(runtime, candles);
+
+    println!(
+        "\n=== Best strategy (revision {}, training return: {best_score:.2}%) ===",
+        best.rev
+    );
+    println!("```rust\n{}\n```", best.code);
+    println!("\nIn-sample (train):\n{}", best.train_report);
+    println!("Out-of-sample (test):\n{test_result}");
+
+    let bh_curve = buy_hold_curve(candles);
+    let split_curve_idx = split.saturating_sub(WINDOW - 1);
+    if let Err(e) = plot_equity_curves(&full_result.equity_curve, &bh_curve, split_curve_idx) {
+        warn!("Failed to render equity curve plot: {e}");
+    }
     Ok(())
 }
