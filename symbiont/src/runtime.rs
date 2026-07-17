@@ -17,6 +17,7 @@ use std::{
     sync::{
         Mutex,
         OnceLock,
+        RwLock,
         atomic::{
             AtomicPtr,
             AtomicU64,
@@ -49,13 +50,16 @@ use crate::{
         Result,
     },
     parser::parse_rust_code,
-    update_pointers::update_fn_ptrs,
+    revision::{
+        Revision,
+        RevisionEntry,
+    },
     utils::{
-        dylib_extension,
         find_so,
         generate_cargo_toml,
         generate_lib_rs,
         is_transient_http_error,
+        versioned_so_path,
     },
     validation::validate_generated_ast,
 };
@@ -73,27 +77,34 @@ pub(crate) static TAKE_PANIC_PTR: AtomicPtr<()> = AtomicPtr::new(std::ptr::null_
 /// Function dispatch is lock-free: each evolvable function reads its cached
 /// pointer via a single `AtomicPtr::load`.
 ///
+/// Every successfully loaded dylib is retained in a keep-all revision
+/// registry — see [`Revision`]. Earlier evolutions therefore stay loaded and
+/// callable for the lifetime of the process, without ever parsing or
+/// compiling them again.
+///
 /// # Contract
 ///
 /// **All evolvable function calls must have returned before [`Runtime::evolve`]
 /// is called.** This is the natural shape of the feedback loop — run functions,
 /// collect results, evolve, repeat. The contract is enforced with an assertion
-/// in debug builds and is zero-cost in release.
+/// in debug builds and is zero-cost in release. Retained revisions are never
+/// unmapped, so a violating in-flight call executes stale but still-mapped
+/// code; the contract remains so a swap cannot tear a multi-function revision
+/// apart mid-use.
 pub struct Runtime {
     /// Path to the temporary dylib crate directory.
     crate_dir: PathBuf,
-    /// Path to the compiled `.so` / `.dylib` / `.dll` file.
+    /// Path to the unversioned `.so` / `.dylib` / `.dll` produced by cargo,
+    /// used as the copy source for the per-revision versioned files.
     so_path: PathBuf,
-    /// Monotonically increasing version counter for versioned `.so` paths
-    /// to defeat `dlopen` caching.
-    version: AtomicU64,
     /// Function signatures for validation of LLM-generated code.
     fn_sigs: Vec<String>,
-    /// The currently loaded library.
-    /// Safe to replace because the caller guarantees no in-flight calls
-    /// during evolution. The Mutex is only taken during reload, never on
-    /// the hot path.
-    library: Mutex<Option<Library>>,
+    /// Every successfully loaded dylib revision, retained for the lifetime of
+    /// the process (keep-all). The index into this vec is the revision id.
+    /// The lock is never taken on the hot path.
+    revisions: RwLock<Vec<RevisionEntry>>,
+    /// Id of the revision currently published to the dispatch pointers.
+    active: AtomicU64,
     /// Declarations (kept for fn_ptr updates on reload).
     decls: &'static [EvolvableDecl],
     /// Compilation profile (`debug` or `release`).
@@ -103,8 +114,6 @@ pub struct Runtime {
     /// `evolvable! { ... }` and configured imports such as
     /// `use host::prelude::*;`.
     prelude: Vec<String>,
-    /// The currently active AST of the agent code, in String form, to make it `Send`
-    current_clean_ast: Mutex<String>,
     /// The chat history behind a Mutex, because the `Runtime` methods can not be `&mut self` as it lives in `static RUNTIME`.
     chat_history: Mutex<Vec<Message>>,
 }
@@ -179,27 +188,32 @@ impl Runtime {
         // Compile
         compile_dylib(&crate_dir, config.profile(), &lib_rs)?;
 
-        // Find and load the .so
+        // Copy the build output to the revision-0 path: later `cargo build`
+        // runs replace the unversioned artifact, while the versioned copy
+        // stays stable for the lifetime of the registry.
         let so_path = find_so(&crate_dir, config.profile())?;
+        let v0_path = versioned_so_path(&crate_dir, Revision::INITIAL.as_u64());
+        std::fs::copy(&so_path, &v0_path)?;
         let lib = unsafe {
-            Library::new(&so_path).map_err(|e| {
-                Error::DylibLoad(format!("Failed to load {}: {e}", so_path.display()))
+            Library::new(&v0_path).map_err(|e| {
+                Error::DylibLoad(format!("Failed to load {}: {e}", v0_path.display()))
             })?
         };
 
-        // Cache function pointers (lock-free after this point)
-        unsafe { update_fn_ptrs(&lib, decls)? };
+        // Resolve and cache the function pointers of the initial revision
+        // (dispatch is lock-free after this point) and register it.
+        let initial = unsafe { RevisionEntry::resolve(lib, decls, lib_rs)? };
+        initial.publish(decls);
 
         let runtime = Runtime {
             crate_dir,
             so_path,
-            version: AtomicU64::new(1),
             fn_sigs,
-            library: Mutex::new(Some(lib)),
+            revisions: RwLock::new(vec![initial]),
+            active: AtomicU64::new(Revision::INITIAL.as_u64()),
             decls,
             profile: config.profile(),
             prelude,
-            current_clean_ast: Mutex::new(lib_rs),
             chat_history: Mutex::new(Vec::with_capacity(8)),
         };
 
@@ -291,41 +305,47 @@ impl Runtime {
         let clean_ast_str = unparse(&ast);
         debug!("clean_ast_str: {clean_ast_str}");
         compile_dylib(&self.crate_dir, self.profile, &clean_ast_str)?;
-        {
-            *self
-                .current_clean_ast
-                .lock()
-                .expect("Can lock the clean ast mutex") = clean_ast_str;
-        }
         let compile_time = t0.elapsed().as_millis();
 
-        // Copy .so to versioned path to defeat dlopen caching
-        let version = self.version.fetch_add(1, Ordering::SeqCst);
-        let versioned_so = self.crate_dir.join(format!(
-            "libsymbiont_evolvable_v{version}{}",
-            dylib_extension()
-        ));
+        // Copy the build output to the next revision's own path (which also
+        // defeats dlopen path caching) and load it.
+        let id = self.next_revision_id()?;
+        let versioned_so = versioned_so_path(&self.crate_dir, id);
         std::fs::copy(&self.so_path, &versioned_so)?;
-
-        // Load new library
         let new_lib = unsafe {
             Library::new(&versioned_so).map_err(|e| {
                 Error::DylibLoad(format!("Failed to load {}: {e}", versioned_so.display()))
             })?
         };
 
-        // Update cached function pointers (atomic stores with Release ordering).
-        unsafe { update_fn_ptrs(&new_lib, self.decls)? };
-
-        // Replace the library. Safe to drop the old one because the caller
-        // guarantees no evolvable functions are executing (feedback loop contract).
-        *self.library.lock().expect("library Mutex poisoned") = Some(new_lib);
+        // Resolve the new revision's symbols, publish its function pointers
+        // (atomic stores with Release ordering), and retain it in the
+        // registry. The previous library stays loaded (keep-all), so earlier
+        // revisions remain callable for the lifetime of the process.
+        let entry = unsafe { RevisionEntry::resolve(new_lib, self.decls, clean_ast_str)? };
+        entry.publish(self.decls);
+        {
+            let mut revisions = self.revisions.write().map_err(|_| Error::MutexPoison)?;
+            debug_assert_eq!(
+                u64::try_from(revisions.len()).expect("registry length fits in u64"),
+                id,
+                "concurrent evolve() calls are not supported"
+            );
+            revisions.push(entry);
+        }
+        self.active.store(id, Ordering::Release);
 
         info!(
-            "Hot-reloaded evolvable dylib (version {version}). Timings: LLM generation: {llm_time}ms, compilation: {compile_time}ms.",
+            "Hot-reloaded evolvable dylib (revision {id}). Timings: LLM generation: {llm_time}ms, compilation: {compile_time}ms.",
         );
 
         Ok(())
+    }
+
+    /// The id the next successfully loaded revision will be registered under.
+    fn next_revision_id(&self) -> Result<u64> {
+        let revisions = self.revisions.read().map_err(|_| Error::MutexPoison)?;
+        Ok(u64::try_from(revisions.len()).expect("registry length fits in u64"))
     }
 
     /// Exponential backoff (capped at 30s) for transient retry attempt `n`.
@@ -503,11 +523,39 @@ impl Runtime {
 
     /// Get the current, clean LLM-generated code (without panic-catching wrappers or preamble).
     /// Suitable for feeding back into the LLM prompt or displaying to the user.
+    ///
+    /// This is the source of the revision the dispatch pointers currently
+    /// point at: the latest successful evolution.
     pub fn current_code(&self) -> String {
-        self.current_clean_ast
-            .lock()
-            .expect("Can lock the mutex to get clean AST")
-            .clone()
+        self.revision_code(self.active_revision())
+            .expect("the active revision is always registered")
+    }
+
+    /// The revision whose code the `evolvable!` dispatch wrappers currently
+    /// execute.
+    pub fn active_revision(&self) -> Revision {
+        Revision::new(self.active.load(Ordering::Acquire))
+    }
+
+    /// Number of registered revisions: the initial build plus one per
+    /// successful evolution. Valid revision ids are `0..revision_count()`.
+    pub fn revision_count(&self) -> u64 {
+        let revisions = self
+            .revisions
+            .read()
+            .expect("revisions RwLock is not poisoned");
+        u64::try_from(revisions.len()).expect("registry length fits in u64")
+    }
+
+    /// The clean generated source of `revision` (without panic-catching
+    /// wrappers or preamble), or `None` if no such revision was registered.
+    pub fn revision_code(&self, revision: Revision) -> Option<String> {
+        let idx = usize::try_from(revision.as_u64()).ok()?;
+        let revisions = self
+            .revisions
+            .read()
+            .expect("revisions RwLock is not poisoned");
+        revisions.get(idx).map(|entry| entry.source().to_owned())
     }
 
     /// Return the function signature and body for a single function base on its `fn_name`
