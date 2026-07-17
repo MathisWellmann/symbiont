@@ -1231,11 +1231,7 @@ mod tests {
 
         let rendered = RustApiSynopsis::new(&crate_data).render_host_facade();
 
-        assert!(
-            rendered
-                .api
-                .contains("does not expose a `prelude` module")
-        );
+        assert!(rendered.api.contains("does not expose a `prelude` module"));
         assert!(!rendered.api.contains("complete API"));
         assert!(!rendered.api.contains("```rust"));
         assert!(rendered.external_facades.is_empty());
