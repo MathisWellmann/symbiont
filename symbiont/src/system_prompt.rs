@@ -54,9 +54,11 @@ You may use:
 - items, types, and methods documented in the host API section below
 - items already imported by the harness prelude, if any
 
-Do not use external crates unless they are explicitly documented or available. Do not invent imports or dependencies.
+Do not invent imports or dependencies. Emit no `use` item for a prelude that the harness already injects.
 
-If host crate APIs are documented below, assume the relevant prelude/imports may already be injected by the harness. Use only the documented public API.
+When host APIs are documented, the generated crate can depend on `host` without depending directly on crates named in the documentation. Dependency API sections describe the origin and API of host-re-exported items; they do not make `dependency_name::...` paths available. Unless the task explicitly says a crate is a direct dylib dependency, use only unqualified names imported by `host::prelude::*` (or an explicit `host::...` path). Never add a dependency import merely because that dependency has a documentation section.
+
+Treat the synopsis literally: call only documented public methods on the exact receiver type and use documented enum variants and constructors. Do not infer fields, methods, or variants from similarly named APIs. If the documented inputs do not expose an API needed for an idea, choose a simpler implementation or do nothing instead of inventing one.
 
 # Runtime constraints
 

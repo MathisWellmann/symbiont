@@ -155,8 +155,8 @@ impl<'a> RustApiSynopsis<'a> {
                 self.local_crate_alias = "host".to_string();
                 out.push_str("This is a Rust-style synopsis of the public host API available to generated code.\n");
                 out.push_str("It is for reference only; do not copy the whole block. Call these APIs from the evolved function.\n");
-                out.push_str("The host crate is available to the generated dylib as `host`; configured preludes may already import common items.\n");
-                out.push_str("Public dependency crates re-exported by the host prelude are documented in additional sections when rustdoc JSON is available.\n\n");
+                out.push_str("The generated dylib depends on this crate as `host` and injects `use host::prelude::*;`; do not emit that import yourself.\n");
+                out.push_str("Public dependency crates re-exported by `host::prelude` are documented below for API reference, but are not direct dylib dependencies. Use their re-exported items unqualified, not through dependency crate paths.\n\n");
                 out.push_str("```rust\n");
                 let _ = writeln!(out, "// API synopsis for host crate `{crate_name}`.");
             }
@@ -166,7 +166,7 @@ impl<'a> RustApiSynopsis<'a> {
                     out,
                     "This is a Rust-style synopsis of the public API for dependency crate `{crate_name}`, re-exported by the host prelude."
                 );
-                out.push_str("It is for reference only; call these APIs through the names imported by the host prelude or through the crate path when available.\n\n");
+                out.push_str("This is API reference for items re-exported into scope by `host::prelude::*`; the dependency crate path itself is not available. Use documented re-exported items unqualified.\n\n");
                 out.push_str("```rust\n");
                 let _ = writeln!(
                     out,
