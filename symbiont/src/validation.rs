@@ -111,7 +111,12 @@ fn format_signature(sig: &Signature) -> Option<String> {
     let mut out = String::from("fn ");
     out.push_str(&sig.ident.to_string());
 
-    if !sig.generics.params.is_empty() {
+    if sig.asyncness.is_some()
+        || sig.unsafety.is_some()
+        || sig.abi.is_some()
+        || sig.variadic.is_some()
+        || !sig.generics.params.is_empty()
+    {
         return None;
     }
 
@@ -264,6 +269,26 @@ pub fn step(_counter: &mut usize) {
         let mut file = parse_rust_code(input).expect("can parse");
         let expected = vec!["fn step(counter: &mut usize)".to_string()];
         validate_generated_ast(&mut file, &expected).expect("renamed argument must validate");
+    }
+
+    #[test]
+    fn abi_incompatible_modifiers_are_rejected() {
+        for input in [
+            "pub async fn step(counter: &mut usize) {}",
+            "pub unsafe fn step(counter: &mut usize) {}",
+            "pub extern \"C\" fn step(counter: &mut usize) {}",
+            "pub unsafe extern \"C\" fn step(counter: &mut usize, ...) {}",
+        ] {
+            let mut file = syn::parse_str(input).expect("can parse");
+            let expected = vec!["fn step(counter: &mut usize)".to_string()];
+            assert!(
+                matches!(
+                    validate_generated_ast(&mut file, &expected),
+                    Err(Error::SignatureMismatch { .. })
+                ),
+                "incompatible signature must be rejected: {input}"
+            );
+        }
     }
 
     #[test]
