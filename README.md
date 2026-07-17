@@ -125,6 +125,10 @@ cargo run -p fractal-studio-example --release
   Parse errors, signature mismatches, and compiler diagnostics steer the LLM until it produces valid code.
 - **Hot-swap dylibs**:
   Functions are compiled to native shared libraries and swapped in-place via `libloading` — no process restart.
+- **Revision registry**:
+  Every successfully hot-swapped dylib stays loaded and is addressable as a `Revision`.
+  `evolve()` returns the new revision's id, and `activate_revision` rolls the process back to
+  any earlier implementation with a few atomic pointer stores — no re-parsing, no recompilation.
 - **Bare-metal performance**:
   Evolved functions run as native compiled code.
   The dispatch overhead is **~1 ns per call** (a single atomic pointer load + indirect call).
@@ -204,8 +208,9 @@ Function pointers are cached in `AtomicPtr` statics after each load — callers 
 
 Benchmark: `cargo bench -p symbiont --bench dispatch_overhead`
 
-On reload, the runtime updates the atomic pointers and drops the old library.
-This is safe because the feedback loop contract guarantees no evolvable functions are executing during evolution — only one `.so` is loaded at any time.
+On reload, the runtime updates the atomic pointers and retains the old library in the revision registry (keep-all).
+Earlier revisions therefore stay callable: `activate_revision` re-publishes their cached pointers without touching the compiler.
+The feedback loop contract still guarantees no evolvable functions are executing while the pointers are swapped.
 
 ## Per-evolution timings
 
@@ -235,7 +240,8 @@ These constraints arise from the binary/dylib interaction boundary. The harness 
   This is by design (it's what makes constrained generation possible), but it means the agent cannot add parameters, change return types, or introduce new functions at runtime.
   It would be UB to hot-swap a different function signature in, when the main binary expects a certain memory layout.
 - **Sequential feedback loop**:
-  All evolvable function calls must have returned before `evolve()` is called. The old library is dropped on reload, so in-flight calls through stale pointers would be UB.
+  All evolvable function calls must have returned before `evolve()` or `activate_revision()` is called.
+  Retained revisions are never unmapped, so a violating in-flight call executes stale but still-mapped code rather than UB — the contract remains so a swap cannot publish a torn set of pointers from two different revisions.
   This matches the intended usage pattern (run functions, collect results, evolve, repeat) and is enforced with an assertion in debug builds at zero cost in release.
   Multi-threading is possible, but requires extra care.
 - **Same toolchain required**:
