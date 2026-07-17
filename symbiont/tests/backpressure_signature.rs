@@ -37,8 +37,8 @@ async fn signature_mismatch_is_fed_back_and_recovered_from() {
     let agent = ScriptedAgent::new([
         // Attempt 1: wrong parameter type -> `SignatureMismatch`.
         Turn::reply("```rust\npub fn bp_sig_step(counter: &mut u64) { *counter += 1; }\n```"),
-        // Attempt 2: correct signature -> success.
-        Turn::reply("```rust\npub fn bp_sig_step(counter: &mut usize) { *counter = 7; }\n```"),
+        // Attempt 2: correct types with a renamed argument -> success.
+        Turn::reply("```rust\npub fn bp_sig_step(_counter: &mut usize) { *_counter = 7; }\n```"),
     ]);
 
     rt.evolve(&agent, BASE_PROMPT)
