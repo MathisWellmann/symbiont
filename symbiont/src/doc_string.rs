@@ -399,6 +399,7 @@ impl<'a> RustApiSynopsis<'a> {
             .filter_map(|method| {
                 self.source_snippet(method)
                     .and_then(|s| elide_body(&s))
+                    .map(|s| dedent(&s))
                     .or_else(|| synthesized_fn_signature(method))
             })
             .collect::<Vec<_>>();
@@ -856,6 +857,45 @@ fn render_generic_bound(bound: &GenericBound) -> Option<String> {
         GenericBound::Outlives(lifetime) => Some(lifetime.clone()),
         GenericBound::Use(_) => None,
     }
+}
+
+/// Remove the common leading indentation a method snippet carries over from
+/// its position inside an `impl` block in the source file, so the synopsis
+/// indentation is controlled solely by [`write_snippet_lines`].
+///
+/// When the snippet was extended upwards to include doc comments or
+/// attributes, every line (including the first) carries the source
+/// indentation. Otherwise the first line starts at the item itself and only
+/// continuation lines are indented.
+fn dedent(snippet: &str) -> String {
+    let Some(first_line) = snippet.lines().next() else {
+        return String::new();
+    };
+    let first_is_flush = !first_line.starts_with(char::is_whitespace);
+
+    let common_indent = snippet
+        .lines()
+        .skip(usize::from(first_is_flush))
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| line.len() - line.trim_start().len())
+        .min()
+        .unwrap_or(0);
+    if common_indent == 0 {
+        return snippet.to_string();
+    }
+
+    let mut lines = snippet.lines();
+    let mut out = String::with_capacity(snippet.len());
+    if first_is_flush && let Some(first) = lines.next() {
+        out.push_str(first);
+    }
+    for line in lines {
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(line.get(common_indent..).unwrap_or(""));
+    }
+    out
 }
 
 fn elide_body(snippet: &str) -> Option<String> {
@@ -1345,6 +1385,89 @@ mod tests {
         assert!(rendered.api.contains("pub struct Book;"));
         assert!(rendered.api.contains("impl Book {"));
         assert!(rendered.api.contains("pub fn num_orders(&self) -> usize;"));
+    }
+
+    #[test]
+    fn doc_string_dedents_snippets_from_impl_blocks() {
+        assert_eq!(
+            dedent("    /// Create a new book.\n    pub fn new() -> Self;"),
+            "/// Create a new book.\npub fn new() -> Self;"
+        );
+        assert_eq!(
+            dedent("pub fn f(\n        a: u32,\n    ) -> u32;"),
+            "pub fn f(\n    a: u32,\n) -> u32;"
+        );
+        assert_eq!(dedent("pub fn g() -> u32;"), "pub fn g() -> u32;");
+    }
+
+    #[test]
+    fn doc_string_inherent_impl_methods_render_with_uniform_indentation() {
+        let source = temp_source_file(
+            "impl_indent",
+            "pub struct Book;\nimpl Book {\n    /// Create a new book.\n    pub fn new() -> Self {\n        Self\n    }\n}\n",
+        );
+
+        let index = prelude_crate_with(
+            Use {
+                source: "crate::book::Book".to_string(),
+                name: "Book".to_string(),
+                id: Some(Id(3)),
+                is_glob: false,
+            },
+            vec![
+                spanned_item(
+                    3,
+                    Some("Book"),
+                    ItemEnum::Struct(rustdoc_types::Struct {
+                        kind: rustdoc_types::StructKind::Unit,
+                        generics: empty_generics(),
+                        impls: vec![Id(4)],
+                    }),
+                    span(&source, (1, 1), (1, 17)),
+                ),
+                item(
+                    4,
+                    None,
+                    ItemEnum::Impl(rustdoc_types::Impl {
+                        is_unsafe: false,
+                        generics: empty_generics(),
+                        provided_trait_methods: Vec::new(),
+                        trait_: None,
+                        for_: resolved_path("Book", Vec::new()),
+                        items: vec![Id(5), Id(6)],
+                        is_negative: false,
+                        is_synthetic: false,
+                        blanket_impl: None,
+                    }),
+                ),
+                spanned_item(
+                    5,
+                    Some("new"),
+                    function_decl(),
+                    span(&source, (4, 5), (6, 6)),
+                ),
+                item(
+                    6,
+                    Some("num_orders"),
+                    getter_decl(false, Type::Primitive("usize".to_string())),
+                ),
+            ],
+        );
+        let paths = HashMap::from([(
+            Id(3),
+            local_path_entry(
+                &["host_crate", "book", "Book"],
+                rustdoc_types::ItemKind::Struct,
+            ),
+        )]);
+        let crate_data = crate_data(index, paths, HashMap::new());
+
+        let rendered = RustApiSynopsis::new(&crate_data).render_host_facade();
+
+        assert!(rendered.api.contains(
+            "impl Book {\n    /// Create a new book.\n    pub fn new() -> Self;\n    pub fn num_orders(&self) -> usize;\n}"
+        ));
+        assert!(!rendered.api.contains("        /// Create a new book."));
     }
 
     #[test]
