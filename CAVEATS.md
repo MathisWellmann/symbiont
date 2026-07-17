@@ -18,12 +18,15 @@ host binary and passed into evolvable functions via arguments.
 
 ## Dangling pointers across reloads
 
-If the host holds a reference or pointer to data allocated inside
-the dylib, reloading unmaps the old code and data pages, leaving
-the pointer dangling. The harness prevents this by requiring that
-evolvable function signatures use only caller-owned memory
-(`&mut [f64]`, `&mut usize`, etc.) — no allocations escape the
-dylib boundary.
+If the host held a reference or pointer to data allocated inside
+the dylib, reloading used to unmap the old code and data pages,
+leaving the pointer dangling. The keep-all revision registry now
+retains every loaded dylib for the lifetime of the process, which
+removes the unmap hazard — but the design rule stands: evolvable
+function signatures use only caller-owned memory (`&mut [f64]`,
+`&mut usize`, etc.). Each revision has its own instance of any
+static data, so a pointer into dylib-owned memory would silently
+refer to an inactive revision's instance after a swap.
 
 ## Compile times
 
@@ -36,12 +39,14 @@ Might change in the future see [TODO.md](TODO.md)
 
 ## Destructors bypassed on unload
 
-When the OS unloads the `.so`, Rust destructors are not run. Any
-resources created inside the dylib (open files, background
-threads, heap allocations) will leak. In practice this is not an
-issue because the generated dylib only contains pure functions
-operating on caller-provided memory. Avoid spawning threads or
-opening files inside evolvable functions.
+Loaded dylibs are retained by the revision registry and only
+unmapped when the process exits — at which point Rust destructors
+are not run. Any resources created inside the dylib (open files,
+background threads, heap allocations) will leak for the lifetime
+of the process. In practice this is not an issue because the
+generated dylib only contains pure functions operating on
+caller-provided memory. Avoid spawning threads or opening files
+inside evolvable functions.
 
 ## Type layout and ABI
 
@@ -88,6 +93,16 @@ additional constraints:
   crate/prelude that both sides compile against with matching
   versions and features.
 
+## Keep-all revision registry memory
+
+Every successfully compiled revision stays loaded so it can be
+re-activated at any time. A retained revision maps roughly 1.2 MiB
+(debug profile; the generated dylib links `std` statically), and
+its versioned `.so` file remains in the temp crate directory on
+disk. Long searches with thousands of evolutions should account
+for this growth; a pruning API can be added once a real workload
+needs it.
+
 ## Infinite loops in generated code
 
 LLM-generated code may contain infinite loops (e.g. a sort with
@@ -99,10 +114,11 @@ The harness does **not** detect this automatically. It is the
 caller's responsibility to implement timeout detection, for
 example by running the evolvable function in a separate thread
 with `recv_timeout`. If a timeout fires, the abandoned thread
-continues executing in the background — the old dylib must be
-kept alive (not dropped on reload) to avoid unmapping code pages
-that the thread is still running. Callers should account for this
-when designing their evaluation loops.
+continues executing in the background. The keep-all revision
+registry keeps every loaded dylib mapped, so such a thread keeps
+running valid code even after further evolutions — it still burns
+a CPU core, so callers should bound how many abandoned threads
+they tolerate.
 
 ## Panic runtime isolation
 
