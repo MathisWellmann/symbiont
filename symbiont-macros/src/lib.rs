@@ -39,6 +39,8 @@ use crate::{
 /// This generates:
 /// - A `SYMBIONT_DECLS` constant with metadata for each function
 /// - Wrapper functions that dispatch calls through the loaded dylib
+/// - Per-function `<name>_fn(revision)` accessors returning typed
+///   `RevisionFn` handles to any retained revision
 #[proc_macro]
 pub fn evolvable(input: TokenStream) -> TokenStream {
     let block = syn::parse_macro_input!(input as EvolvableBlock);
@@ -104,30 +106,25 @@ pub fn evolvable(input: TokenStream) -> TokenStream {
             }
         });
 
-        // Build the per-function AtomicPtr static and lock-free dispatch wrapper
-        let fn_inputs = &sig.inputs;
-        let fn_output = &sig.output;
+        // The per-function AtomicPtr static and lock-free dispatch wrapper.
+        wrapper_fns.push(dispatch_wrapper(
+            vis,
+            sig,
+            &static_name,
+            &arg_types,
+            &arg_names,
+            &ret_ty,
+        ));
 
-        wrapper_fns.push(quote! {
-            #[doc(hidden)]
-            static #static_name: ::std::sync::atomic::AtomicPtr<()> =
-                ::std::sync::atomic::AtomicPtr::new(::std::ptr::null_mut());
-
-            #vis fn #ident(#fn_inputs) #fn_output {
-                // In debug builds, track this call so evolve() can assert
-                // no functions are in flight. Compiled away in release.
-                #[cfg(debug_assertions)]
-                let _call_guard = ::symbiont::__internal::enter_call();
-
-                let ptr = #static_name.load(::std::sync::atomic::Ordering::Acquire);
-                debug_assert!(
-                    !ptr.is_null(),
-                    concat!("symbiont: function '", #fn_name_str, "' not initialized; call Runtime::init() first")
-                );
-                let f: fn(#(#arg_types),*) -> #ret_ty = unsafe { ::std::mem::transmute(ptr) };
-                f(#(#arg_names),*)
-            }
-        });
+        // Per-revision typed handle accessor, e.g. `step_fn(revision)`.
+        wrapper_fns.push(revision_accessor(
+            vis,
+            ident,
+            &fn_name_str,
+            &static_name,
+            &arg_types,
+            &ret_ty,
+        ));
     }
 
     // Render inline items declared inside `evolvable! { ... }` into the
@@ -167,4 +164,77 @@ pub fn evolvable(input: TokenStream) -> TokenStream {
     };
 
     expanded.into()
+}
+
+/// Generate the per-function `AtomicPtr` static and the lock-free dispatch
+/// wrapper that calls into the currently active revision.
+fn dispatch_wrapper(
+    vis: &syn::Visibility,
+    sig: &syn::Signature,
+    static_name: &syn::Ident,
+    arg_types: &[syn::Type],
+    arg_names: &[syn::Pat],
+    ret_ty: &proc_macro2::TokenStream,
+) -> proc_macro2::TokenStream {
+    let ident = &sig.ident;
+    let fn_name_str = ident.to_string();
+    let fn_inputs = &sig.inputs;
+    let fn_output = &sig.output;
+    quote! {
+        #[doc(hidden)]
+        static #static_name: ::std::sync::atomic::AtomicPtr<()> =
+            ::std::sync::atomic::AtomicPtr::new(::std::ptr::null_mut());
+
+        #vis fn #ident(#fn_inputs) #fn_output {
+            // In debug builds, track this call so evolve() can assert
+            // no functions are in flight. Compiled away in release.
+            #[cfg(debug_assertions)]
+            let _call_guard = ::symbiont::__internal::enter_call();
+
+            let ptr = #static_name.load(::std::sync::atomic::Ordering::Acquire);
+            debug_assert!(
+                !ptr.is_null(),
+                concat!("symbiont: function '", #fn_name_str, "' not initialized; call Runtime::init() first")
+            );
+            let f: fn(#(#arg_types),*) -> #ret_ty = unsafe { ::std::mem::transmute(ptr) };
+            f(#(#arg_names),*)
+        }
+    }
+}
+
+/// Generate the `<name>_fn(revision)` accessor that returns a typed
+/// `RevisionFn` handle to `<name>`'s implementation in any retained revision.
+fn revision_accessor(
+    vis: &syn::Visibility,
+    ident: &syn::Ident,
+    fn_name_str: &str,
+    static_name: &syn::Ident,
+    arg_types: &[syn::Type],
+    ret_ty: &proc_macro2::TokenStream,
+) -> proc_macro2::TokenStream {
+    let accessor_ident = syn::Ident::new(&format!("{fn_name_str}_fn"), ident.span());
+    let accessor_doc = format!(
+        "Typed handle to the `{fn_name_str}` implementation of a specific retained \
+         `Revision`.\n\n\
+         Returns `None` if the runtime is not initialized or `revision` is not \
+         registered. The handle pins the revision's dylib; calls through it never \
+         touch the swappable dispatch pointers, so they may run concurrently with \
+         `Runtime::evolve` / `Runtime::activate_revision` and alongside handles of \
+         other revisions. Panics of handle calls are stored per revision — read \
+         them with `RevisionFn::take_panic`, not `Runtime::take_panic`."
+    );
+    quote! {
+        #[doc = #accessor_doc]
+        #vis fn #accessor_ident(
+            revision: ::symbiont::Revision,
+        ) -> ::core::option::Option<::symbiont::RevisionFn<fn(#(#arg_types),*) -> #ret_ty>> {
+            let untyped = ::symbiont::__internal::revision_fn_lookup(&#static_name, revision)?;
+            // SAFETY: the runtime validated this revision's code against exactly
+            // this signature before compiling its dylib, and the handle keeps the
+            // library loaded, so the symbol pointer is valid for this fn type.
+            ::core::option::Option::Some(unsafe {
+                untyped.cast::<fn(#(#arg_types),*) -> #ret_ty>()
+            })
+        }
+    }
 }
