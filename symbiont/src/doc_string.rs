@@ -468,7 +468,14 @@ impl<'a> RustApiSynopsis<'a> {
             if !is_documented_operator_trait(&trait_path.path) {
                 continue;
             }
-            if impl_block.is_negative || impl_block.is_synthetic {
+            // Rustdoc attaches blanket impls such as `impl<T, U> Into<U> for T`
+            // to every matching concrete type. They do not document a conversion
+            // specific to this type and rendering them would advertise arbitrary
+            // `From`/`Into` conversions that may not exist.
+            if impl_block.is_negative
+                || impl_block.is_synthetic
+                || impl_block.blanket_impl.is_some()
+            {
                 continue;
             }
 
@@ -1606,6 +1613,266 @@ mod tests {
             "synthesized operator impl rendered:\n{}",
             rendered.api
         );
+    }
+
+    #[test]
+    fn doc_string_excludes_blanket_conversions_but_keeps_concrete_conversions() {
+        let source = temp_source_file("conversion_impls", "pub struct Widget;\n");
+        let mut blanket = impl_block_with_trait(
+            "core::convert::From",
+            vec![GenericArg::Type(Type::Generic("T".to_string()))],
+            "Widget",
+            Vec::new(),
+            Vec::new(),
+        );
+        let ItemEnum::Impl(blanket_impl) = &mut blanket else {
+            unreachable!("helper always returns an impl")
+        };
+        blanket_impl
+            .generics
+            .params
+            .push(rustdoc_types::GenericParamDef {
+                name: "T".to_string(),
+                kind: GenericParamDefKind::Type {
+                    bounds: Vec::new(),
+                    default: None,
+                    is_synthetic: false,
+                },
+            });
+        blanket_impl.blanket_impl = Some(Type::Generic("T".to_string()));
+
+        let index = prelude_crate_with(
+            Use {
+                source: "crate::Widget".to_string(),
+                name: "Widget".to_string(),
+                id: Some(Id(3)),
+                is_glob: false,
+            },
+            vec![
+                spanned_item(
+                    3,
+                    Some("Widget"),
+                    ItemEnum::Struct(rustdoc_types::Struct {
+                        kind: rustdoc_types::StructKind::Unit,
+                        generics: empty_generics(),
+                        impls: vec![Id(4), Id(5)],
+                    }),
+                    span(&source, (1, 1), (1, 19)),
+                ),
+                item(4, None, blanket),
+                item(
+                    5,
+                    None,
+                    impl_block_with_trait(
+                        "core::convert::From",
+                        vec![GenericArg::Type(resolved_path("String", Vec::new()))],
+                        "Widget",
+                        Vec::new(),
+                        Vec::new(),
+                    ),
+                ),
+            ],
+        );
+        let paths = HashMap::from([(
+            Id(3),
+            local_path_entry(&["host_crate", "Widget"], rustdoc_types::ItemKind::Struct),
+        )]);
+        let crate_data = crate_data(index, paths, HashMap::new());
+
+        let rendered = RustApiSynopsis::new(&crate_data).render_host_facade();
+
+        assert!(rendered.api.contains("impl From<String> for Widget"));
+        assert!(!rendered.api.contains("impl<T> From<T> for Widget"));
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "The test keeps one complete generic rustdoc fixture together"
+    )]
+    fn doc_string_synthesizes_generic_operator_bounds_and_associated_items() {
+        let source = temp_source_file("generic_operator", "pub struct Quantity<I, const D: u8>;\n");
+        let mut operator = impl_block_with_trait(
+            "core::ops::Mul",
+            vec![GenericArg::Type(resolved_path(
+                "Decimal",
+                vec![
+                    GenericArg::Type(Type::Generic("I".to_string())),
+                    GenericArg::Const(rustdoc_types::Constant {
+                        expr: "D".to_string(),
+                        value: None,
+                        is_literal: false,
+                    }),
+                ],
+            ))],
+            "Quantity",
+            vec![
+                GenericArg::Type(Type::Generic("I".to_string())),
+                GenericArg::Const(rustdoc_types::Constant {
+                    expr: "D".to_string(),
+                    value: None,
+                    is_literal: false,
+                }),
+            ],
+            vec![Id(5), Id(6)],
+        );
+        let ItemEnum::Impl(operator_impl) = &mut operator else {
+            unreachable!("helper always returns an impl")
+        };
+        operator_impl.generics = Generics {
+            params: vec![
+                rustdoc_types::GenericParamDef {
+                    name: "I".to_string(),
+                    kind: GenericParamDefKind::Type {
+                        bounds: Vec::new(),
+                        default: None,
+                        is_synthetic: false,
+                    },
+                },
+                rustdoc_types::GenericParamDef {
+                    name: "D".to_string(),
+                    kind: GenericParamDefKind::Const {
+                        type_: Type::Primitive("u8".to_string()),
+                        default: None,
+                    },
+                },
+            ],
+            where_predicates: vec![WherePredicate::BoundPredicate {
+                type_: Type::Generic("I".to_string()),
+                bounds: vec![GenericBound::TraitBound {
+                    trait_: rustdoc_types::Path {
+                        path: "core::marker::Copy".to_string(),
+                        id: Id(9997),
+                        args: None,
+                    },
+                    generic_params: Vec::new(),
+                    modifier: TraitBoundModifier::None,
+                }],
+                generic_params: Vec::new(),
+            }],
+        };
+
+        let index = prelude_crate_with(
+            Use {
+                source: "crate::Quantity".to_string(),
+                name: "Quantity".to_string(),
+                id: Some(Id(3)),
+                is_glob: false,
+            },
+            vec![
+                spanned_item(
+                    3,
+                    Some("Quantity"),
+                    ItemEnum::Struct(rustdoc_types::Struct {
+                        kind: rustdoc_types::StructKind::Unit,
+                        generics: empty_generics(),
+                        impls: vec![Id(4)],
+                    }),
+                    span(&source, (1, 1), (1, 37)),
+                ),
+                item(4, None, operator),
+                item(
+                    5,
+                    Some("Output"),
+                    ItemEnum::AssocType {
+                        generics: empty_generics(),
+                        bounds: Vec::new(),
+                        type_: Some(resolved_path(
+                            "Quantity",
+                            vec![
+                                GenericArg::Type(Type::Generic("I".to_string())),
+                                GenericArg::Const(rustdoc_types::Constant {
+                                    expr: "D".to_string(),
+                                    value: None,
+                                    is_literal: false,
+                                }),
+                            ],
+                        )),
+                    },
+                ),
+                item(
+                    6,
+                    Some("SCALE"),
+                    ItemEnum::AssocConst {
+                        type_: Type::Primitive("u8".to_string()),
+                        value: Some("D".to_string()),
+                    },
+                ),
+            ],
+        );
+        let paths = HashMap::from([(
+            Id(3),
+            local_path_entry(&["host_crate", "Quantity"], rustdoc_types::ItemKind::Struct),
+        )]);
+        let crate_data = crate_data(index, paths, HashMap::new());
+
+        let rendered = RustApiSynopsis::new(&crate_data).render_host_facade();
+
+        assert!(rendered.api.contains(
+            "impl<I, const D: u8> Mul<Decimal<I, D>> for Quantity<I, D>\nwhere\n    I: Copy,\n{\n    type Output = Quantity<I, D>;\n    const SCALE: u8;\n}"
+        ));
+    }
+
+    #[test]
+    fn doc_string_excludes_negative_and_synthetic_operator_impls() {
+        let source = temp_source_file("excluded_operator_impls", "pub struct Widget;\n");
+        let mut negative = impl_block_with_trait(
+            "core::ops::Mul",
+            Vec::new(),
+            "Widget",
+            Vec::new(),
+            Vec::new(),
+        );
+        let ItemEnum::Impl(negative_impl) = &mut negative else {
+            unreachable!("helper always returns an impl")
+        };
+        negative_impl.is_negative = true;
+
+        let mut synthetic = impl_block_with_trait(
+            "core::ops::Div",
+            Vec::new(),
+            "Widget",
+            Vec::new(),
+            Vec::new(),
+        );
+        let ItemEnum::Impl(synthetic_impl) = &mut synthetic else {
+            unreachable!("helper always returns an impl")
+        };
+        synthetic_impl.is_synthetic = true;
+
+        let index = prelude_crate_with(
+            Use {
+                source: "crate::Widget".to_string(),
+                name: "Widget".to_string(),
+                id: Some(Id(3)),
+                is_glob: false,
+            },
+            vec![
+                spanned_item(
+                    3,
+                    Some("Widget"),
+                    ItemEnum::Struct(rustdoc_types::Struct {
+                        kind: rustdoc_types::StructKind::Unit,
+                        generics: empty_generics(),
+                        impls: vec![Id(4), Id(5)],
+                    }),
+                    span(&source, (1, 1), (1, 19)),
+                ),
+                item(4, None, negative),
+                item(5, None, synthetic),
+            ],
+        );
+        let paths = HashMap::from([(
+            Id(3),
+            local_path_entry(&["host_crate", "Widget"], rustdoc_types::ItemKind::Struct),
+        )]);
+        let crate_data = crate_data(index, paths, HashMap::new());
+
+        let rendered = RustApiSynopsis::new(&crate_data).render_host_facade();
+
+        assert!(!rendered.api.contains("Operator and conversion impls"));
+        assert!(!rendered.api.contains("impl Mul"));
+        assert!(!rendered.api.contains("impl Div"));
     }
 
     #[test]
