@@ -111,7 +111,59 @@ symbiont::evolvable! {
     ///
     /// Execution model: the returned action is executed immediately as a
     /// market order at the close of the current candle (plus spread and
-    /// taker fee). Position notional is limited to 1x leverage.
+    /// taker fee). Position notional is limited to 1x leverage, so the
+    /// maximum order quantity is roughly `account.available_balance /
+    /// current_price` BTC when flat (less when already positioned).
+    ///
+    /// Boundary types are plain `f64` structs; no external crate types cross
+    /// the dylib boundary. Only `Candle`, `AccountState`, `Action` and `std`
+    /// are available.
+    ///
+    /// Guard every `qty` you emit: it must be finite and strictly positive,
+    /// and respect the available margin. Rejected orders count against the
+    /// strategy.
+    ///
+    /// # Worked example
+    ///
+    /// A minimal (deliberately unprofitable) but *correct* implementation.
+    /// Use it as a structural starting point — replace the signal logic with
+    /// your own:
+    ///
+    /// ```rust
+    /// fn decide(candles: &[Candle], account: &AccountState) -> Action {
+    ///     // Need at least two candles to compare; stay flat otherwise.
+    ///     let (Some(prev), Some(last)) = (
+    ///         candles.get(candles.len().saturating_sub(2)),
+    ///         candles.last(),
+    ///     ) else {
+    ///         return Action::Hold;
+    ///     };
+    ///
+    ///     // Simple momentum signal on closes.
+    ///     let up_move = last.close > prev.close;
+    ///
+    ///     // Convert a fraction of available margin (USD) into a BTC quantity
+    ///     // at the current price, staying well within the 1x leverage limit.
+    ///     let max_qty = (account.available_balance / last.close).max(0.0);
+    ///     let qty = max_qty * 0.10; // use 10% of available margin
+    ///
+    ///     // Never emit a dust or non-finite order.
+    ///     const MIN_QTY: f64 = 0.0001;
+    ///     if !qty.is_finite() || qty < MIN_QTY {
+    ///         return Action::Hold;
+    ///     }
+    ///
+    ///     // Act on the signal, respecting the current position to avoid
+    ///     // pyramiding into an oversized position.
+    ///     if up_move && account.position_qty <= 0.0 {
+    ///         Action::Buy { qty }
+    ///     } else if !up_move && account.position_qty >= 0.0 {
+    ///         Action::Sell { qty }
+    ///     } else {
+    ///         Action::Hold
+    ///     }
+    /// }
+    /// ```
     fn decide(candles: &[Candle], account: &AccountState) -> Action {
         let _ = (candles, account);
         Action::Hold

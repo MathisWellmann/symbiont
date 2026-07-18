@@ -476,7 +476,14 @@ impl Runtime {
                             "Signature mismatch in {got}. Expected `{expected}`. Fix ONLY this function's signature (argument types and return type must match exactly; argument names may differ). Full code: ```{code}```",
                         ).expect("Can write to prompt"),
                         CompilationFailed{code, err} => write!(prompt,
-                            "Your generated code ```{}``` failed to compile. Compiler output:\n```\n{}\n```\nPlease fix the compilation errors.", code.blue(), err.red()
+                            "Your generated code ```{}``` failed to compile. Compiler output:\n```\n{}\n```\n\
+                            Fix the compilation errors while preserving the existing logic and behaviour. \
+                            Change only the expressions the compiler diagnostics point at (match the `src/lib.rs:<line>:<col>` markers); \
+                            do not rewrite, restructure, rename, reformat or otherwise alter the rest of the code. \
+                            A trait error (E0277) means you used an operator or conversion the type does not implement: \
+                            consult the documented `impl ... for ...` blocks for that type and use only listed impls, \
+                            adjusting the operand types instead of forcing an unsupported operation.",
+                            code.blue(), err.red()
                         ).expect("Can write to prompt"),
                         e => {
                             warn!("Unhandled error: {e}");

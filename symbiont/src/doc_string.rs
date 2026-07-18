@@ -20,7 +20,10 @@ use rustdoc_types::{
     GenericArg,
     GenericArgs,
     GenericBound,
+    GenericParamDefKind,
+    Generics,
     Id,
+    Impl,
     Item,
     ItemEnum,
     Span,
@@ -28,6 +31,7 @@ use rustdoc_types::{
     Type,
     Use,
     Visibility,
+    WherePredicate,
 };
 use tokio::{
     fs::File,
@@ -328,18 +332,21 @@ impl<'a> RustApiSynopsis<'a> {
                 if let Some(snippet) = self.source_snippet(item) {
                     self.write_snippet(out, &snippet, indent);
                     self.write_inherent_impls(out, item.name.as_deref(), &strukt.impls, indent);
+                    self.write_operator_impls(out, &strukt.impls, indent);
                 }
             }
             ItemEnum::Enum(enm) => {
                 if let Some(snippet) = self.source_snippet(item) {
                     self.write_snippet(out, &snippet, indent);
                     self.write_inherent_impls(out, item.name.as_deref(), &enm.impls, indent);
+                    self.write_operator_impls(out, &enm.impls, indent);
                 }
             }
             ItemEnum::Union(union) => {
                 if let Some(snippet) = self.source_snippet(item) {
                     self.write_snippet(out, &snippet, indent);
                     self.write_inherent_impls(out, item.name.as_deref(), &union.impls, indent);
+                    self.write_operator_impls(out, &union.impls, indent);
                 }
             }
             ItemEnum::Function(_) => {
@@ -436,6 +443,72 @@ impl<'a> RustApiSynopsis<'a> {
             write_indent(out, indent);
             out.push_str("}\n\n");
         }
+    }
+
+    /// Render whitelisted operator/conversion trait impls (e.g. `Mul`, `Div`)
+    /// for a type.
+    ///
+    /// LLMs otherwise cannot see which `a OP b` combinations are valid on
+    /// strongly-typed values (only inherent methods are rendered above), and
+    /// fall back to primitive assumptions (`x / 2`, `a * b` across types) that
+    /// fail to compile. Rendering the impl header plus the associated
+    /// `Output` type turns operator usage into documented API.
+    fn write_operator_impls(&mut self, out: &mut String, impl_ids: &[Id], indent: usize) {
+        let mut rendered_any = false;
+        for impl_id in impl_ids {
+            let Some(impl_item) = self.crate_data.index.get(impl_id) else {
+                continue;
+            };
+            let ItemEnum::Impl(impl_block) = &impl_item.inner else {
+                continue;
+            };
+            let Some(trait_path) = &impl_block.trait_ else {
+                continue;
+            };
+            if !is_documented_operator_trait(&trait_path.path) {
+                continue;
+            }
+            if impl_block.is_negative || impl_block.is_synthetic {
+                continue;
+            }
+
+            let Some(header) = self.operator_impl_header(impl_item, impl_block) else {
+                continue;
+            };
+
+            if !rendered_any {
+                write_indent(out, indent);
+                let _ = writeln!(out, "// Operator and conversion impls:");
+                rendered_any = true;
+            }
+            let brace = if header.contains('\n') { "\n{" } else { " {" };
+            write_snippet_lines(out, &format!("{header}{brace}"), indent);
+            let assoc = render_impl_assoc_types(self.crate_data, impl_block);
+            if !assoc.is_empty() {
+                write_snippet_lines(out, &assoc, indent + 1);
+            }
+            write_indent(out, indent);
+            out.push_str("}\n");
+        }
+        if rendered_any {
+            out.push('\n');
+        }
+    }
+
+    /// Render an operator impl header like `impl<I, const D: u8> Mul<Decimal<I, D>> for QuoteCurrency<I, D>`.
+    ///
+    /// Prefers the original source span (preserves generics and `where` clauses
+    /// verbatim); falls back to synthesizing the header from rustdoc JSON type
+    /// data for macro-generated impls (e.g. derive-more) whose spans do not point
+    /// at an `impl` item.
+    fn operator_impl_header(&mut self, impl_item: &Item, impl_block: &Impl) -> Option<String> {
+        if let Some(header) = self.impl_header_snippet(impl_item) {
+            let header = normalize_local_paths(&header, &self.local_crate_alias);
+            if header.contains(" for ") {
+                return Some(header);
+            }
+        }
+        synthesize_operator_impl_header(impl_block)
     }
 
     /// Extract the header (everything before the body) of an `impl` block from
@@ -831,6 +904,132 @@ fn render_type(ty: &Type) -> Option<String> {
     })
 }
 
+/// Trait names (last path segment) whose impls are documented for evolved
+/// code. Restricted to operators and infallible conversions so the synopsis
+/// stays compact and only advertises `a OP b` forms the type system supports.
+fn is_documented_operator_trait(trait_path: &str) -> bool {
+    let name = trait_path.rsplit("::").next().unwrap_or(trait_path);
+    matches!(
+        name,
+        "Add"
+            | "Sub"
+            | "Mul"
+            | "Div"
+            | "Rem"
+            | "Neg"
+            | "AddAssign"
+            | "SubAssign"
+            | "MulAssign"
+            | "DivAssign"
+            | "RemAssign"
+            | "From"
+            | "Into"
+            | "Sum"
+            | "Product"
+    )
+}
+
+/// Synthesize an operator impl header like `impl<I, const D: u8> Mul<Decimal<I, D>> for QuoteCurrency<I, D>`
+/// from rustdoc JSON type data. Used for macro-generated impls (e.g.
+/// derive-more) whose source spans do not point at an `impl` item.
+fn synthesize_operator_impl_header(impl_block: &Impl) -> Option<String> {
+    let trait_path = impl_block.trait_.as_ref()?;
+    let trait_name = trait_path.path.rsplit("::").next()?;
+    let trait_args = trait_path
+        .args
+        .as_deref()
+        .map(render_generic_args)
+        .unwrap_or(Some(String::new()))?;
+    let for_type = render_type(&impl_block.for_)?;
+    let generics = render_generic_params(&impl_block.generics);
+    let where_clause = render_where_clause(&impl_block.generics.where_predicates);
+    Some(format!(
+        "impl{generics} {trait_name}{trait_args} for {for_type}{where_clause}"
+    ))
+}
+
+/// Render the `type Output = ...;`-style associated items of an operator
+/// impl, one per line. Empty when the impl has none (or they cannot be
+/// rendered), which still yields a useful `impl ... { }` marker.
+fn render_impl_assoc_types(crate_data: &RustdocCrate, impl_block: &Impl) -> String {
+    impl_block
+        .items
+        .iter()
+        .filter_map(|id| crate_data.index.get(id))
+        .filter_map(|item| match (&item.inner, &item.name) {
+            (
+                ItemEnum::AssocType {
+                    type_: Some(ty), ..
+                },
+                Some(name),
+            ) => render_type(ty).map(|ty| format!("type {name} = {ty};")),
+            (ItemEnum::AssocConst { type_, .. }, Some(name)) => {
+                render_type(type_).map(|ty| format!("const {name}: {ty};"))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Render the generic parameter list of an impl, e.g. `<I, const D: u8>`.
+/// Returns an empty string when there are no parameters. Defaults and
+/// synthetic parameters are omitted: the impl is documentation, not
+/// compilable code.
+fn render_generic_params(generics: &Generics) -> String {
+    let params = generics
+        .params
+        .iter()
+        .filter_map(|param| match &param.kind {
+            GenericParamDefKind::Lifetime { .. } => Some(param.name.clone()),
+            GenericParamDefKind::Type { is_synthetic, .. } => {
+                (!is_synthetic).then(|| param.name.clone())
+            }
+            GenericParamDefKind::Const { type_, .. } => {
+                render_type(type_).map(|ty| format!("const {}: {ty}", param.name))
+            }
+        })
+        .collect::<Vec<_>>();
+    if params.is_empty() {
+        String::new()
+    } else {
+        format!("<{}>", params.join(", "))
+    }
+}
+
+/// Render a `where` clause from rustdoc JSON predicates. Unrenderable
+/// predicates are skipped; an empty predicate list yields no clause.
+fn render_where_clause(predicates: &[WherePredicate]) -> String {
+    let rendered = predicates
+        .iter()
+        .filter_map(|predicate| match predicate {
+            WherePredicate::BoundPredicate {
+                type_,
+                bounds,
+                generic_params,
+            } => {
+                if !generic_params.is_empty() {
+                    return None;
+                }
+                let bounds = bounds
+                    .iter()
+                    .map(render_generic_bound)
+                    .collect::<Option<Vec<_>>>()?;
+                Some(format!("{}: {}", render_type(type_)?, bounds.join(" + ")))
+            }
+            WherePredicate::LifetimePredicate { lifetime, outlives } => {
+                Some(format!("{lifetime}: {}", outlives.join(" + ")))
+            }
+            WherePredicate::EqPredicate { .. } => None,
+        })
+        .collect::<Vec<_>>();
+    if rendered.is_empty() {
+        String::new()
+    } else {
+        format!("\nwhere\n    {},", rendered.join(",\n    "))
+    }
+}
+
 fn render_path(path: &rustdoc_types::Path) -> Option<String> {
     // Rustdoc records paths as used at the definition site (e.g.
     // `super::order_status::NewOrder`, `crate::utils::NoUserOrderId`). Those
@@ -1212,8 +1411,8 @@ mod tests {
         })
     }
 
-    fn empty_generics() -> rustdoc_types::Generics {
-        rustdoc_types::Generics {
+    fn empty_generics() -> Generics {
+        Generics {
             params: Vec::new(),
             where_predicates: Vec::new(),
         }
@@ -1282,6 +1481,183 @@ mod tests {
             index.insert(extra.id, extra);
         }
         index
+    }
+
+    fn impl_block_with_trait(
+        trait_path: &str,
+        trait_args: Vec<GenericArg>,
+        for_path: &str,
+        for_args: Vec<GenericArg>,
+        items: Vec<Id>,
+    ) -> ItemEnum {
+        ItemEnum::Impl(Impl {
+            is_unsafe: false,
+            generics: empty_generics(),
+            provided_trait_methods: Vec::new(),
+            trait_: Some(rustdoc_types::Path {
+                path: trait_path.to_string(),
+                id: Id(9998),
+                args: (!trait_args.is_empty()).then(|| {
+                    Box::new(GenericArgs::AngleBracketed {
+                        args: trait_args,
+                        constraints: Vec::new(),
+                    })
+                }),
+            }),
+            for_: resolved_path(for_path, for_args),
+            items,
+            is_negative: false,
+            is_synthetic: false,
+            blanket_impl: None,
+        })
+    }
+
+    #[test]
+    fn doc_string_documents_operator_impls_from_source_and_synthesized() {
+        // Two impl blocks: one with a real source span (hand-written), one
+        // without (derive-more style, macro-generated).
+        let source = temp_source_file(
+            "operator_impls",
+            "pub struct QuoteCurrency;\nimpl std::ops::Mul<Decimal> for QuoteCurrency {\n    type Output = QuoteCurrency;\n}\n",
+        );
+
+        let assoc_output = ItemEnum::AssocType {
+            generics: empty_generics(),
+            bounds: Vec::new(),
+            type_: Some(resolved_path("QuoteCurrency", Vec::new())),
+        };
+        let assoc_output2 = ItemEnum::AssocType {
+            generics: empty_generics(),
+            bounds: Vec::new(),
+            type_: Some(resolved_path("BaseCurrency", Vec::new())),
+        };
+
+        let index = prelude_crate_with(
+            Use {
+                source: "crate::currency::QuoteCurrency".to_string(),
+                name: "QuoteCurrency".to_string(),
+                id: Some(Id(3)),
+                is_glob: false,
+            },
+            vec![
+                spanned_item(
+                    3,
+                    Some("QuoteCurrency"),
+                    ItemEnum::Struct(rustdoc_types::Struct {
+                        kind: rustdoc_types::StructKind::Unit,
+                        generics: empty_generics(),
+                        impls: vec![Id(4), Id(6)],
+                    }),
+                    span(&source, (1, 1), (1, 24)),
+                ),
+                // Hand-written impl: source span points at the impl block.
+                spanned_item(
+                    4,
+                    None,
+                    impl_block_with_trait(
+                        "std::ops::Mul",
+                        vec![GenericArg::Type(resolved_path("Decimal", Vec::new()))],
+                        "QuoteCurrency",
+                        Vec::new(),
+                        vec![Id(5)],
+                    ),
+                    span(&source, (2, 1), (4, 2)),
+                ),
+                item(5, Some("Output"), assoc_output),
+                // Macro-generated impl: no usable source span, synthesized header.
+                item(
+                    6,
+                    None,
+                    impl_block_with_trait(
+                        "std::ops::Div",
+                        vec![GenericArg::Type(resolved_path("QuoteCurrency", Vec::new()))],
+                        "QuoteCurrency",
+                        Vec::new(),
+                        vec![Id(7)],
+                    ),
+                ),
+                item(7, Some("Output"), assoc_output2),
+            ],
+        );
+        let paths = HashMap::from([(
+            Id(3),
+            local_path_entry(
+                &["host_crate", "currency", "QuoteCurrency"],
+                rustdoc_types::ItemKind::Struct,
+            ),
+        )]);
+        let crate_data = crate_data(index, paths, HashMap::new());
+
+        let rendered = RustApiSynopsis::new(&crate_data).render_host_facade();
+
+        // From-source impl keeps its original header text.
+        assert!(
+            rendered.api.contains(
+                "impl std::ops::Mul<Decimal> for QuoteCurrency {\n    type Output = QuoteCurrency;\n}"
+            ),
+            "from-source operator impl rendered:\n{}",
+            rendered.api
+        );
+        // Synthesized impl renders generics-free header from JSON types.
+        assert!(
+            rendered.api.contains(
+                "impl Div<QuoteCurrency> for QuoteCurrency {\n    type Output = BaseCurrency;\n}"
+            ),
+            "synthesized operator impl rendered:\n{}",
+            rendered.api
+        );
+    }
+
+    #[test]
+    fn doc_string_ignores_non_operator_trait_impls() {
+        let index = prelude_crate_with(
+            Use {
+                source: "crate::book::Book".to_string(),
+                name: "Book".to_string(),
+                id: Some(Id(3)),
+                is_glob: false,
+            },
+            vec![
+                spanned_item(
+                    3,
+                    Some("Book"),
+                    ItemEnum::Struct(rustdoc_types::Struct {
+                        kind: rustdoc_types::StructKind::Unit,
+                        generics: empty_generics(),
+                        impls: vec![Id(4)],
+                    }),
+                    span(
+                        &temp_source_file("book2", "pub struct Book;\n"),
+                        (1, 1),
+                        (1, 17),
+                    ),
+                ),
+                item(
+                    4,
+                    None,
+                    impl_block_with_trait(
+                        "core::fmt::Debug",
+                        Vec::new(),
+                        "Book",
+                        Vec::new(),
+                        Vec::new(),
+                    ),
+                ),
+            ],
+        );
+        let paths = HashMap::from([(
+            Id(3),
+            local_path_entry(
+                &["host_crate", "book", "Book"],
+                rustdoc_types::ItemKind::Struct,
+            ),
+        )]);
+        let crate_data = crate_data(index, paths, HashMap::new());
+
+        let rendered = RustApiSynopsis::new(&crate_data).render_host_facade();
+
+        assert!(!rendered.api.contains("impl Debug for Book"));
+        assert!(!rendered.api.contains("Operator and conversion impls"));
     }
 
     #[test]
@@ -1394,7 +1770,7 @@ mod tests {
                 item(
                     4,
                     None,
-                    ItemEnum::Impl(rustdoc_types::Impl {
+                    ItemEnum::Impl(Impl {
                         is_unsafe: false,
                         generics: empty_generics(),
                         provided_trait_methods: Vec::new(),
@@ -1470,7 +1846,7 @@ mod tests {
                 item(
                     4,
                     None,
-                    ItemEnum::Impl(rustdoc_types::Impl {
+                    ItemEnum::Impl(Impl {
                         is_unsafe: false,
                         generics: empty_generics(),
                         provided_trait_methods: Vec::new(),
@@ -1524,6 +1900,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "The test builds a multi-impl rustdoc fixture inline; splitting it would obscure the scenario"
+    )]
     fn doc_string_renders_state_dependent_impl_blocks_separately() {
         let source = temp_source_file(
             "typestate_impls",
@@ -1552,7 +1932,7 @@ mod tests {
         );
 
         let impl_block = |items: Vec<Id>| {
-            ItemEnum::Impl(rustdoc_types::Impl {
+            ItemEnum::Impl(Impl {
                 is_unsafe: false,
                 generics: empty_generics(),
                 provided_trait_methods: Vec::new(),
@@ -2155,13 +2535,13 @@ mod tests {
 
     #[test]
     fn doc_string_elides_function_bodies_without_losing_signature_docs() {
-        let snippet = r#"
+        let snippet = "
 /// Add a sample to the rolling window.
 pub fn push(&mut self, sample: f64) -> f64 {
     self.sum += sample;
     self.sum
 }
-"#;
+";
 
         let elided = elide_body(snippet).expect("function body should be elided");
 
@@ -2172,10 +2552,10 @@ pub fn push(&mut self, sample: f64) -> f64 {
 
     #[test]
     fn doc_string_elides_large_constant_initializers_without_losing_type() {
-        let snippet = r#"
+        let snippet = "
 /// Coefficients available to generated code.
 pub const WEIGHTS: [f64; 3] = [1.0, 2.0, 3.0];
-"#;
+";
 
         let elided = elide_initializer(snippet);
 
