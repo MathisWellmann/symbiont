@@ -10,18 +10,25 @@
 /// this produces:
 /// ```ignore
 /// pub fn sort(data: &mut [f64], len: usize) {
+///     __symbiont_install_panic_hook();
 ///     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| { /* body */ })) {
 ///         Ok(v) => v,
 ///         Err(e) => {
 ///             let msg = if let Some(s) = e.downcast_ref::<&str>() { *s }
 ///                       else if let Some(s) = e.downcast_ref::<String>() { s.as_str() }
 ///                       else { "unknown panic" };
-///             __symbiont_store_panic(msg);
+///             __symbiont_store_panic_fallback(msg);
 ///             unsafe { core::mem::zeroed() }
 ///         }
 ///     }
 /// }
 /// ```
+///
+/// The panic *message with its source location* is recorded by the panic hook
+/// installed via `__symbiont_install_panic_hook` — the hook runs at panic
+/// time, which is the only point where `std::panic::Location` is available.
+/// The `Err` arm only stores the location-less payload as a fallback for
+/// panics that somehow bypassed the hook.
 ///
 /// The Mutex is only touched when a panic actually fires. On the happy
 /// path `catch_unwind` is zero-cost (DWARF-based landing pads).
@@ -30,6 +37,7 @@ pub(crate) fn wrap_bodies_in_catch_unwind(file: &mut syn::File) {
         if let syn::Item::Fn(item_fn) = item {
             let original_body = &item_fn.block;
             let wrapped: syn::Block = syn::parse_quote!({
+                __symbiont_install_panic_hook();
                 match ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(
                     || #original_body,
                 )) {
@@ -43,7 +51,7 @@ pub(crate) fn wrap_bodies_in_catch_unwind(file: &mut syn::File) {
                             } else {
                                 "unknown panic"
                             };
-                        __symbiont_store_panic(__symbiont_msg);
+                        __symbiont_store_panic_fallback(__symbiont_msg);
                         unsafe { ::core::mem::zeroed() }
                     }
                 }
@@ -74,6 +82,53 @@ fn __symbiont_store_panic(msg: &str) {
         guard.1[..len].copy_from_slice(&msg.as_bytes()[..len]);
         guard.2 = len;
     }
+}
+
+/// Store `msg` only when no message is currently stored.
+///
+/// Fallback used by the `catch_unwind` wrapper: the panic hook has already
+/// recorded the message together with its source location, which the
+/// location-less `catch_unwind` payload must not overwrite.
+fn __symbiont_store_panic_fallback(msg: &str) {
+    if let Ok(mut guard) = __SYMBIONT_PANIC.lock() {
+        if guard.0 {
+            return;
+        }
+        let len = msg.len().min(512);
+        guard.0 = true;
+        guard.1[..len].copy_from_slice(&msg.as_bytes()[..len]);
+        guard.2 = len;
+    }
+}
+
+/// Ensures the location-capturing panic hook is installed exactly once.
+static __SYMBIONT_HOOK: std::sync::Once = std::sync::Once::new();
+
+/// Install a panic hook that records the panic message together with its
+/// source location, then delegates to the previously installed hook.
+///
+/// The hook runs at panic time, before unwinding reaches `catch_unwind`;
+/// it is the only point where `std::panic::Location` is available. The
+/// dylib links its own copy of `std`, so this hook only observes panics
+/// raised by code compiled into this dylib, never panics of the host.
+fn __symbiont_install_panic_hook() {
+    __SYMBIONT_HOOK.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let msg = if let Some(s) = info.payload().downcast_ref::<&str>() {
+                *s
+            } else if let Some(s) = info.payload().downcast_ref::<String>() {
+                s.as_str()
+            } else {
+                "unknown panic"
+            };
+            match info.location() {
+                Some(location) => __symbiont_store_panic(&format!("{msg} at {location}")),
+                None => __symbiont_store_panic(msg),
+            }
+            previous(info);
+        }));
+    });
 }
 
 /// Copy the last panic message into `buf` and return its length.
@@ -117,6 +172,7 @@ mod tests {
         assert_eq!(
             &prettyplease::unparse(&file),
             r#"fn step(counter: &mut usize) {
+    __symbiont_install_panic_hook();
     match ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| { panic!() })) {
         Ok(__symbiont_val) => __symbiont_val,
         Err(__symbiont_err) => {
@@ -127,7 +183,7 @@ mod tests {
             } else {
                 "unknown panic"
             };
-            __symbiont_store_panic(__symbiont_msg);
+            __symbiont_store_panic_fallback(__symbiont_msg);
             unsafe { ::core::mem::zeroed() }
         }
     }
