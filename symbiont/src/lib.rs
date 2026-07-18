@@ -29,7 +29,10 @@ pub use decl::{
     FullSource,
 };
 pub use dylib_config::DylibConfig;
-pub use dylib_dependency::DylibDependency;
+pub use dylib_dependency::{
+    DylibDependency,
+    DylibPatch,
+};
 pub use error::{
     Error,
     Result,
