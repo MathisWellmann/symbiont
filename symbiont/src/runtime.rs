@@ -172,7 +172,7 @@ impl Runtime {
         std::fs::create_dir_all(crate_dir.join("src"))?;
 
         // Write Cargo.toml
-        let cargo_toml = generate_cargo_toml(config.dependencies());
+        let cargo_toml = generate_cargo_toml(config.dependencies(), config.patches());
         std::fs::write(crate_dir.join("Cargo.toml"), cargo_toml)?;
 
         let mut prelude = Vec::with_capacity(4);

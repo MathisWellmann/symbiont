@@ -5,7 +5,10 @@ use getset::{
     Getters,
 };
 
-use crate::dylib_dependency::DylibDependency;
+use crate::dylib_dependency::{
+    DylibDependency,
+    DylibPatch,
+};
 
 /// Configuration for the temporary dylib crate compiled by [`crate::Runtime`].
 ///
@@ -30,6 +33,10 @@ pub struct DylibConfig {
     /// Dependencies added to the generated dylib's `Cargo.toml`.
     #[getset(get = "pub")]
     dependencies: Vec<DylibDependency>,
+
+    /// `[patch]` sections added to the generated dylib's `Cargo.toml`.
+    #[getset(get = "pub")]
+    patches: Vec<DylibPatch>,
 }
 
 impl DylibConfig {
@@ -54,6 +61,7 @@ impl DylibConfig {
                 package_name,
                 package_dir,
             )],
+            patches: Vec::new(),
         }
     }
 
@@ -64,6 +72,7 @@ impl DylibConfig {
             profile,
             prelude: Vec::new(),
             dependencies: Vec::new(),
+            patches: Vec::new(),
         }
     }
 
@@ -78,6 +87,17 @@ impl DylibConfig {
     #[must_use]
     pub fn with_dependency(mut self, dependency: DylibDependency) -> Self {
         self.dependencies.push(dependency);
+        self
+    }
+
+    /// Add a `[patch]` section to the generated dylib crate.
+    ///
+    /// The generated crate is its own Cargo build root; `[patch]` sections of
+    /// the host workspace do not reach it. Mirror any host-workspace patch
+    /// that affects types crossing the dylib boundary.
+    #[must_use]
+    pub fn with_patch(mut self, patch: DylibPatch) -> Self {
+        self.patches.push(patch);
         self
     }
 }

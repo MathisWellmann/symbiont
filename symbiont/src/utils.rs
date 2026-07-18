@@ -11,6 +11,7 @@ use syn::ItemFn;
 
 use crate::{
     DylibDependency,
+    DylibPatch,
     Error,
     EvolvableDecl,
     Profile,
@@ -33,7 +34,10 @@ pub(crate) fn is_no_mangle(item_fn: &ItemFn) -> bool {
     })
 }
 
-pub(crate) fn generate_cargo_toml(dependencies: &[DylibDependency]) -> String {
+pub(crate) fn generate_cargo_toml(
+    dependencies: &[DylibDependency],
+    patches: &[DylibPatch],
+) -> String {
     let mut toml = r#"[package]
 name = "symbiont-evolvable"
 version = "0.1.0"
@@ -56,6 +60,17 @@ panic = "unwind"
 
     for dependency in dependencies {
         write_dependency(&mut toml, dependency);
+    }
+
+    for patch in patches {
+        // `crates-io` is a bare key; git URLs must be quoted.
+        let source = patch.source();
+        if source == "crates-io" {
+            let _ = write!(toml, "\n[patch.crates-io]\n");
+        } else {
+            let _ = write!(toml, "\n[patch.{source:?}]\n");
+        }
+        write_dependency(&mut toml, patch.dependency());
     }
 
     toml
@@ -212,6 +227,27 @@ pub(crate) fn is_transient_http_error(err: &Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cargo_toml_renders_patch_sections() {
+        let deps = [DylibDependency::path_renamed("host", "my-app", "/tmp/app")];
+        let patches = [
+            DylibPatch::git(
+                "https://github.com/foo/bar",
+                DylibDependency::with_path("bar", "/tmp/bar"),
+            ),
+            DylibPatch::crates_io(DylibDependency::with_path("baz", "/tmp/baz")),
+        ];
+        let toml = generate_cargo_toml(&deps, &patches);
+        assert!(
+            toml.contains("[patch.\"https://github.com/foo/bar\"]\nbar = { path = \"/tmp/bar\" }"),
+            "got: {toml}"
+        );
+        assert!(
+            toml.contains("[patch.crates-io]\nbaz = { path = \"/tmp/baz\" }"),
+            "got: {toml}"
+        );
+    }
 
     #[test]
     fn test_unsafe_no_mangle_detected() {

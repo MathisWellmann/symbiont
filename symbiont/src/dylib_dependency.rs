@@ -5,6 +5,46 @@ use getset::{
     Getters,
 };
 
+/// A `[patch.<source>]` entry for the generated dylib crate's `Cargo.toml`.
+///
+/// The generated dylib crate is its own Cargo build root, so `[patch]`
+/// sections of the host workspace do **not** apply to it. When the host
+/// workspace patches a dependency (e.g. to a local fork), mirror that patch
+/// into the dylib crate with [`crate::DylibConfig::with_patch`] — otherwise
+/// the dylib compiles the unpatched upstream source and the two sides of the
+/// `dlopen` boundary disagree.
+#[derive(Debug, Clone, PartialEq, Eq, Getters)]
+pub struct DylibPatch {
+    /// The patched source: `"crates-io"` for the default registry, or a git
+    /// URL such as `"https://github.com/foo/bar"`.
+    #[getset(get = "pub")]
+    source: String,
+
+    /// The dependency entry that replaces the patched package.
+    #[getset(get = "pub")]
+    dependency: DylibDependency,
+}
+
+impl DylibPatch {
+    /// Patch a crates.io package.
+    #[must_use]
+    pub fn crates_io(dependency: DylibDependency) -> Self {
+        Self {
+            source: "crates-io".to_string(),
+            dependency,
+        }
+    }
+
+    /// Patch a git-sourced package identified by its repository URL.
+    #[must_use]
+    pub fn git(url: impl Into<String>, dependency: DylibDependency) -> Self {
+        Self {
+            source: url.into(),
+            dependency,
+        }
+    }
+}
+
 /// A dependency entry for the generated dylib crate's `Cargo.toml`.
 #[derive(Debug, Clone, PartialEq, Eq, Getters, CopyGetters)]
 pub struct DylibDependency {
