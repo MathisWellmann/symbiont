@@ -35,9 +35,11 @@ async fn compile_failure_feeds_compiler_diagnostics_back() {
         .expect("Can init runtime");
 
     let agent = ScriptedAgent::new([
-        // Attempt 1: valid syntax + correct signature, but a type error (E0308).
+        // Attempt 1: valid syntax + correct signature, but a type error
+        // (E0308) plus an unused variable that would emit a warning.
         Turn::reply(
             "```rust\npub fn bp_compile_step(counter: &mut usize) {\n    \
+             let unused_noise = 42;\n    \
              let wrong: usize = \"definitely not a usize\";\n    \
              *counter += wrong;\n}\n```",
         ),
@@ -67,6 +69,11 @@ async fn compile_failure_feeds_compiler_diagnostics_back() {
     assert!(
         retry_prompt.contains("definitely not a usize"),
         "retry prompt must echo the offending generated code, got: {retry_prompt}"
+    );
+    assert!(
+        !retry_prompt.contains("warning"),
+        "the generated crate allows all warnings so compiler feedback \
+         surfaces only errors, got: {retry_prompt}"
     );
 
     // The hot-swapped implementation is live.
