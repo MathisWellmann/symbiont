@@ -65,6 +65,11 @@ async fn panicking_evolved_code_is_caught_and_message_retrievable() {
         msg.contains("intentional panic for backpressure test"),
         "panic message must be preserved, got: {msg}"
     );
+    assert!(
+        msg.contains(" at ") && msg.contains("lib.rs"),
+        "panic message must carry the source location inside the generated \
+         crate for prompt feedback, got: {msg}"
+    );
     assert_eq!(
         rt.take_panic(),
         None,
