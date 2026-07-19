@@ -62,6 +62,10 @@ pub enum Error {
         last_error: Box<Error>,
     },
 
+    #[cfg(feature = "prometheus")]
+    #[error(transparent)]
+    Observability(#[from] metrics_exporter_prometheus::BuildError),
+
     #[error("Could not run cargo doc command")]
     CargoDoc,
 

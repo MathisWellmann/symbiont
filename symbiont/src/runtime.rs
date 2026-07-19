@@ -28,6 +28,11 @@ use std::{
 };
 
 use libloading::Library;
+use metrics::{
+    counter,
+    gauge,
+    histogram,
+};
 use minstant::Instant;
 use owo_colors::OwoColorize;
 use prettyplease::unparse;
@@ -48,6 +53,26 @@ use crate::{
     error::{
         Error,
         Result,
+    },
+    observability::{
+        DYLIB_SIZE_BYTES,
+        DYLIB_SOURCE_BYTES,
+        EVOLVE_ATTEMPTS,
+        EVOLVE_CONTEXT_RESETS,
+        EVOLVE_DURATION,
+        EVOLVE_FAILURES,
+        LLM_RETRY_BACKOFF,
+        LLM_RUN_INPUT_TOKENS,
+        LLM_RUN_MESSAGES,
+        LLM_RUN_OUTPUT_TOKENS,
+        LLM_RUNS,
+        LLM_TOKENS,
+        LLM_TRANSIENT_RETRIES,
+        PIPELINE_STAGE_DURATION,
+        REVISION_ACTIVATIONS,
+        REVISION_ACTIVE,
+        failure_kind_of,
+        stage,
     },
     parser::parse_rust_code,
     revision::{
@@ -234,6 +259,10 @@ impl Runtime {
     /// All evolvable function calls must have returned before this is called.
     /// In debug builds this is enforced with an assertion; in release it is
     /// the caller's responsibility.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "One sequential pipeline (run -> parse -> validate -> compile -> load -> publish) with metric emission between stages; splitting would scatter the stage boundaries the metrics annotate"
+    )]
     async fn evolve_no_backpressure<AgentT>(
         &self,
         agent: &AgentT,
@@ -251,7 +280,22 @@ impl Runtime {
 
         // The agent implementation drives any tool-calling turns to
         // completion internally and returns only the final text.
-        let run = agent.run(prompt, history.clone()).await?;
+        let run = match agent.run(prompt, history.clone()).await {
+            Ok(run) => run,
+            Err(e) => {
+                counter!(LLM_RUNS, "outcome" => "error").increment(1);
+                return Err(e.into());
+            }
+        };
+        counter!(LLM_RUNS, "outcome" => "ok").increment(1);
+        counter!(LLM_TOKENS, "kind" => "input").increment(run.usage.input_tokens);
+        counter!(LLM_TOKENS, "kind" => "output").increment(run.usage.output_tokens);
+        if run.usage.cached_input_tokens > 0 {
+            counter!(LLM_TOKENS, "kind" => "cached_input").increment(run.usage.cached_input_tokens);
+        }
+        histogram!(LLM_RUN_INPUT_TOKENS).record(run.usage.input_tokens as f64);
+        histogram!(LLM_RUN_OUTPUT_TOKENS).record(run.usage.output_tokens as f64);
+        histogram!(LLM_RUN_MESSAGES).record(run.new_messages.len() as f64);
         info!("llm_response: {}", run.output.blue());
         info!("token usage for this run: {:?}", run.usage);
 
@@ -260,12 +304,23 @@ impl Runtime {
         history.extend(run.new_messages);
         let llm_response = run.output;
         let llm_time = t0.elapsed().as_millis();
+        histogram!(
+            PIPELINE_STAGE_DURATION,
+            "stage" => stage::LLM
+        )
+        .record(t0.elapsed().as_secs_f64());
 
-        // Parse Rust from markdown fences
+        // Parse Rust from markdown fences, validate signatures.
+        let t1 = Instant::now();
         let mut ast = parse_rust_code(&llm_response)?;
 
         // Validate signatures match declarations
         validate_generated_ast(&mut ast, &self.fn_sigs)?;
+        histogram!(
+            PIPELINE_STAGE_DURATION,
+            "stage" => stage::PARSE_VALIDATE
+        )
+        .record(t1.elapsed().as_secs_f64());
 
         // Re-inject the prelude (inline helper items and configured imports)
         // so the dylib still sees the same API surface used at initialization.
@@ -288,15 +343,25 @@ impl Runtime {
         // Recompile
         let t0 = Instant::now();
         let clean_ast_str = unparse(&ast);
+        histogram!(DYLIB_SOURCE_BYTES).record(clean_ast_str.len() as f64);
         debug!("clean_ast_str: {clean_ast_str}");
         compile_dylib(&self.crate_dir, self.profile, &clean_ast_str)?;
         let compile_time = t0.elapsed().as_millis();
+        histogram!(
+            PIPELINE_STAGE_DURATION,
+            "stage" => stage::COMPILE
+        )
+        .record(t0.elapsed().as_secs_f64());
 
         // Copy the build output to the next revision's own path (which also
         // defeats dlopen path caching) and load it.
+        let t2 = Instant::now();
         let id = self.next_revision_id()?;
         let versioned_so = versioned_so_path(&self.crate_dir, id);
         std::fs::copy(&self.so_path, &versioned_so)?;
+        if let Ok(meta) = std::fs::metadata(&versioned_so) {
+            histogram!(DYLIB_SIZE_BYTES).record(meta.len() as f64);
+        }
         let new_lib = unsafe {
             Library::new(&versioned_so).map_err(|e| {
                 Error::DylibLoad(format!("Failed to load {}: {e}", versioned_so.display()))
@@ -317,8 +382,22 @@ impl Runtime {
                 "concurrent evolve() calls are not supported"
             );
             revisions.push(Arc::new(entry));
+            metrics::gauge!(crate::observability::REVISIONS_LOADED)
+                .set(u64::try_from(revisions.len()).expect("registry length fits in u64") as f64);
         }
         self.active.store(id, Ordering::Release);
+
+        histogram!(
+            PIPELINE_STAGE_DURATION,
+            "stage" => stage::LOAD
+        )
+        .record(t2.elapsed().as_secs_f64());
+        gauge!(REVISION_ACTIVE).set(id as f64);
+        counter!(
+            REVISION_ACTIVATIONS,
+            "source" => "evolve"
+        )
+        .increment(1);
 
         info!(
             "Hot-reloaded evolvable dylib (revision {id}). Timings: LLM generation: {llm_time}ms, compilation: {compile_time}ms.",
@@ -404,6 +483,7 @@ impl Runtime {
         AgentT: EvolutionAgent + Sync,
     {
         async move {
+            let t_start = Instant::now();
             let mut prompt = base_prompt.to_string();
             // Scoped to this call; see the doc comment above.
             let mut history: Vec<Message> = Vec::new();
@@ -416,8 +496,17 @@ impl Runtime {
                     .evolve_no_backpressure(agent, &prompt, &mut history)
                     .await
                 {
-                    Ok(revision) => return Ok(revision),
+                    Ok(revision) => {
+                        histogram!(EVOLVE_ATTEMPTS).record(attempts as f64);
+                        histogram!(EVOLVE_DURATION).record(t_start.elapsed().as_secs_f64());
+                        return Ok(revision);
+                    }
                     Err(e) => {
+                        counter!(
+                            EVOLVE_FAILURES,
+                            "kind" => failure_kind_of(&e)
+                        )
+                        .increment(1);
                         // A request that exceeds the model's context window can
                         // never succeed by resending: shrink it instead.
                         // Discard the accumulated retry history and restart
@@ -430,6 +519,8 @@ impl Runtime {
                                     "Request exceeds the model's context window even without \
                                      chat history; the base prompt is too large: {e}"
                                 );
+                                histogram!(EVOLVE_ATTEMPTS).record(attempts as f64);
+                                histogram!(EVOLVE_DURATION).record(t_start.elapsed().as_secs_f64());
                                 return Err(e);
                             }
                             warn!(
@@ -437,6 +528,7 @@ impl Runtime {
                                  history messages and restarting from the base prompt",
                                 history.len()
                             );
+                            counter!(EVOLVE_CONTEXT_RESETS).increment(1);
                             history.clear();
                             prompt.clear();
                             prompt.push_str(base_prompt);
@@ -456,10 +548,14 @@ impl Runtime {
                                     "Transient HTTP error retry budget exhausted ({transient_attempts}/{}); giving up. Last error: {e}",
                                     Self::MAX_TRANSIENT_RETRIES
                                 );
+                                histogram!(EVOLVE_ATTEMPTS).record(attempts as f64);
+                                histogram!(EVOLVE_DURATION).record(t_start.elapsed().as_secs_f64());
                                 return Err(e);
                             }
                             let backoff = Self::transient_backoff(transient_attempts);
                             transient_attempts += 1;
+                            counter!(LLM_TRANSIENT_RETRIES).increment(1);
+                            histogram!(LLM_RETRY_BACKOFF).record(backoff.as_secs_f64());
                             warn!(
                                 "Transient HTTP error from LLM provider (retry {transient_attempts}/{} in {:?}): {e}",
                                 Self::MAX_TRANSIENT_RETRIES,
@@ -475,6 +571,8 @@ impl Runtime {
                             warn!(
                                 "Evolution failed after {attempts} attempts; giving up. Last error: {e}"
                             );
+                            histogram!(EVOLVE_ATTEMPTS).record(attempts as f64);
+                            histogram!(EVOLVE_DURATION).record(t_start.elapsed().as_secs_f64());
                             return Err(MaxRetriesExceeded {
                                 attempts,
                                 last_error: Box::new(e),
@@ -646,6 +744,12 @@ impl Runtime {
             })?;
         entry.publish(self.decls);
         self.active.store(revision.as_u64(), Ordering::Release);
+        gauge!(REVISION_ACTIVE).set(revision.as_u64() as f64);
+        counter!(
+            REVISION_ACTIVATIONS,
+            "source" => "manual"
+        )
+        .increment(1);
         info!("Activated revision {revision}.");
         Ok(())
     }
