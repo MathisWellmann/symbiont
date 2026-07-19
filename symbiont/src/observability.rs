@@ -237,8 +237,8 @@ pub(crate) fn failure_kind_of(e: &crate::Error) -> &'static str {
 ///   model for its lifetime, so it belongs on every series.
 /// - `crate_name`: the host crate name passed in (typically
 ///   `env!("CARGO_PKG_NAME")`).
-/// - `instance`: the `INSTANCE` env var, falling back to the hostname, then
-///   `unknown`. Lets you correlate metrics with per-process logs.
+/// - `instance`: the `INSTANCE` env var, falling back to `<hostname>-<pid>`,
+///   then `pid-<pid>`. Lets you distinguish processes even on the same host.
 ///
 /// The exporter serves metrics over HTTP on `listen_addr`
 /// (e.g. `127.0.0.1:9000/metrics`). Every symbiont metric is registered with
@@ -276,9 +276,10 @@ pub fn init_observability(
             std::fs::read_to_string("/proc/sys/kernel/hostname")
                 .ok()
                 .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty())
+                .map(|hostname| format!("{hostname}-{}", std::process::id()))
         })
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "unknown".into());
+        .unwrap_or_else(|| format!("pid-{}", std::process::id()));
 
     PrometheusBuilder::new()
         .with_http_listener(listen_addr)
