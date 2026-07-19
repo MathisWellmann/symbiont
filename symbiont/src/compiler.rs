@@ -56,14 +56,17 @@ pub(crate) fn compile_dylib(crate_dir: &Path, profile: Profile, clean_ast_str: &
         args.push("--release");
     }
 
-    let output =
-        Command::new("cargo")
-            .args(&args)
-            .output()
-            .map_err(|e| Error::CompilationFailed {
-                code: clean_ast_str.to_string(),
-                err: format!("Failed to spawn cargo: {e}"),
-            })?;
+    let output = Command::new("cargo")
+        .args(&args)
+        // This nested build has its own artifact lookup rooted at `crate_dir`.
+        // Inherited `CARGO_TARGET_DIR` (commonly set by CI) would redirect
+        // cargo elsewhere and make `find_so` report a missing dylib.
+        .env_remove("CARGO_TARGET_DIR")
+        .output()
+        .map_err(|e| Error::CompilationFailed {
+            code: clean_ast_str.to_string(),
+            err: format!("Failed to spawn cargo: {e}"),
+        })?;
 
     if output.status.success() {
         info!(
