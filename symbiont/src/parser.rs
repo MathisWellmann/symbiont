@@ -20,52 +20,39 @@ use crate::{
 /// Extract the inner Rust source code from a markdown-fenced code block.
 ///
 /// Handles the common pattern where an LLM response wraps code in
-/// ```rust ... ``` fences. Returns the first code block found, or `None`
+/// ```rust ... ``` fences. Returns the first code block found, or `None`.
+///
+/// Fences only count when they open a line (ignoring leading whitespace),
+/// per CommonMark. This keeps fences embedded in doc comments, such as
+/// `/// ```ignore` examples the LLM re-emits from the function's docs,
+/// from being mistaken for the closing fence and truncating the code.
 pub(crate) fn extract_rust_code(input: &str) -> Option<String> {
-    // Match ```rust ... ``` with optional whitespace/newlines
-    let start_marker = "```rust";
-    let end_marker = "```";
+    // Prefer an explicit ```rust fence, then fall back to any ``` fence.
+    extract_fenced(input, "```rust").or_else(|| extract_fenced(input, "```"))
+}
 
-    if let Some(start) = input.find(start_marker) {
-        let code_start = start + start_marker.len();
-        // Skip any whitespace after the language tag
-        let code_start = input[code_start..]
-            .chars()
-            .take_while(|c| c.is_whitespace())
-            .count()
-            + code_start;
+/// Extract the contents of the first line-anchored fenced block opened by
+/// `start_marker` and closed by a line-anchored ``` fence.
+fn extract_fenced(input: &str, start_marker: &str) -> Option<String> {
+    let start = find_line_anchored_fence(input, start_marker, 0)?;
+    // Skip the rest of the opening fence line (language tag, whitespace).
+    let code_start = start + input[start..].find('\n')? + 1;
+    let end = find_line_anchored_fence(input, "```", code_start)?;
+    Some(input[code_start..end].trim().to_string())
+}
 
-        if let Some(end) = input[code_start..].find(end_marker) {
-            let code_end = code_start + end;
-            let mut code = input[code_start..code_end].to_string();
-            // Strip leading/trailing whitespace (including the newline after the fence)
-            code = code.trim().to_string();
-            return Some(code);
+/// Byte offset of the first occurrence of `marker` at or after `from` that
+/// is preceded on its line only by whitespace.
+fn find_line_anchored_fence(input: &str, marker: &str, from: usize) -> Option<usize> {
+    let mut search_from = from;
+    while let Some(rel) = input[search_from..].find(marker) {
+        let pos = search_from + rel;
+        let line_start = input[..pos].rfind('\n').map(|i| i + 1).unwrap_or(0);
+        if input[line_start..pos].chars().all(char::is_whitespace) {
+            return Some(pos);
         }
+        search_from = pos + marker.len();
     }
-
-    // Fallback: if no ```rust fence found, try any ``` fence
-    if let Some(start) = input.find("```") {
-        let after_fence = &input[start + 3..];
-        // Skip language tag and optional whitespace
-        let lang_end = after_fence.find('\n').unwrap_or(after_fence.len());
-        let code_start = lang_end
-            + start
-            + 3
-            + after_fence[lang_end..]
-                .chars()
-                .take_while(|c| c.is_whitespace())
-                .count();
-
-        if let Some(end) = input[code_start..].find("```") {
-            let code_end = code_start + end;
-            let mut code = input[code_start..code_end].to_string();
-            code = code.trim().to_string();
-            return Some(code);
-        }
-    }
-
-    // No fence detected.
     None
 }
 
@@ -169,6 +156,80 @@ pub fn step(state: &mut usize) {
 ```";
         let file = parse_rust_code(input).expect("can parse");
         assert_eq!(file.items.len(), 1);
+    }
+
+    /// Regression test: a fence embedded in a doc comment (`/// ```ignore`)
+    /// must not terminate the outer ```rust block. This previously truncated
+    /// the extracted code to the doc-comment prefix, producing the
+    /// "unexpected end of input (line 1, column 0)" parse error when the LLM
+    /// re-emitted the evolvable function's documentation.
+    #[test]
+    fn test_extract_rust_code_fence_inside_doc_comment() {
+        let input = "```rust
+/// Construct commands, e.g. for cancellation:
+///
+/// ```ignore
+/// if let Ok(command) = Command::limit_order(Side::Buy, price, qty, 7) {
+///     commands[0] = command;
+/// }
+/// ```
+///
+/// `Command::market_order(...)` submits a market order.
+pub fn action(commands: &mut [u32]) {
+    commands[0] = 1;
+}
+```
+Hope that helps!";
+        let code = extract_rust_code(input).expect("can extract");
+        assert!(
+            code.contains("pub fn action"),
+            "must not stop at the doc-comment fence: {code}"
+        );
+        assert!(code.ends_with('}'), "must extract the full block: {code}");
+        assert!(!code.contains("Hope that helps"));
+    }
+
+    /// The doc-comment regression above must also parse end-to-end.
+    #[test]
+    fn test_parse_rust_code_with_doc_comment_fence() {
+        let input = "```rust
+/// Example usage:
+///
+/// ```ignore
+/// let x = step(1);
+/// ```
+pub fn step(x: i32) -> i32 {
+    x + 1
+}
+```";
+        let file = parse_rust_code(input).expect("can parse");
+        assert_eq!(file.items.len(), 1);
+    }
+
+    /// A ```rust fence inside prose (e.g. quoted mid-line) must not be taken
+    /// as the opening fence; only line-anchored fences count.
+    #[test]
+    fn test_extract_rust_code_ignores_inline_fence_mentions() {
+        let input = "Wrap your code like ```rust ... ``` as requested:
+```rust
+fn real() -> i32 { 1 }
+```";
+        let code = extract_rust_code(input).expect("can extract");
+        assert_eq!(code, "fn real() -> i32 { 1 }");
+    }
+
+    /// An indented fence (whitespace-only prefix) still opens/closes a block.
+    #[test]
+    fn test_extract_rust_code_indented_fence() {
+        let input = "  ```rust\n  fn indented() -> i32 { 2 }\n  ```";
+        let code = extract_rust_code(input).expect("can extract");
+        assert_eq!(code, "fn indented() -> i32 { 2 }");
+    }
+
+    /// An opening fence with no newline after it has no code block.
+    #[test]
+    fn test_extract_rust_code_unterminated_fence_line() {
+        assert!(extract_rust_code("```rust fn oneliner() {}").is_none());
     }
 
     /// Regression test for the cast-then-shift grammar pitfall LLMs run into:
