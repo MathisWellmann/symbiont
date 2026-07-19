@@ -196,16 +196,48 @@ pub(crate) fn find_so(crate_dir: &Path, profile: Profile) -> Result<PathBuf> {
     }
 }
 
+/// Return `true` for [`Error`] values indicating the request exceeded the
+/// model's context window.
+///
+/// Such a request can never succeed by resending, but it is recoverable by
+/// shrinking the conversation: [`crate::Runtime::evolve`] responds by
+/// discarding the accumulated retry history and restarting from the base
+/// prompt.
+pub(crate) fn is_context_size_error(err: &Error) -> bool {
+    let Some(http_err) = http_error_of(err) else {
+        return false;
+    };
+
+    let rig_core::http_client::Error::InvalidStatusCodeWithMessage(status, msg) = http_err else {
+        return false;
+    };
+
+    // llama.cpp reports `exceed_context_size_error`, OpenAI-compatible
+    // servers `context_length_exceeded`, Anthropic a 400 with
+    // "prompt is too long".
+    status.as_u16() == 400
+        && (msg.contains("exceed_context_size")
+            || msg.contains("context_length_exceeded")
+            || msg.contains("prompt is too long"))
+}
+
+/// The provider HTTP error inside `err`, if that is what it wraps.
+fn http_error_of(err: &Error) -> Option<&rig_core::http_client::Error> {
+    match err {
+        Error::RigPrompt(rig_core::completion::PromptError::CompletionError(
+            rig_core::completion::CompletionError::HttpError(http_err),
+        )) => Some(http_err),
+        Error::RigHttp(http_err) => Some(http_err),
+        _ => None,
+    }
+}
+
 /// Return `true` for [`Error`] values that represent transient failures of
 /// the LLM provider (rate-limits, server overload, gateway errors) and are
 /// safe to retry without modifying the prompt.
 pub(crate) fn is_transient_http_error(err: &Error) -> bool {
-    let http_err = match err {
-        Error::RigPrompt(rig_core::completion::PromptError::CompletionError(
-            rig_core::completion::CompletionError::HttpError(http_err),
-        )) => http_err,
-        Error::RigHttp(http_err) => http_err,
-        _ => return false,
+    let Some(http_err) = http_error_of(err) else {
+        return false;
     };
 
     use rig_core::http_client::Error::*;

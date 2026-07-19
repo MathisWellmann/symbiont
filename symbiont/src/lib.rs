@@ -84,4 +84,7 @@ pub mod __internal {
 mod tests {
     #[expect(unused, reason = "Used in benchmarks.")]
     use criterion::*;
+    // Only used in integration tests; linked here to satisfy
+    // `unused_crate_dependencies` for the lib test target.
+    use http as _;
 }

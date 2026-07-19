@@ -16,7 +16,7 @@ website = "https://symbiont.rs"
 workspace = true
 
 [dependencies]
-symbiont-macros = { version = "0.18.0", path = "../symbiont-macros" }
+symbiont-macros = { version = "0.18.1", path = "../symbiont-macros" }
 
 rig-core.workspace = true
 tokio.workspace = true
@@ -37,6 +37,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
 criterion = { version = "0.8", features = ["html_reports"] }
+http = "1"
 tracing-test = "0.2"
 
 [[bench]]
