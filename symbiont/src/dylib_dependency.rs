@@ -60,6 +60,14 @@ pub struct DylibDependency {
     #[getset(get = "pub")]
     path: Option<PathBuf>,
 
+    /// Git repository URL.
+    #[getset(get = "pub")]
+    git: Option<String>,
+
+    /// Pinned Git revision.
+    #[getset(get = "pub")]
+    rev: Option<String>,
+
     /// Registry version requirement.
     #[getset(get = "pub")]
     version: Option<String>,
@@ -81,6 +89,8 @@ impl DylibDependency {
             name: name.into(),
             package: None,
             path: Some(path.into()),
+            git: None,
+            rev: None,
             version: None,
             features: Vec::new(),
             default_features: true,
@@ -98,6 +108,27 @@ impl DylibDependency {
             name: name.into(),
             package: Some(package.into()),
             path: Some(path.into()),
+            git: None,
+            rev: None,
+            version: None,
+            features: Vec::new(),
+            default_features: true,
+        }
+    }
+
+    /// Create a dependency pinned to a Git revision.
+    #[must_use]
+    pub fn with_git(
+        name: impl Into<String>,
+        url: impl Into<String>,
+        rev: impl Into<String>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            package: None,
+            path: None,
+            git: Some(url.into()),
+            rev: Some(rev.into()),
             version: None,
             features: Vec::new(),
             default_features: true,
@@ -111,6 +142,8 @@ impl DylibDependency {
             name: name.into(),
             package: None,
             path: None,
+            git: None,
+            rev: None,
             version: Some(version.into()),
             features: Vec::new(),
             default_features: true,
