@@ -82,6 +82,7 @@ fn write_dependency(toml: &mut String, dependency: &DylibDependency) {
 
     let simple_version = dependency.package().is_none()
         && dependency.path().is_none()
+        && dependency.git().is_none()
         && dependency.features().is_empty()
         && dependency.default_features();
     if simple_version && let Some(version) = &dependency.version() {
@@ -104,6 +105,12 @@ fn write_dependency(toml: &mut String, dependency: &DylibDependency) {
     }
     if let Some(path) = dependency.path() {
         push_field(toml, "path", &path.display().to_string());
+    }
+    if let Some(git) = dependency.git() {
+        push_field(toml, "git", git);
+    }
+    if let Some(rev) = dependency.rev() {
+        push_field(toml, "rev", rev);
     }
     if let Some(version) = dependency.version() {
         push_field(toml, "version", version);
@@ -259,6 +266,22 @@ pub(crate) fn is_transient_http_error(err: &Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cargo_toml_renders_pinned_git_dependency() {
+        let toml = generate_cargo_toml(
+            &[DylibDependency::with_git(
+                "const-decimal",
+                "https://github.com/MathisWellmann/const-decimal",
+                "ec766197d62bc89f15b64971fc22c5e8721e90d5",
+            )],
+            &[],
+        );
+
+        assert!(toml.contains(
+            "const-decimal = { git = \"https://github.com/MathisWellmann/const-decimal\", rev = \"ec766197d62bc89f15b64971fc22c5e8721e90d5\" }"
+        ));
+    }
 
     #[test]
     fn cargo_toml_renders_patch_sections() {
