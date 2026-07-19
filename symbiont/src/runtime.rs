@@ -16,7 +16,6 @@ use std::{
     },
     sync::{
         Arc,
-        Mutex,
         OnceLock,
         RwLock,
         atomic::{
@@ -117,8 +116,6 @@ pub struct Runtime {
     /// `evolvable! { ... }` and configured imports such as
     /// `use host::prelude::*;`.
     prelude: Vec<String>,
-    /// The chat history behind a Mutex, because the `Runtime` methods can not be `&mut self` as it lives in `static RUNTIME`.
-    chat_history: Mutex<Vec<Message>>,
 }
 
 impl Runtime {
@@ -217,7 +214,6 @@ impl Runtime {
             decls,
             profile: config.profile(),
             prelude,
-            chat_history: Mutex::new(Vec::with_capacity(8)),
         };
 
         RUNTIME
@@ -237,7 +233,12 @@ impl Runtime {
     /// All evolvable function calls must have returned before this is called.
     /// In debug builds this is enforced with an assertion; in release it is
     /// the caller's responsibility.
-    async fn evolve_no_backpressure<AgentT>(&self, agent: &AgentT, prompt: &str) -> Result<Revision>
+    async fn evolve_no_backpressure<AgentT>(
+        &self,
+        agent: &AgentT,
+        prompt: &str,
+        history: &mut Vec<Message>,
+    ) -> Result<Revision>
     where
         AgentT: EvolutionAgent,
     {
@@ -245,31 +246,18 @@ impl Runtime {
 
         info!("prompt: {}", prompt.green());
         let t0 = Instant::now();
-        // code block to drop the mutex guard cleanly and obviously at the end.
-        let llm_response = {
-            // `.clone` the history here to ensure the mutex lock is not held across await points,
-            // which would make this future `!Send`
-            let hist = self
-                .chat_history
-                .lock()
-                .map_err(|_| Error::MutexPoison)?
-                .clone();
-            debug!("chat history: {hist:?}");
+        debug!("chat history: {history:?}");
 
-            // The agent implementation drives any tool-calling turns to
-            // completion internally and returns only the final text.
-            let run = agent.run(prompt, hist).await?;
-            info!("llm_response: {}", run.output.blue());
-            info!("token usage for this run: {:?}", run.usage);
+        // The agent implementation drives any tool-calling turns to
+        // completion internally and returns only the final text.
+        let run = agent.run(prompt, history.clone()).await?;
+        info!("llm_response: {}", run.output.blue());
+        info!("token usage for this run: {:?}", run.usage);
 
-            // `new_messages` contains the prompt, assistant turns and any
-            // tool exchanges of this run, so extending is sufficient.
-            self.chat_history
-                .lock()
-                .map_err(|_| Error::MutexPoison)?
-                .extend(run.new_messages);
-            run.output
-        };
+        // `new_messages` contains the prompt, assistant turns and any
+        // tool exchanges of this run, so extending is sufficient.
+        history.extend(run.new_messages);
+        let llm_response = run.output;
         let llm_time = t0.elapsed().as_millis();
 
         // Parse Rust from markdown fences
@@ -382,6 +370,12 @@ impl Runtime {
     /// that, [`Error::MaxRetriesExceeded`] is returned so a
     /// misbehaving agent cannot hang the runtime indefinitely.
     ///
+    /// The chat history is scoped to this call: it starts empty, accumulates
+    /// the retry turns, and is discarded on return. Nothing carries over
+    /// between `evolve` calls, so request sizes stay bounded in long-lived
+    /// processes; callers that want cross-call continuity must render it
+    /// into `base_prompt` themselves.
+    ///
     /// Transient HTTP errors from the LLM provider (HTTP 429, 5xx, 529
     /// "overloaded") are retried separately with exponential backoff up to
     /// [`Self::MAX_TRANSIENT_RETRIES`] times, and do not count against the
@@ -406,12 +400,17 @@ impl Runtime {
     {
         async move {
             let mut prompt = base_prompt.to_string();
+            // Scoped to this call; see the doc comment above.
+            let mut history: Vec<Message> = Vec::new();
             let mut attempts: usize = 0;
             let mut transient_attempts: usize = 0;
 
             loop {
                 attempts += 1;
-                match self.evolve_no_backpressure(agent, &prompt).await {
+                match self
+                    .evolve_no_backpressure(agent, &prompt, &mut history)
+                    .await
+                {
                     Ok(revision) => return Ok(revision),
                     Err(e) => {
                         // Transient HTTP errors (rate limits, overload, gateway
@@ -589,7 +588,7 @@ impl Runtime {
     ///
     /// Use it to roll back to the best revision a search discovered, to
     /// implement undo, or to re-deploy a known-good implementation for a
-    /// final evaluation. The chat history is not modified.
+    /// final evaluation.
     ///
     /// Returns [`Error::UnknownRevision`] if `revision` was never registered;
     /// the active revision is left unchanged in that case.

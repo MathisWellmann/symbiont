@@ -204,4 +204,17 @@ async fn revisions_are_retained_and_activatable() {
         panicking.take_panic().is_none(),
         "the stored message is cleared on read"
     );
+
+    // -- Chat history scoping ----------------------------------------------------
+
+    // The chat history is scoped to each `evolve` call: nothing accumulates
+    // across calls, keeping request sizes bounded in long-lived processes.
+    assert_eq!(agent.calls(), 4);
+    for call in 0..4 {
+        assert_eq!(
+            agent.history_len(call),
+            0,
+            "evolve call {call} must start with an empty chat history"
+        );
+    }
 }
