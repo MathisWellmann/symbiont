@@ -24,6 +24,7 @@ tracing.workspace = true
 
 getset = "0.1.6"
 libloading = "0.9"
+metrics = "0.24"
 minstant = "0.1"
 owo-colors = "4"
 prettyplease = "0.2"
@@ -38,7 +39,20 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 [dev-dependencies]
 criterion = { version = "0.8", features = ["html_reports"] }
 http = "1"
+metrics-util = { version = "0.20", features = ["debugging"] }
 tracing-test = "0.2"
+
+[features]
+default = []
+# Prometheus exporter for long-running host binaries; pull this in and call
+# `symbiont::observability::init_observability()` at startup.
+prometheus = ["dep:metrics-exporter-prometheus"]
+
+[dependencies.metrics-exporter-prometheus]
+default-features = false
+features = ["http-listener"]
+optional = true
+version = "0.18"
 
 [[bench]]
 harness = false

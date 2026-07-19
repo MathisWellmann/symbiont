@@ -15,6 +15,7 @@ mod error;
 mod evolution_agent;
 mod inference;
 mod init_tracing;
+pub mod observability;
 mod parser;
 mod profile;
 mod revision;
