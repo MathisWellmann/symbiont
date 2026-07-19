@@ -59,6 +59,7 @@ use crate::{
         find_so,
         generate_cargo_toml,
         generate_lib_rs,
+        is_context_size_error,
         is_transient_http_error,
         versioned_so_path,
     },
@@ -390,6 +391,10 @@ impl Runtime {
         clippy::manual_async_fn,
         reason = "Ensure the future is `Send` such that it works better with tokios multi-thread runtime"
     )]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "The retry policy is one sequential decision ladder; splitting it would obscure the order of the recovery rules"
+    )]
     pub fn evolve<AgentT>(
         &self,
         agent: &AgentT,
@@ -413,6 +418,34 @@ impl Runtime {
                 {
                     Ok(revision) => return Ok(revision),
                     Err(e) => {
+                        // A request that exceeds the model's context window can
+                        // never succeed by resending: shrink it instead.
+                        // Discard the accumulated retry history and restart
+                        // from the base prompt. If even a fresh request
+                        // overflows (empty history), the base prompt itself is
+                        // too large and only the caller can slim it down.
+                        if is_context_size_error(&e) {
+                            if history.is_empty() {
+                                warn!(
+                                    "Request exceeds the model's context window even without \
+                                     chat history; the base prompt is too large: {e}"
+                                );
+                                return Err(e);
+                            }
+                            warn!(
+                                "Request exceeded the model's context window; discarding {} \
+                                 history messages and restarting from the base prompt",
+                                history.len()
+                            );
+                            history.clear();
+                            prompt.clear();
+                            prompt.push_str(base_prompt);
+                            // Not the LLM's fault: don't count against the
+                            // self-healing budget.
+                            attempts -= 1;
+                            continue;
+                        }
+
                         // Transient HTTP errors (rate limits, overload, gateway
                         // failures) are not the LLM's fault: retry with
                         // exponential backoff and don't count against the
