@@ -210,6 +210,7 @@ impl Runtime {
 
         // Write src/lib.rs from all default_source entries
         let lib_rs = generate_lib_rs(decls, &prelude);
+        let initial_source_bytes = lib_rs.len();
 
         // Compile
         compile_dylib(&crate_dir, config.profile(), &lib_rs)?;
@@ -245,6 +246,14 @@ impl Runtime {
         RUNTIME
             .set(runtime)
             .map_err(|_| Error::AlreadyInitialized)?;
+
+        histogram!(DYLIB_SOURCE_BYTES).record(initial_source_bytes as f64);
+        if let Ok(meta) = std::fs::metadata(&v0_path) {
+            histogram!(DYLIB_SIZE_BYTES).record(meta.len() as f64);
+        }
+        gauge!(REVISION_ACTIVE).set(Revision::INITIAL.as_u64() as f64);
+        gauge!(crate::observability::REVISIONS_LOADED).set(1.0);
+
         Ok(RUNTIME.get().expect("just set"))
     }
 
@@ -343,7 +352,7 @@ impl Runtime {
         // Recompile
         let t0 = Instant::now();
         let clean_ast_str = unparse(&ast);
-        histogram!(DYLIB_SOURCE_BYTES).record(clean_ast_str.len() as f64);
+        let source_bytes = clean_ast_str.len();
         debug!("clean_ast_str: {clean_ast_str}");
         compile_dylib(&self.crate_dir, self.profile, &clean_ast_str)?;
         let compile_time = t0.elapsed().as_millis();
@@ -359,9 +368,7 @@ impl Runtime {
         let id = self.next_revision_id()?;
         let versioned_so = versioned_so_path(&self.crate_dir, id);
         std::fs::copy(&self.so_path, &versioned_so)?;
-        if let Ok(meta) = std::fs::metadata(&versioned_so) {
-            histogram!(DYLIB_SIZE_BYTES).record(meta.len() as f64);
-        }
+        let dylib_size = std::fs::metadata(&versioned_so).ok().map(|meta| meta.len());
         let new_lib = unsafe {
             Library::new(&versioned_so).map_err(|e| {
                 Error::DylibLoad(format!("Failed to load {}: {e}", versioned_so.display()))
@@ -387,6 +394,10 @@ impl Runtime {
         }
         self.active.store(id, Ordering::Release);
 
+        histogram!(DYLIB_SOURCE_BYTES).record(source_bytes as f64);
+        if let Some(bytes) = dylib_size {
+            histogram!(DYLIB_SIZE_BYTES).record(bytes as f64);
+        }
         histogram!(
             PIPELINE_STAGE_DURATION,
             "stage" => stage::LOAD

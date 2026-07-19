@@ -47,8 +47,6 @@
 //! | [`REVISION_ACTIVATIONS`]    | counter   | `source`               |
 //! | [`DYLIB_SIZE_BYTES`]        | histogram | —                      |
 //! | [`DYLIB_SOURCE_BYTES`]      | histogram | —                      |
-//! | [`EVOLVABLE_CALLS`]         | counter   | `function`, `panicked` |
-//! | [`EVOLVABLE_CALL_DURATION`] | histogram | `function`             |
 //!
 //! All of them are registered with units and descriptions by
 //! [`describe_metrics`], which [`init_observability`] calls for you.
@@ -107,14 +105,6 @@ pub const DYLIB_SIZE_BYTES: &str = "symbiont_dylib_size_bytes";
 /// Size in bytes of the generated Rust source per revision. Detects code
 /// drift across evolutions.
 pub const DYLIB_SOURCE_BYTES: &str = "symbiont_dylib_source_bytes";
-/// Calls into evolvable functions, labelled by `function` and `panicked`
-/// (`true` if the call panicked inside the dylib). Panics in generated code
-/// should be rare and very visible.
-pub const EVOLVABLE_CALLS: &str = "symbiont_evolvable_calls_total";
-/// Wall-clock seconds of evolvable function calls, labelled by `function`.
-/// Plot against [`REVISION_ACTIVE`] step changes to spot performance
-/// regressions introduced by an evolution.
-pub const EVOLVABLE_CALL_DURATION: &str = "symbiont_evolvable_call_duration_seconds";
 
 /// Label values for the `kind` label of [`EVOLVE_FAILURES`].
 pub(crate) mod failure_kind {
@@ -219,16 +209,6 @@ pub fn describe_metrics() {
         DYLIB_SOURCE_BYTES,
         Unit::Bytes,
         "Generated Rust source size per revision"
-    );
-    describe_counter!(
-        EVOLVABLE_CALLS,
-        Unit::Count,
-        "Calls into evolvable functions by name and panic status"
-    );
-    describe_histogram!(
-        EVOLVABLE_CALL_DURATION,
-        Unit::Seconds,
-        "Duration of evolvable function calls"
     );
 }
 
@@ -354,27 +334,13 @@ mod tests {
         let snapshotter = recorder.snapshotter();
 
         with_local_recorder(&recorder, || {
-            counter!(EVOLVABLE_CALLS, "function" => "step", "panicked" => "false").increment(1);
-            counter!(EVOLVABLE_CALLS, "function" => "step", "panicked" => "true").increment(2);
-            histogram!(EVOLVABLE_CALL_DURATION, "function" => "step").record(0.001);
             histogram!(EVOLVE_ATTEMPTS).record(3.0);
             gauge!(REVISION_ACTIVE).set(7.0);
             counter!(LLM_TOKENS, "kind" => "input").increment(42);
+            counter!(LLM_TOKENS, "kind" => "output").increment(7);
         });
 
         let snapshot = snapshotter.snapshot().into_vec();
-
-        let calls = find(&snapshot, EVOLVABLE_CALLS);
-        assert_eq!(calls.len(), 2);
-        let panicked_true = calls
-            .iter()
-            .find(|(key, _, _, _)| {
-                key.key()
-                    .labels()
-                    .any(|l| l.key() == "panicked" && l.value() == "true")
-            })
-            .expect("panicked=true series exists");
-        assert!(matches!(panicked_true.3, DebugValue::Counter(2)));
 
         let attempts = find(&snapshot, EVOLVE_ATTEMPTS);
         assert_eq!(attempts.len(), 1);
@@ -384,7 +350,15 @@ mod tests {
         assert!(matches!(active[0].3, DebugValue::Gauge(v) if v == 7.0));
 
         let tokens = find(&snapshot, LLM_TOKENS);
-        assert!(matches!(tokens[0].3, DebugValue::Counter(42)));
+        let input = tokens
+            .iter()
+            .find(|(key, _, _, _)| {
+                key.key()
+                    .labels()
+                    .any(|l| l.key() == "kind" && l.value() == "input")
+            })
+            .expect("kind=input series exists");
+        assert!(matches!(input.3, DebugValue::Counter(42)));
     }
 
     #[test]
