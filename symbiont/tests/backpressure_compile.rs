@@ -76,6 +76,31 @@ async fn compile_failure_feeds_compiler_diagnostics_back() {
          surfaces only errors, got: {retry_prompt}"
     );
 
+    // The failed attempt is recorded for the host to persist and analyze.
+    let failures = rt.take_evolve_failures();
+    assert_eq!(
+        failures.len(),
+        1,
+        "exactly the one compile failure should be recorded"
+    );
+    let failure = &failures[0];
+    assert_eq!(failure.attempt(), 1, "the first attempt failed");
+    assert_eq!(failure.kind(), "compile");
+    assert!(
+        failure.generated_code().contains("definitely not a usize"),
+        "the failed source must be recorded, got: {}",
+        failure.generated_code()
+    );
+    assert!(
+        failure.diagnostics().contains("mismatched types"),
+        "the rustc diagnostics must be recorded, got: {}",
+        failure.diagnostics()
+    );
+    assert!(
+        rt.take_evolve_failures().is_empty(),
+        "draining must clear the recorded failures"
+    );
+
     // The hot-swapped implementation is live.
     let mut counter = 0;
     bp_compile_step(&mut counter);

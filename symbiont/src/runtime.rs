@@ -47,6 +47,7 @@ use crate::{
     DylibConfig,
     EvolutionAgent,
     EvolvableDecl,
+    EvolveFailure,
     FullSource,
     Profile,
     compiler::compile_dylib,
@@ -142,6 +143,10 @@ pub struct Runtime {
     /// `evolvable! { ... }` and configured imports such as
     /// `use host::prelude::*;`.
     prelude: Vec<String>,
+    /// Failed attempts of the most recent [`Runtime::evolve`] call that fed
+    /// backpressure to the agent; drained by
+    /// [`Runtime::take_evolve_failures`].
+    evolve_failures: RwLock<Vec<EvolveFailure>>,
 }
 
 impl Runtime {
@@ -241,6 +246,7 @@ impl Runtime {
             decls,
             profile: config.profile(),
             prelude,
+            evolve_failures: RwLock::new(Vec::new()),
         };
 
         RUNTIME
@@ -472,6 +478,11 @@ impl Runtime {
     /// [`Self::MAX_TRANSIENT_RETRIES`] times, and do not count against the
     /// self-healing attempt budget.
     ///
+    /// Every failure that feeds backpressure to the agent is recorded and
+    /// can be drained afterwards with [`Runtime::take_evolve_failures`],
+    /// e.g. to persist the compiler diagnostics of failed attempts for
+    /// offline analysis.
+    ///
     /// # Contract
     ///
     /// All evolvable function calls must have returned before this is called.
@@ -500,6 +511,10 @@ impl Runtime {
             let mut history: Vec<Message> = Vec::new();
             let mut attempts: usize = 0;
             let mut transient_attempts: usize = 0;
+            self.evolve_failures
+                .write()
+                .map_err(|_| Error::MutexPoison)?
+                .clear();
 
             loop {
                 attempts += 1;
@@ -518,6 +533,16 @@ impl Runtime {
                             "kind" => failure_kind_of(&e)
                         )
                         .increment(1);
+                        // Record every failure that will feed backpressure to
+                        // the agent (including the one that exhausts the
+                        // retry budget) so hosts can drain and persist them
+                        // via `take_evolve_failures` for offline analysis.
+                        if let Some(failure) = EvolveFailure::from_error(&e, attempts) {
+                            self.evolve_failures
+                                .write()
+                                .map_err(|_| MutexPoison)?
+                                .push(failure);
+                        }
                         // A request that exceeds the model's context window can
                         // never succeed by resending: shrink it instead.
                         // Discard the accumulated retry history and restart
@@ -652,6 +677,27 @@ impl Runtime {
         // SAFETY: TAKE_PANIC_PTR is only ever set from `__symbiont_take_panic`
         // symbols resolved out of libraries the registry keeps loaded.
         unsafe { crate::revision::read_panic_buffer(ptr.cast_const()) }
+    }
+
+    /// Drain the failed attempts recorded during the most recent
+    /// [`Runtime::evolve`] call.
+    ///
+    /// Each entry is one failure that fed backpressure to the agent inside
+    /// the self-healing loop: missing code blocks, parse errors, exhausted
+    /// tool-call turn budgets, signature mismatches, and compilation
+    /// failures (with the full rustc diagnostics). Transient provider errors
+    /// and context-window resets are not recorded.
+    ///
+    /// The buffer is cleared at the start of every `evolve` call and by this
+    /// method, so drain it right after `evolve` returns — including on
+    /// `Err`, where the recorded failures explain what exhausted the retry
+    /// budget. Persist them (e.g. to a database) to analyze common failure
+    /// patterns of the generation agent offline.
+    pub fn take_evolve_failures(&self) -> Vec<EvolveFailure> {
+        self.evolve_failures
+            .write()
+            .map(|mut failures| std::mem::take(&mut *failures))
+            .unwrap_or_default()
     }
 
     /// Path to the temporary crate directory.
