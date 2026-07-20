@@ -13,6 +13,7 @@ mod dylib_config;
 mod dylib_dependency;
 mod error;
 mod evolution_agent;
+mod evolve_failure;
 mod inference;
 mod init_tracing;
 pub mod observability;
@@ -42,6 +43,7 @@ pub use evolution_agent::{
     AgentRun,
     EvolutionAgent,
 };
+pub use evolve_failure::EvolveFailure;
 pub use inference::{
     agent_builder,
     init_agent,
