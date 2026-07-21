@@ -69,6 +69,16 @@ pub(crate) fn wrap_bodies_in_catch_unwind(file: &mut syn::File) {
 #[allow(clippy::needless_raw_strings, reason = "contains #[unsafe(no_mangle)]")]
 pub(crate) const PANIC_PREAMBLE: &str = r#"
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Lock-free "a panic message is stored" flag.
+///
+/// `__symbiont_take_panic` reads it as a fast path so the hot no-panic case
+/// never touches the Mutex: hosts poll for panics after every evolvable
+/// call, potentially from many threads at once,
+/// and a shared Mutex lock per call serializes all of them on one cache
+/// line. A read-mostly atomic flag scales instead.
+static __SYMBIONT_PANICKED: AtomicBool = AtomicBool::new(false);
 
 /// Fixed-size buffer for the last panic message (512 bytes max).
 /// Layout: (panicked: bool, message: [u8; 512], length: usize)
@@ -81,6 +91,7 @@ fn __symbiont_store_panic(msg: &str) {
         guard.0 = true;
         guard.1[..len].copy_from_slice(&msg.as_bytes()[..len]);
         guard.2 = len;
+        __SYMBIONT_PANICKED.store(true, Ordering::Release);
     }
 }
 
@@ -98,6 +109,7 @@ fn __symbiont_store_panic_fallback(msg: &str) {
         guard.0 = true;
         guard.1[..len].copy_from_slice(&msg.as_bytes()[..len]);
         guard.2 = len;
+        __SYMBIONT_PANICKED.store(true, Ordering::Release);
     }
 }
 
@@ -134,11 +146,18 @@ fn __symbiont_install_panic_hook() {
 /// Copy the last panic message into `buf` and return its length.
 /// Returns 0 if no panic occurred. Clears the stored message.
 ///
+/// The no-panic case is a single atomic load; the Mutex is only locked when
+/// a panic message is actually stored, so concurrent hot-loop polling from
+/// many threads does not contend.
+///
 /// # Safety
 ///
 /// `buf` must point to at least `buf_len` writable bytes.
 #[unsafe(no_mangle)]
 pub unsafe fn __symbiont_take_panic(buf: *mut u8, buf_len: usize) -> usize {
+    if !__SYMBIONT_PANICKED.load(Ordering::Acquire) {
+        return 0;
+    }
     if let Ok(mut guard) = __SYMBIONT_PANIC.lock() {
         if !guard.0 {
             return 0;
@@ -147,6 +166,7 @@ pub unsafe fn __symbiont_take_panic(buf: *mut u8, buf_len: usize) -> usize {
         unsafe { core::ptr::copy_nonoverlapping(guard.1.as_ptr(), buf, len) };
         guard.0 = false;
         guard.2 = 0;
+        __SYMBIONT_PANICKED.store(false, Ordering::Release);
         len
     } else {
         0
