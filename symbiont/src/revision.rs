@@ -174,12 +174,17 @@ pub(crate) unsafe fn read_panic_buffer(ptr: *const ()) -> Option<String> {
         return None;
     }
     let take_panic: unsafe fn(*mut u8, usize) -> usize = unsafe { std::mem::transmute(ptr) };
-    let mut buf = [0u8; 512];
-    let len = unsafe { take_panic(buf.as_mut_ptr(), buf.len()) };
+    // Hosts poll this after every evolvable call; skip zeroing the buffer on
+    // the hot path — the dylib writes exactly `len` bytes before we read them.
+    let mut buf = std::mem::MaybeUninit::<[u8; 512]>::uninit();
+    let len = unsafe { take_panic(buf.as_mut_ptr().cast::<u8>(), 512) };
     if len == 0 {
         None
     } else {
-        Some(String::from_utf8_lossy(&buf[..len]).into_owned())
+        let len = len.min(512);
+        // SAFETY: the exported protocol wrote `len <= buf_len` bytes into `buf`.
+        let bytes = unsafe { std::slice::from_raw_parts(buf.as_ptr().cast::<u8>(), len) };
+        Some(String::from_utf8_lossy(bytes).into_owned())
     }
 }
 
