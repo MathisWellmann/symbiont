@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
+#[cfg(miri)]
+use std::time::Instant;
 use std::{
     path::Path,
     process::Command,
 };
 
+#[cfg(not(miri))]
 use minstant::Instant;
 use prettyplease::unparse;
 use tracing::info;

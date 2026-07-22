@@ -27,6 +27,10 @@ use symbiont::{
 const BASE_PROMPT: &str = "Implement the function. Code only.";
 
 #[tokio::test]
+#[cfg_attr(
+    miri,
+    ignore = "compiles and dlopens dylibs, which Miri does not support"
+)]
 #[tracing_test::traced_test]
 async fn transient_http_error_is_retried_with_unmodified_prompt() {
     symbiont::evolvable! {

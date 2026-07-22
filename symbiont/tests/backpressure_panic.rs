@@ -23,6 +23,10 @@ use symbiont::{
 const BASE_PROMPT: &str = "Implement the function. Code only.";
 
 #[tokio::test]
+#[cfg_attr(
+    miri,
+    ignore = "compiles and dlopens dylibs, which Miri does not support"
+)]
 #[tracing_test::traced_test]
 async fn panicking_evolved_code_is_caught_and_message_retrievable() {
     symbiont::evolvable! {

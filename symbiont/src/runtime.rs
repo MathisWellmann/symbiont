@@ -3,6 +3,8 @@
 //! managing the lifecycle of the temporary dylib crate: creation, compilation,
 //! loading, and hot-reloading.
 
+#[cfg(miri)]
+use std::time::Instant;
 use std::{
     collections::hash_map::DefaultHasher,
     fmt::Write,
@@ -33,6 +35,7 @@ use metrics::{
     gauge,
     histogram,
 };
+#[cfg(not(miri))]
 use minstant::Instant;
 use owo_colors::OwoColorize;
 use prettyplease::unparse;

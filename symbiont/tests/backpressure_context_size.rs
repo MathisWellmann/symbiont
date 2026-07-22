@@ -39,6 +39,10 @@ fn context_size_error() -> PromptError {
 }
 
 #[tokio::test]
+#[cfg_attr(
+    miri,
+    ignore = "compiles and dlopens dylibs, which Miri does not support"
+)]
 #[tracing_test::traced_test]
 async fn context_size_overflow_restarts_from_the_base_prompt() {
     symbiont::evolvable! {

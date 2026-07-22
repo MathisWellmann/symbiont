@@ -22,6 +22,10 @@ use symbiont::{
 const BASE_PROMPT: &str = "Implement the function. Code only.";
 
 #[tokio::test]
+#[cfg_attr(
+    miri,
+    ignore = "compiles and dlopens dylibs, which Miri does not support"
+)]
 #[tracing_test::traced_test]
 async fn signature_modifier_is_named_and_recovered_from() {
     symbiont::evolvable! {

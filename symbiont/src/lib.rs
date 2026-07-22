@@ -3,6 +3,11 @@
     html_logo_url = "https://raw.githubusercontent.com/MathisWellmann/symbiont/main/assets/logo.svg"
 )]
 #![doc = include_str!("../README.md")]
+// Under Miri the timing code falls back to `std::time::Instant`, because
+// minstant's `#[ctor]` probes the TSC via `rdtsc`, which Miri cannot
+// interpret. Leaving the crate unused (and thus unlinked) keeps its ctor
+// out of the interpreted binary.
+#![cfg_attr(miri, allow(unused_crate_dependencies))]
 
 mod compiler;
 #[cfg(debug_assertions)]

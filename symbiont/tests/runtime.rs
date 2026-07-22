@@ -21,6 +21,10 @@ use symbiont::{
 };
 
 #[tokio::test]
+#[cfg_attr(
+    miri,
+    ignore = "compiles and dlopens dylibs, which Miri does not support"
+)]
 #[tracing_test::traced_test]
 async fn runtime() {
     symbiont::evolvable! {

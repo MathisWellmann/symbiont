@@ -25,6 +25,10 @@ use symbiont::{
 const BASE_PROMPT: &str = "Implement the function. Code only.";
 
 #[tokio::test]
+#[cfg_attr(
+    miri,
+    ignore = "compiles and dlopens dylibs, which Miri does not support"
+)]
 #[tracing_test::traced_test]
 async fn retry_budget_is_bounded_and_nudges_do_not_accumulate() {
     symbiont::evolvable! {

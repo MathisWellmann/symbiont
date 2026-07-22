@@ -21,6 +21,10 @@ use symbiont::{
 /// registered as a revision, its dylib stays loaded, and any revision can be
 /// re-activated later without parsing or compiling anything.
 #[tokio::test]
+#[cfg_attr(
+    miri,
+    ignore = "compiles and dlopens dylibs, which Miri does not support"
+)]
 #[tracing_test::traced_test]
 #[expect(
     clippy::too_many_lines,
