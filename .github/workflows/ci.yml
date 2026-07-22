@@ -57,6 +57,24 @@ jobs:
         run: nix develop --command taplo fmt --check
       - name: cargo-doc
         run: nix develop --command cargo doc
+  miri:
+    # Target self-hosted runner by label
+    runs-on: [nixos]
+    needs: [rust-checks]
+    # SECURITY: Require manual approval for external PRs
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    steps:
+      - name: checkout-code
+        uses: actions/checkout@v4
+      - name: cargo-miri
+        # Detect undefined behaviour in the unsafe code (panic-buffer
+        # protocol, fn-pointer transmutes). Tests that compile or dlopen
+        # dylibs are `#[cfg_attr(miri, ignore)]`d since Miri cannot spawn
+        # processes or load libraries; the dylib preamble itself is covered
+        # by compiling it into the test binary (see symbiont/src/unwind.rs).
+        env:
+          MIRIFLAGS: "-Zmiri-disable-isolation"
+        run: nix develop --command bash -c "cargo miri test -p symbiont --lib"
   integration-tests:
     # Target self-hosted runner by label
     runs-on: [nixos]
