@@ -12,9 +12,12 @@ dynamic loading, this introduces strict limitations.
 
 Any `static` variable inside the reloaded dylib is re-initialized
 on every reload. If the evolvable function relies on persistent
-state across calls, that state is lost when the function evolves.
-The harness forbids this by design: all state is owned by the
-host binary and passed into evolvable functions via arguments.
+state across calls, that state is lost when the function evolves
+— and every retained revision has its own instance. The harness
+forbids this by design: all state is owned by the host binary and
+passed into evolvable functions via arguments. Validation
+enforces the rule by rejecting `static` items and `thread_local!`
+in LLM-generated code before compilation.
 
 ## Dangling pointers across reloads
 
@@ -154,9 +157,21 @@ the AST level before compiling — `unsafe` blocks, `unsafe fn`,
 `unsafe impl`/`trait`, `extern` blocks, unsafe attributes (except
 the harness-managed `#[unsafe(no_mangle)]` export), and `unsafe`
 tokens smuggled through macros. The offending construct is fed
-back to the agent as backpressure. Note this bounds the UB
-surface; it is *not* a security sandbox — safe Rust running in
-the host process can still perform I/O or spawn processes.
+back to the agent as backpressure.
+
+Beyond `unsafe`, validation also rejects constructs that break the
+harness's contracts or reach for process capabilities: `static`
+items and `thread_local!` (dylib state resets on reload),
+`macro_rules!` definitions, allocator/panic-handler/entry
+overrides, tampering with the panic hook, and — by default —
+references to `std::process`, `std::thread`, `std::fs`,
+`std::net`, `std::env`, `std::os`, and `std::io::stdin` (matched
+through `use` aliases and inside macro tokens; glob imports of
+denied modules are rejected outright). Hosts widen or narrow the
+capability surface with `DylibConfig::with_allowed_path` /
+`with_denied_path`. Note this bounds what evolvable code can
+*name*; it is *not* a security sandbox — safe Rust reached through
+host-provided APIs still runs with the host's privileges.
 
 The pointer-swapping dispatch, the panic-buffer protocol, and the
 fn-pointer transmutes are all `unsafe` code. The test suite runs

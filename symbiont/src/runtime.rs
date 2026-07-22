@@ -130,6 +130,9 @@ pub struct Runtime {
     so_path: PathBuf,
     /// Function signatures for validation of LLM-generated code.
     fn_sigs: Vec<String>,
+    /// Path prefixes denied in LLM-generated code, from
+    /// [`DylibConfig::denied_paths`].
+    denied_paths: Vec<String>,
     /// Every successfully loaded dylib revision, retained for the lifetime of
     /// the process (keep-all). The index into this vec is the revision id.
     /// Entries are reference-counted so [`crate::RevisionFn`] handles can pin
@@ -244,6 +247,7 @@ impl Runtime {
             crate_dir,
             so_path,
             fn_sigs,
+            denied_paths: config.denied_paths().clone(),
             revisions: RwLock::new(vec![Arc::new(initial)]),
             active: AtomicU64::new(Revision::INITIAL.as_u64()),
             decls,
@@ -333,7 +337,7 @@ impl Runtime {
         let mut ast = parse_rust_code(&llm_response)?;
 
         // Validate signatures match declarations
-        validate_generated_ast(&mut ast, &self.fn_sigs)?;
+        validate_generated_ast(&mut ast, &self.fn_sigs, &self.denied_paths)?;
         histogram!(
             PIPELINE_STAGE_DURATION,
             "stage" => stage::PARSE_VALIDATE
@@ -649,6 +653,11 @@ impl Runtime {
                             Rewrite it in safe Rust only: no `unsafe` blocks, `unsafe fn`, `unsafe impl`, `unsafe trait`, \
                             `extern` blocks, unsafe attributes, or `unsafe` tokens inside macros. \
                             Keep the logic and the function signatures unchanged. Full code: ```{}```",
+                            code.blue()
+                        ).expect("Can write to prompt"),
+                        ForbiddenConstruct { code, construct, reason } => write!(prompt,
+                            "Your generated code contains {construct}, which is forbidden in evolvable code: {reason}. \
+                            Rewrite the code without it, keeping the logic and the function signatures unchanged. Full code: ```{}```",
                             code.blue()
                         ).expect("Can write to prompt"),
                         CompilationFailed{code, err} => write!(prompt,

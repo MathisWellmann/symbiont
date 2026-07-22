@@ -37,9 +37,44 @@ pub struct DylibConfig {
     /// `[patch]` sections added to the generated dylib's `Cargo.toml`.
     #[getset(get = "pub")]
     patches: Vec<DylibPatch>,
+
+    /// Path prefixes (e.g. `std::fs`) that LLM-generated code must not
+    /// reference. Enforced on the parsed AST before compilation; violations
+    /// are fed back to the agent as backpressure.
+    ///
+    /// Defaults to [`DylibConfig::default_denied_paths`]. Hosts widen or
+    /// narrow the capability surface with [`DylibConfig::with_denied_path`]
+    /// and [`DylibConfig::with_allowed_path`].
+    #[getset(get = "pub")]
+    denied_paths: Vec<String>,
 }
 
 impl DylibConfig {
+    /// The path prefixes denied in LLM-generated code by default:
+    /// process control and spawning (`std::process` — `exit`/`abort` kill
+    /// the host instantly, bypassing panic capture), threads
+    /// (`std::thread` — spawned threads escape the feedback-loop contract),
+    /// filesystem and network I/O (`std::fs`, `std::net`), host environment
+    /// (`std::env`), OS extension traits (`std::os`), and blocking stdin
+    /// (`std::io::stdin`).
+    ///
+    /// This bounds what evolvable code can *name*; it is a guidance
+    /// mechanism for the evolution loop, not a security sandbox.
+    #[must_use]
+    pub fn default_denied_paths() -> Vec<String> {
+        [
+            "std::process",
+            "std::thread",
+            "std::fs",
+            "std::net",
+            "std::env",
+            "std::os",
+            "std::io::stdin",
+        ]
+        .map(String::from)
+        .to_vec()
+    }
+
     /// Create a config for a Cargo package's library target.
     ///
     /// The dylib gets a path dependency on `package_dir`, renamed to the crate
@@ -62,6 +97,7 @@ impl DylibConfig {
                 package_dir,
             )],
             patches: Vec::new(),
+            denied_paths: Self::default_denied_paths(),
         }
     }
 
@@ -73,6 +109,7 @@ impl DylibConfig {
             prelude: Vec::new(),
             dependencies: Vec::new(),
             patches: Vec::new(),
+            denied_paths: Self::default_denied_paths(),
         }
     }
 
@@ -98,6 +135,26 @@ impl DylibConfig {
     #[must_use]
     pub fn with_patch(mut self, patch: DylibPatch) -> Self {
         self.patches.push(patch);
+        self
+    }
+
+    /// Deny an additional path prefix in LLM-generated code, e.g.
+    /// `host::dangerous` or `std::collections::BTreeMap`.
+    #[must_use]
+    pub fn with_denied_path(mut self, path: impl Into<String>) -> Self {
+        self.denied_paths.push(path.into());
+        self
+    }
+
+    /// Allow a path prefix that is denied by default, e.g. `std::fs` for a
+    /// host whose evolvable functions legitimately operate on files.
+    ///
+    /// Removes every denied entry equal to `path` or nested inside it.
+    #[must_use]
+    pub fn with_allowed_path(mut self, path: &str) -> Self {
+        let nested = format!("{path}::");
+        self.denied_paths
+            .retain(|denied| denied != path && !denied.starts_with(&nested));
         self
     }
 }
