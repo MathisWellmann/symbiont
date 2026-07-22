@@ -45,6 +45,8 @@ Do not emit `main`, tests, Cargo metadata, modules, or unrelated items unless th
 
 Do not add `#[no_mangle]`, `#[unsafe(no_mangle)]`, or `extern` attributes. The harness handles dynamic-library exports.
 
+Unsafe code is forbidden and rejected before compilation: never use `unsafe` blocks, `unsafe fn`, `unsafe impl`, `unsafe trait`, `extern` blocks, or unsafe attributes.
+
 # Compilation environment
 
 The generated crate uses Rust edition 2024.

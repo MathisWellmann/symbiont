@@ -6,6 +6,10 @@ use syn::{
     Signature,
     Type,
     Visibility,
+    visit::{
+        self,
+        Visit,
+    },
 };
 use tracing::debug;
 
@@ -19,6 +23,7 @@ use crate::{
 };
 
 /// Validate that a parsed AST enforces typed generation:
+/// - No `unsafe` code anywhere (see [`reject_unsafe_code`])
 /// - All functions are `pub`
 /// - All functions have `#[unsafe(no_mangle)]`)
 /// - All function signatures match the expected signatures from lib.rs.
@@ -30,6 +35,8 @@ use crate::{
 ///
 /// Returns `Err` with a descriptive message if any check fails.
 pub(crate) fn validate_generated_ast(file: &mut syn::File, expected_sigs: &[String]) -> Result<()> {
+    reject_unsafe_code(file)?;
+
     if expected_sigs.is_empty() {
         return Ok(());
     }
@@ -92,6 +99,119 @@ pub(crate) fn validate_generated_ast(file: &mut syn::File, expected_sigs: &[Stri
     }
 
     Ok(())
+}
+
+/// Reject any `unsafe` construct in LLM-generated code.
+///
+/// Enforced on the parsed AST *before* compilation: the rejection is
+/// cheap (no cargo round-trip), pinpoints the offending construct for the
+/// backpressure prompt, and cannot be evaded with `#[allow(unsafe_code)]`
+/// the way a compiler lint could. A crate-level `#![forbid(unsafe_code)]`
+/// is not an option anyway: the injected panic preamble is legitimately
+/// unsafe, and the `#[unsafe(no_mangle)]` export attribute on every
+/// evolvable function trips the `unsafe_code` lint in edition 2024.
+///
+/// Rejected constructs:
+/// - `unsafe { .. }` blocks
+/// - `unsafe fn` (free, impl, trait, and foreign)
+/// - `unsafe impl` and `unsafe trait`
+/// - `extern` blocks
+/// - unsafe attributes such as `#[unsafe(export_name = ..)]` — except the
+///   exact `#[unsafe(no_mangle)]` export attribute the harness itself
+///   manages
+/// - an `unsafe` token anywhere inside a macro definition or invocation,
+///   which would otherwise smuggle unsafe code past the AST scan
+pub(crate) fn reject_unsafe_code(file: &syn::File) -> Result<()> {
+    let mut scan = UnsafeScan { finding: None };
+    scan.visit_file(file);
+    match scan.finding {
+        Some(construct) => Err(Error::UnsafeCode {
+            code: unparse(file),
+            construct,
+        }),
+        None => Ok(()),
+    }
+}
+
+/// AST visitor recording the first forbidden `unsafe` construct.
+struct UnsafeScan {
+    finding: Option<String>,
+}
+
+impl UnsafeScan {
+    fn record(&mut self, what: &str, tokens: &dyn ToTokens) {
+        if self.finding.is_none() {
+            let mut snippet = tokens.to_token_stream().to_string();
+            if snippet.len() > 120 {
+                let cut = (0..=120)
+                    .rev()
+                    .find(|i| snippet.is_char_boundary(*i))
+                    .unwrap_or(0);
+                snippet.truncate(cut);
+                snippet.push('…');
+            }
+            self.finding = Some(format!("{what}: `{snippet}`"));
+        }
+    }
+}
+
+/// `true` if any token (recursively) is the `unsafe` keyword.
+fn tokens_contain_unsafe(tokens: proc_macro2::TokenStream) -> bool {
+    tokens.into_iter().any(|tt| match tt {
+        proc_macro2::TokenTree::Ident(ident) => ident == "unsafe",
+        proc_macro2::TokenTree::Group(group) => tokens_contain_unsafe(group.stream()),
+        _ => false,
+    })
+}
+
+impl<'ast> Visit<'ast> for UnsafeScan {
+    fn visit_expr_unsafe(&mut self, node: &'ast syn::ExprUnsafe) {
+        self.record("an `unsafe` block", node);
+    }
+
+    // Covers free functions, impl methods, trait methods, and foreign fns.
+    fn visit_signature(&mut self, node: &'ast syn::Signature) {
+        if node.unsafety.is_some() {
+            self.record("an `unsafe fn`", node);
+        }
+        visit::visit_signature(self, node);
+    }
+
+    fn visit_item_impl(&mut self, node: &'ast syn::ItemImpl) {
+        if node.unsafety.is_some() {
+            self.record("an `unsafe impl`", node);
+        }
+        visit::visit_item_impl(self, node);
+    }
+
+    fn visit_item_trait(&mut self, node: &'ast syn::ItemTrait) {
+        if node.unsafety.is_some() {
+            self.record("an `unsafe trait`", node);
+        }
+        visit::visit_item_trait(self, node);
+    }
+
+    fn visit_item_foreign_mod(&mut self, node: &'ast syn::ItemForeignMod) {
+        self.record("an `extern` block", node);
+    }
+
+    fn visit_attribute(&mut self, node: &'ast syn::Attribute) {
+        // The exact export attribute the harness manages is the only
+        // permitted unsafe attribute; see `crate::utils::is_no_mangle`.
+        let is_no_mangle_export = node.path().is_ident("unsafe")
+            && matches!(&node.meta, syn::Meta::List(list) if list.tokens.to_string() == "no_mangle");
+        if node.path().is_ident("unsafe") && !is_no_mangle_export {
+            self.record("an unsafe attribute", node);
+        }
+        visit::visit_attribute(self, node);
+    }
+
+    fn visit_macro(&mut self, node: &'ast syn::Macro) {
+        if tokens_contain_unsafe(node.tokens.clone()) {
+            self.record("an `unsafe` token inside a macro", node);
+        }
+        visit::visit_macro(self, node);
+    }
 }
 
 /// Extract the function name from a signature rendered by [`format_signature`],
@@ -271,16 +391,30 @@ pub fn step(_counter: &mut usize) {
 
     #[test]
     fn abi_incompatible_modifiers_are_reported() {
+        // `unsafe` modifiers are intercepted by the unsafe scan first.
+        for input in [
+            "pub unsafe fn step(counter: &mut usize) {}",
+            "pub unsafe extern \"C\" fn step(counter: &mut usize, ...) {}",
+        ] {
+            let mut file = syn::parse_str(input).expect("can parse");
+            let expected = vec!["fn step(counter: &mut usize)".to_string()];
+            let err = validate_generated_ast(&mut file, &expected)
+                .expect_err("unsafe signature must be rejected");
+            assert!(
+                matches!(
+                    err,
+                    Error::UnsafeCode { ref construct, .. } if construct.contains("an `unsafe fn`")
+                ),
+                "feedback must identify the unsafe fn in {input}: {err}"
+            );
+        }
+
+        // Safe but ABI-incompatible modifiers surface as signature mismatches.
         for (input, modifier) in [
             ("pub async fn step(counter: &mut usize) {}", "async"),
-            ("pub unsafe fn step(counter: &mut usize) {}", "unsafe"),
             (
                 "pub extern \"C\" fn step(counter: &mut usize) {}",
                 "extern \"C\"",
-            ),
-            (
-                "pub unsafe extern \"C\" fn step(counter: &mut usize, ...) {}",
-                "...",
             ),
         ] {
             let mut file = syn::parse_str(input).expect("can parse");
@@ -384,5 +518,93 @@ pub fn step(counter: &mut usize) -> usize {
         let mut file = parse_rust_code(input).expect("can parse");
         let expected = vec!["fn step(counter: &mut usize) -> usize".to_string()];
         validate_generated_ast(&mut file, &expected).expect("validation with return type passed");
+    }
+
+    /// Assert `reject_unsafe_code` rejects `code` and names `construct`.
+    fn assert_rejects_unsafe(code: &str, construct: &str) {
+        let file: syn::File = syn::parse_str(code).expect("can parse");
+        let err = reject_unsafe_code(&file).expect_err("unsafe construct must be rejected");
+        match err {
+            Error::UnsafeCode {
+                construct: found, ..
+            } => {
+                assert!(
+                    found.contains(construct),
+                    "expected construct `{construct}`, got `{found}`"
+                );
+            }
+            other => panic!("expected Error::UnsafeCode, got {other}"),
+        }
+    }
+
+    #[test]
+    fn unsafe_block_is_rejected() {
+        assert_rejects_unsafe(
+            "pub fn step(counter: &mut usize) { unsafe { *counter += 1; } }",
+            "an `unsafe` block",
+        );
+    }
+
+    #[test]
+    fn unsafe_fn_is_rejected() {
+        assert_rejects_unsafe("pub unsafe fn helper(ptr: *mut usize) {}", "an `unsafe fn`");
+        assert_rejects_unsafe(
+            "struct S; impl S { unsafe fn helper(&self) {} }",
+            "an `unsafe fn`",
+        );
+    }
+
+    #[test]
+    fn unsafe_impl_and_trait_are_rejected() {
+        assert_rejects_unsafe("struct S; unsafe impl Send for S {}", "an `unsafe impl`");
+        assert_rejects_unsafe("unsafe trait Scary {}", "an `unsafe trait`");
+    }
+
+    #[test]
+    fn extern_block_is_rejected() {
+        assert_rejects_unsafe(
+            "unsafe extern \"C\" { fn malloc(size: usize) -> *mut u8; }",
+            "an `extern` block",
+        );
+    }
+
+    #[test]
+    fn unsafe_attribute_is_rejected_but_no_mangle_is_allowed() {
+        assert_rejects_unsafe(
+            "#[unsafe(export_name = \"evil\")] pub fn step(counter: &mut usize) {}",
+            "an unsafe attribute",
+        );
+
+        let file: syn::File = syn::parse_str(
+            "#[unsafe(no_mangle)] pub fn step(counter: &mut usize) { *counter += 1; }",
+        )
+        .expect("can parse");
+        reject_unsafe_code(&file).expect("#[unsafe(no_mangle)] is harness-managed and allowed");
+    }
+
+    #[test]
+    fn unsafe_smuggled_through_macro_is_rejected() {
+        assert_rejects_unsafe(
+            "macro_rules! sneaky { () => { unsafe { core::hint::unreachable_unchecked() } }; }\n\
+             pub fn step(counter: &mut usize) { sneaky!(); }",
+            "an `unsafe` token inside a macro",
+        );
+        assert_rejects_unsafe(
+            "pub fn step(counter: &mut usize) { let _ = stringify!(unsafe); }",
+            "an `unsafe` token inside a macro",
+        );
+    }
+
+    #[test]
+    fn safe_code_passes_unsafe_scan() {
+        let file: syn::File = syn::parse_str(
+            "pub fn step(counter: &mut usize) {\n\
+                 let values = vec![1usize, 2, 3];\n\
+                 *counter += values.iter().sum::<usize>();\n\
+                 println!(\"counter is {counter}\");\n\
+             }",
+        )
+        .expect("can parse");
+        reject_unsafe_code(&file).expect("safe code must pass");
     }
 }

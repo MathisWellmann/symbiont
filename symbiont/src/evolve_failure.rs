@@ -16,7 +16,8 @@ use crate::{
 ///
 /// Captures exactly the failures that are rendered back into the retry
 /// prompt as backpressure: missing code blocks, parse errors, exhausted
-/// tool-call turn budgets, signature mismatches, and compilation failures.
+/// tool-call turn budgets, signature mismatches, forbidden unsafe code,
+/// and compilation failures.
 /// Hosts can drain these via [`crate::Runtime::take_evolve_failures`] and
 /// persist them for offline analysis of common failure patterns, e.g. to
 /// tune prompts or the documented API surface.
@@ -27,7 +28,7 @@ pub struct EvolveFailure {
     attempt: usize,
     /// Failure kind label; the same values as the `kind` label of
     /// [`crate::observability::EVOLVE_FAILURES`]: one of `no_rust_code`,
-    /// `parse`, `max_turns`, `signature` or `compile`.
+    /// `parse`, `max_turns`, `signature`, `unsafe` or `compile`.
     #[getset(get_copy = "pub")]
     kind: &'static str,
     /// The generated source that failed. Empty when the agent produced no
@@ -36,7 +37,8 @@ pub struct EvolveFailure {
     generated_code: String,
     /// The diagnostics fed back to the agent: rustc stderr for `compile`,
     /// the parse error for `parse`, the mismatch description for
-    /// `signature`, and the corrective nudge otherwise.
+    /// `signature`, the offending construct for `unsafe`, and the
+    /// corrective nudge otherwise.
     #[getset(get = "pub")]
     diagnostics: String,
 }
@@ -60,6 +62,7 @@ impl EvolveFailure {
                 code.clone(),
                 format!("signature mismatch in `{got}`; expected `{expected}`"),
             ),
+            Error::UnsafeCode { code, construct } => (code.clone(), construct.clone()),
             Error::CompilationFailed { code, err } => (code.clone(), err.clone()),
             _ => return None,
         };
@@ -107,6 +110,23 @@ mod tests {
 
         assert_eq!(failure.kind(), "signature");
         assert!(failure.diagnostics().contains("fn g(x: u32)"));
+    }
+
+    #[test]
+    fn unsafe_code_is_recorded() {
+        let failure = EvolveFailure::from_error(
+            &Error::UnsafeCode {
+                code: "pub fn f() { unsafe {} }".to_string(),
+                construct: "an `unsafe` block: `unsafe { }`".to_string(),
+            },
+            2,
+        )
+        .expect("unsafe code feeds backpressure");
+
+        assert_eq!(failure.attempt(), 2);
+        assert_eq!(failure.kind(), "unsafe");
+        assert_eq!(failure.generated_code(), "pub fn f() { unsafe {} }");
+        assert!(failure.diagnostics().contains("an `unsafe` block"));
     }
 
     #[test]

@@ -644,6 +644,13 @@ impl Runtime {
                         } => write!(prompt,
                             "Signature mismatch in {got}. Expected `{expected}`. Fix ONLY this function's signature (argument types and return type must match exactly; argument names may differ). Full code: ```{code}```",
                         ).expect("Can write to prompt"),
+                        UnsafeCode { code, construct } => write!(prompt,
+                            "Your generated code contains {construct}, but unsafe code is forbidden in evolvable code. \
+                            Rewrite it in safe Rust only: no `unsafe` blocks, `unsafe fn`, `unsafe impl`, `unsafe trait`, \
+                            `extern` blocks, unsafe attributes, or `unsafe` tokens inside macros. \
+                            Keep the logic and the function signatures unchanged. Full code: ```{}```",
+                            code.blue()
+                        ).expect("Can write to prompt"),
                         CompilationFailed{code, err} => write!(prompt,
                             "Your generated code ```{}``` failed to compile. Compiler output:\n```\n{}\n```\n\
                             Fix the compilation errors while preserving the existing logic and behaviour. \
