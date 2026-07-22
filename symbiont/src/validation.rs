@@ -342,7 +342,7 @@ impl<'ast> Visit<'ast> for PolicyScan<'_> {
     }
 
     // Covers free functions, impl methods, trait methods, and foreign fns.
-    fn visit_signature(&mut self, node: &'ast syn::Signature) {
+    fn visit_signature(&mut self, node: &'ast Signature) {
         if node.unsafety.is_some() {
             self.record_unsafe("an `unsafe fn`", node);
         }
