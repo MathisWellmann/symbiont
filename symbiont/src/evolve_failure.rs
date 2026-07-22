@@ -16,8 +16,8 @@ use crate::{
 ///
 /// Captures exactly the failures that are rendered back into the retry
 /// prompt as backpressure: missing code blocks, parse errors, exhausted
-/// tool-call turn budgets, signature mismatches, forbidden unsafe code,
-/// and compilation failures.
+/// tool-call turn budgets, signature mismatches, forbidden unsafe code or
+/// constructs, and compilation failures.
 /// Hosts can drain these via [`crate::Runtime::take_evolve_failures`] and
 /// persist them for offline analysis of common failure patterns, e.g. to
 /// tune prompts or the documented API surface.
@@ -28,7 +28,8 @@ pub struct EvolveFailure {
     attempt: usize,
     /// Failure kind label; the same values as the `kind` label of
     /// [`crate::observability::EVOLVE_FAILURES`]: one of `no_rust_code`,
-    /// `parse`, `max_turns`, `signature`, `unsafe` or `compile`.
+    /// `parse`, `max_turns`, `signature`, `unsafe`, `forbidden` or
+    /// `compile`.
     #[getset(get_copy = "pub")]
     kind: &'static str,
     /// The generated source that failed. Empty when the agent produced no
@@ -37,8 +38,8 @@ pub struct EvolveFailure {
     generated_code: String,
     /// The diagnostics fed back to the agent: rustc stderr for `compile`,
     /// the parse error for `parse`, the mismatch description for
-    /// `signature`, the offending construct for `unsafe`, and the
-    /// corrective nudge otherwise.
+    /// `signature`, the offending construct for `unsafe` and `forbidden`,
+    /// and the corrective nudge otherwise.
     #[getset(get = "pub")]
     diagnostics: String,
 }
@@ -63,6 +64,11 @@ impl EvolveFailure {
                 format!("signature mismatch in `{got}`; expected `{expected}`"),
             ),
             Error::UnsafeCode { code, construct } => (code.clone(), construct.clone()),
+            Error::ForbiddenConstruct {
+                code,
+                construct,
+                reason,
+            } => (code.clone(), format!("{construct} ({reason})")),
             Error::CompilationFailed { code, err } => (code.clone(), err.clone()),
             _ => return None,
         };
@@ -127,6 +133,23 @@ mod tests {
         assert_eq!(failure.kind(), "unsafe");
         assert_eq!(failure.generated_code(), "pub fn f() { unsafe {} }");
         assert!(failure.diagnostics().contains("an `unsafe` block"));
+    }
+
+    #[test]
+    fn forbidden_construct_is_recorded() {
+        let failure = EvolveFailure::from_error(
+            &Error::ForbiddenConstruct {
+                code: "static X: usize = 0;".to_string(),
+                construct: "a `static` item: `static X : usize = 0 ;`".to_string(),
+                reason: "static state silently resets on every evolution".to_string(),
+            },
+            1,
+        )
+        .expect("forbidden constructs feed backpressure");
+
+        assert_eq!(failure.kind(), "forbidden");
+        assert!(failure.diagnostics().contains("a `static` item"));
+        assert!(failure.diagnostics().contains("resets on every evolution"));
     }
 
     #[test]

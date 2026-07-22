@@ -47,6 +47,8 @@ Do not add `#[no_mangle]`, `#[unsafe(no_mangle)]`, or `extern` attributes. The h
 
 Unsafe code is forbidden and rejected before compilation: never use `unsafe` blocks, `unsafe fn`, `unsafe impl`, `unsafe trait`, `extern` blocks, or unsafe attributes.
 
+Also rejected before compilation: `static` items and `thread_local!` (dylib state resets on every reload — keep state host-owned and passed via arguments; use `const` for constants), `macro_rules!` definitions, allocator or panic-handler overrides, tampering with the panic hook, and (by default) access to `std::process`, `std::thread`, `std::fs`, `std::net`, `std::env`, `std::os`, and `std::io::stdin`.
+
 # Compilation environment
 
 The generated crate uses Rust edition 2024.

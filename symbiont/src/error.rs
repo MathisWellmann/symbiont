@@ -41,6 +41,13 @@ pub enum Error {
     #[error("Unsafe code is forbidden in evolvable code: found {construct}")]
     UnsafeCode { code: String, construct: String },
 
+    #[error("Forbidden construct in evolvable code: found {construct} ({reason})")]
+    ForbiddenConstruct {
+        code: String,
+        construct: String,
+        reason: String,
+    },
+
     #[error("Compilation failed:\n{err}")]
     CompilationFailed { code: String, err: String },
 
