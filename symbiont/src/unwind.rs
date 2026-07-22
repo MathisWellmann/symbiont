@@ -66,113 +66,11 @@ pub(crate) fn wrap_bodies_in_catch_unwind(file: &mut syn::File) {
 /// Provides a fixed-size panic buffer and an exported `__symbiont_take_panic`
 /// symbol so the host can retrieve panic messages without heap allocation
 /// crossing the dylib boundary.
-#[allow(clippy::needless_raw_strings, reason = "contains #[unsafe(no_mangle)]")]
-pub(crate) const PANIC_PREAMBLE: &str = r#"
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
-
-/// Lock-free "a panic message is stored" flag.
 ///
-/// `__symbiont_take_panic` reads it as a fast path so the hot no-panic case
-/// never touches the Mutex: hosts poll for panics after every evolvable
-/// call, potentially from many threads at once,
-/// and a shared Mutex lock per call serializes all of them on one cache
-/// line. A read-mostly atomic flag scales instead.
-static __SYMBIONT_PANICKED: AtomicBool = AtomicBool::new(false);
-
-/// Fixed-size buffer for the last panic message (512 bytes max).
-/// Layout: (panicked: bool, message: [u8; 512], length: usize)
-static __SYMBIONT_PANIC: Mutex<(bool, [u8; 512], usize)> =
-    Mutex::new((false, [0u8; 512], 0));
-
-fn __symbiont_store_panic(msg: &str) {
-    if let Ok(mut guard) = __SYMBIONT_PANIC.lock() {
-        let len = msg.len().min(512);
-        guard.0 = true;
-        guard.1[..len].copy_from_slice(&msg.as_bytes()[..len]);
-        guard.2 = len;
-        __SYMBIONT_PANICKED.store(true, Ordering::Release);
-    }
-}
-
-/// Store `msg` only when no message is currently stored.
-///
-/// Fallback used by the `catch_unwind` wrapper: the panic hook has already
-/// recorded the message together with its source location, which the
-/// location-less `catch_unwind` payload must not overwrite.
-fn __symbiont_store_panic_fallback(msg: &str) {
-    if let Ok(mut guard) = __SYMBIONT_PANIC.lock() {
-        if guard.0 {
-            return;
-        }
-        let len = msg.len().min(512);
-        guard.0 = true;
-        guard.1[..len].copy_from_slice(&msg.as_bytes()[..len]);
-        guard.2 = len;
-        __SYMBIONT_PANICKED.store(true, Ordering::Release);
-    }
-}
-
-/// Ensures the location-capturing panic hook is installed exactly once.
-static __SYMBIONT_HOOK: std::sync::Once = std::sync::Once::new();
-
-/// Install a panic hook that records the panic message together with its
-/// source location, then delegates to the previously installed hook.
-///
-/// The hook runs at panic time, before unwinding reaches `catch_unwind`;
-/// it is the only point where `std::panic::Location` is available. The
-/// dylib links its own copy of `std`, so this hook only observes panics
-/// raised by code compiled into this dylib, never panics of the host.
-fn __symbiont_install_panic_hook() {
-    __SYMBIONT_HOOK.call_once(|| {
-        let previous = std::panic::take_hook();
-        std::panic::set_hook(Box::new(move |info| {
-            let msg = if let Some(s) = info.payload().downcast_ref::<&str>() {
-                *s
-            } else if let Some(s) = info.payload().downcast_ref::<String>() {
-                s.as_str()
-            } else {
-                "unknown panic"
-            };
-            match info.location() {
-                Some(location) => __symbiont_store_panic(&format!("{msg} at {location}")),
-                None => __symbiont_store_panic(msg),
-            }
-            previous(info);
-        }));
-    });
-}
-
-/// Copy the last panic message into `buf` and return its length.
-/// Returns 0 if no panic occurred. Clears the stored message.
-///
-/// The no-panic case is a single atomic load; the Mutex is only locked when
-/// a panic message is actually stored, so concurrent hot-loop polling from
-/// many threads does not contend.
-///
-/// # Safety
-///
-/// `buf` must point to at least `buf_len` writable bytes.
-#[unsafe(no_mangle)]
-pub unsafe fn __symbiont_take_panic(buf: *mut u8, buf_len: usize) -> usize {
-    if !__SYMBIONT_PANICKED.load(Ordering::Acquire) {
-        return 0;
-    }
-    if let Ok(mut guard) = __SYMBIONT_PANIC.lock() {
-        if !guard.0 {
-            return 0;
-        }
-        let len = guard.2.min(buf_len);
-        unsafe { core::ptr::copy_nonoverlapping(guard.1.as_ptr(), buf, len) };
-        guard.0 = false;
-        guard.2 = 0;
-        __SYMBIONT_PANICKED.store(false, Ordering::Release);
-        len
-    } else {
-        0
-    }
-}
-"#;
+/// The source lives in `panic_preamble.rs` (as a file rather than a string
+/// literal) so the tests below can `include!` the exact same code and run it
+/// under Miri to check the unsafe buffer protocol for undefined behaviour.
+pub(crate) const PANIC_PREAMBLE: &str = include_str!("panic_preamble.rs");
 
 #[cfg(test)]
 mod tests {
@@ -210,5 +108,138 @@ mod tests {
 }
 "#
         );
+    }
+
+    /// The exact preamble source that ships inside every generated dylib,
+    /// compiled into this test binary so the unsafe panic-buffer protocol
+    /// can be executed directly — in particular under Miri, which flags
+    /// undefined behaviour in it.
+    #[allow(
+        unused,
+        unreachable_pub,
+        reason = "the preamble is compiled verbatim; in a dylib crate root its `pub` items are reachable"
+    )]
+    mod preamble {
+        include!("panic_preamble.rs");
+    }
+
+    /// Serializes the protocol tests: the preamble's panic buffer and
+    /// "panicked" flag are process-global statics shared by all tests in
+    /// this binary.
+    static PROTOCOL_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn protocol_lock() -> std::sync::MutexGuard<'static, ()> {
+        PROTOCOL_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Install a silent base hook (so intentional panics don't spam test
+    /// output), then the preamble's location-capturing hook on top of it.
+    fn install_hooks_once() {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| {
+            std::panic::set_hook(Box::new(|_| {}));
+            preamble::__symbiont_install_panic_hook();
+        });
+    }
+
+    /// Clear any message left behind by another test.
+    fn drain_panic_buffer() {
+        let mut buf = [0u8; 512];
+        // SAFETY: `buf` is 512 writable bytes, matching `buf_len`.
+        unsafe { preamble::__symbiont_take_panic(buf.as_mut_ptr(), buf.len()) };
+    }
+
+    /// `__symbiont_take_panic` cast to the erased pointer type the host
+    /// stores in the dispatch atomics and passes to `read_panic_buffer`.
+    fn take_panic_ptr() -> *const () {
+        preamble::__symbiont_take_panic as unsafe fn(*mut u8, usize) -> usize as *const ()
+    }
+
+    #[test]
+    fn take_panic_returns_zero_without_panic() {
+        let _guard = protocol_lock();
+        drain_panic_buffer();
+        let mut buf = [0u8; 64];
+        // SAFETY: `buf` is 64 writable bytes, matching `buf_len`.
+        let len = unsafe { preamble::__symbiont_take_panic(buf.as_mut_ptr(), buf.len()) };
+        assert_eq!(len, 0);
+    }
+
+    #[test]
+    fn panic_message_roundtrips_through_host_protocol() {
+        let _guard = protocol_lock();
+        install_hooks_once();
+        drain_panic_buffer();
+
+        let _ = std::panic::catch_unwind(|| panic!("boom {}", 42));
+
+        // Decode through the host-side path, exercising the fn-pointer
+        // transmute, the uninitialized buffer, and the raw-parts slice.
+        // SAFETY: the pointer refers to a function with the exported
+        // protocol signature.
+        let msg = unsafe { crate::revision::read_panic_buffer(take_panic_ptr()) }
+            .expect("panic message must be stored by the hook");
+        assert!(msg.contains("boom 42"), "message: {msg}");
+        assert!(msg.contains("unwind.rs"), "location missing: {msg}");
+
+        // Taking the message clears the buffer.
+        // SAFETY: same as above.
+        assert!(unsafe { crate::revision::read_panic_buffer(take_panic_ptr()) }.is_none());
+    }
+
+    #[test]
+    fn long_panic_messages_truncate_at_buffer_size() {
+        let _guard = protocol_lock();
+        install_hooks_once();
+        drain_panic_buffer();
+
+        let long = "x".repeat(600);
+        let _ = std::panic::catch_unwind(|| std::panic::panic_any(long));
+
+        // SAFETY: the pointer refers to a function with the exported
+        // protocol signature.
+        let msg = unsafe { crate::revision::read_panic_buffer(take_panic_ptr()) }
+            .expect("panic message must be stored by the hook");
+        assert_eq!(msg.len(), 512);
+        assert!(msg.bytes().all(|b| b == b'x'));
+    }
+
+    #[test]
+    fn take_panic_clamps_to_small_caller_buffer() {
+        let _guard = protocol_lock();
+        drain_panic_buffer();
+
+        preamble::__symbiont_store_panic("this is a longer message");
+        let mut buf = [0u8; 8];
+        // SAFETY: `buf` is 8 writable bytes, matching `buf_len`; Miri
+        // verifies no out-of-bounds write occurs.
+        let len = unsafe { preamble::__symbiont_take_panic(buf.as_mut_ptr(), buf.len()) };
+        assert_eq!(len, 8);
+        assert_eq!(&buf, b"this is ");
+    }
+
+    #[test]
+    fn fallback_does_not_overwrite_hook_message() {
+        let _guard = protocol_lock();
+        drain_panic_buffer();
+
+        preamble::__symbiont_store_panic("primary");
+        preamble::__symbiont_store_panic_fallback("secondary");
+        let mut buf = [0u8; 512];
+        // SAFETY: `buf` is 512 writable bytes, matching `buf_len`.
+        let len = unsafe { preamble::__symbiont_take_panic(buf.as_mut_ptr(), buf.len()) };
+        assert_eq!(&buf[..len], b"primary");
+
+        // With the buffer empty, the fallback does store.
+        preamble::__symbiont_store_panic_fallback("secondary");
+        // SAFETY: same as above.
+        let len = unsafe { preamble::__symbiont_take_panic(buf.as_mut_ptr(), buf.len()) };
+        assert_eq!(&buf[..len], b"secondary");
+    }
+
+    #[test]
+    fn read_panic_buffer_null_ptr_is_none() {
+        // SAFETY: `read_panic_buffer` explicitly permits a null pointer.
+        assert!(unsafe { crate::revision::read_panic_buffer(std::ptr::null()) }.is_none());
     }
 }
