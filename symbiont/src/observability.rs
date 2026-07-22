@@ -110,6 +110,7 @@ pub const DYLIB_SOURCE_BYTES: &str = "symbiont_dylib_source_bytes";
 pub(crate) mod failure_kind {
     pub(crate) const PARSE: &str = "parse";
     pub(crate) const SIGNATURE: &str = "signature";
+    pub(crate) const UNSAFE_CODE: &str = "unsafe";
     pub(crate) const COMPILE: &str = "compile";
     pub(crate) const NO_RUST_CODE: &str = "no_rust_code";
     pub(crate) const MAX_TURNS: &str = "max_turns";
@@ -218,6 +219,7 @@ pub(crate) fn failure_kind_of(e: &crate::Error) -> &'static str {
     match e {
         CouldNotParseRust { .. } => failure_kind::PARSE,
         SignatureMismatch { .. } => failure_kind::SIGNATURE,
+        UnsafeCode { .. } => failure_kind::UNSAFE_CODE,
         CompilationFailed { .. } => failure_kind::COMPILE,
         NoRustCode => failure_kind::NO_RUST_CODE,
         RigPrompt(rig_core::completion::PromptError::MaxTurnsError { .. }) => {
@@ -436,6 +438,13 @@ mod tests {
                 got: String::new()
             }),
             failure_kind::SIGNATURE
+        );
+        assert_eq!(
+            failure_kind_of(&UnsafeCode {
+                code: String::new(),
+                construct: String::new()
+            }),
+            failure_kind::UNSAFE_CODE
         );
         assert_eq!(
             failure_kind_of(&CompilationFailed {

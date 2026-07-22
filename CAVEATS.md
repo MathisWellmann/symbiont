@@ -148,6 +148,16 @@ revision overwrite each other.
 
 ## Undefined behaviour and Miri
 
+The generated code itself is barred from introducing new unsafety:
+validation rejects any `unsafe` construct in LLM-generated code at
+the AST level before compiling — `unsafe` blocks, `unsafe fn`,
+`unsafe impl`/`trait`, `extern` blocks, unsafe attributes (except
+the harness-managed `#[unsafe(no_mangle)]` export), and `unsafe`
+tokens smuggled through macros. The offending construct is fed
+back to the agent as backpressure. Note this bounds the UB
+surface; it is *not* a security sandbox — safe Rust running in
+the host process can still perform I/O or spawn processes.
+
 The pointer-swapping dispatch, the panic-buffer protocol, and the
 fn-pointer transmutes are all `unsafe` code. The test suite runs
 under [Miri](https://github.com/rust-lang/miri) to detect
