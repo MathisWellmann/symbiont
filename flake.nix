@@ -35,6 +35,7 @@
           extensions = [
             "rust-src"
             "rust-analyzer"
+            "miri"
           ];
           targets = ["x86_64-unknown-linux-gnu"];
         }

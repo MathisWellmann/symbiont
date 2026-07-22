@@ -138,3 +138,28 @@ a `RevisionFn` handle land in that handle's revision — read them
 with `RevisionFn::take_panic`. A buffer holds only the most
 recent message, so concurrent panicking calls into the same
 revision overwrite each other.
+
+## Undefined behaviour and Miri
+
+The pointer-swapping dispatch, the panic-buffer protocol, and the
+fn-pointer transmutes are all `unsafe` code. The test suite runs
+under [Miri](https://github.com/rust-lang/miri) to detect
+undefined behaviour in them:
+
+```sh
+MIRIFLAGS="-Zmiri-disable-isolation" cargo miri test -p symbiont --lib
+```
+
+Miri cannot spawn processes or `dlopen` libraries, so tests that
+compile and load dylibs are `#[cfg_attr(miri, ignore)]`d. The
+panic-buffer preamble that ships inside every generated dylib is
+still covered: it lives in `symbiont/src/panic_preamble.rs` and is
+compiled directly into the test binary (see the tests in
+`symbiont/src/unwind.rs`), where Miri executes both sides of the
+protocol — the dylib-side buffer writes and the host-side
+`read_panic_buffer` decode.
+
+Miri cannot check what it cannot execute: the actual `dlopen`
+boundary, cross-dylib calls through swapped pointers, and the
+`mem::zeroed()` placeholder return value in the `catch_unwind`
+wrapper remain outside its reach.
