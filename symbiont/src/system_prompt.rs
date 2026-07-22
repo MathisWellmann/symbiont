@@ -5,9 +5,7 @@ use crate::{
     Result,
     doc_string::write_prelude_doc_string,
 };
-
-pub(crate) async fn system_prompt(opt_crate_name: Option<&str>) -> Result<String> {
-    let mut prompt = "#Role
+const BASE_PROMPT: &str = "#Role
 
 You are a Rust coding agent running inside the `symbiont` function-evolution harness.
 
@@ -139,8 +137,10 @@ formatting, dynamic dispatch, excessive bounds checks, and avoidable cloning.
 The following section contains generated documentation for host APIs
 available to the evolved code. If empty, only `std` is available.
 
-"
-    .to_string();
+";
+
+pub(crate) async fn system_prompt(opt_crate_name: Option<&str>) -> Result<String> {
+    let mut prompt = BASE_PROMPT.to_string();
     if let Some(crate_name) = opt_crate_name {
         write_prelude_doc_string(&mut prompt, crate_name).await?;
     }
