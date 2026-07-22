@@ -27,6 +27,10 @@ use symbiont::{
 const BASE_PROMPT: &str = "Implement the function. Code only.";
 
 #[tokio::test]
+#[cfg_attr(
+    miri,
+    ignore = "compiles and dlopens dylibs, which Miri does not support"
+)]
 #[tracing_test::traced_test]
 async fn max_turns_error_is_nudged_and_recovered_from() {
     symbiont::evolvable! {

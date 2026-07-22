@@ -330,6 +330,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "crossbeam-epoch (via metrics-util) violates Stacked Borrows; known third-party false positive"
+    )]
     fn emissions_reach_recorder_with_labels() {
         let recorder = DebuggingRecorder::new();
         let snapshotter = recorder.snapshotter();
@@ -363,6 +367,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "crossbeam-epoch (via metrics-util) violates Stacked Borrows; known third-party false positive"
+    )]
     fn describe_metrics_registers_units_and_descriptions() {
         let recorder = DebuggingRecorder::new();
         let snapshotter = recorder.snapshotter();

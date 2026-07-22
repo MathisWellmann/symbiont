@@ -47,6 +47,10 @@ fn has_label(key: &CompositeKey, k: &str, v: &str) -> bool {
 }
 
 #[tokio::test(flavor = "current_thread")]
+#[cfg_attr(
+    miri,
+    ignore = "compiles and dlopens dylibs, which Miri does not support"
+)]
 async fn evolution_emits_metrics() {
     symbiont::evolvable! {
         fn metrics_step(counter: &mut usize) {
