@@ -132,6 +132,13 @@ exported symbol (`__symbiont_take_panic`). Use
 `Runtime::take_panic` to retrieve panic messages after each
 call.
 
+When an implementation panics, the wrapped call returns
+`Default::default()` as a safe placeholder value — check
+`Runtime::take_panic` to distinguish it from a real result.
+Every evolvable return type must therefore implement `Default`;
+the `evolvable!` macro enforces this with a compile error at the
+declaration site, so generated dylibs always compile.
+
 Each revision has its own panic buffer. `Runtime::take_panic`
 reads the **active** revision's buffer; panics from calls through
 a `RevisionFn` handle land in that handle's revision — read them
@@ -160,6 +167,5 @@ protocol — the dylib-side buffer writes and the host-side
 `read_panic_buffer` decode.
 
 Miri cannot check what it cannot execute: the actual `dlopen`
-boundary, cross-dylib calls through swapped pointers, and the
-`mem::zeroed()` placeholder return value in the `catch_unwind`
-wrapper remain outside its reach.
+boundary and cross-dylib calls through swapped pointers remain
+outside its reach.

@@ -10,10 +10,14 @@ mod utils;
 
 use proc_macro::TokenStream;
 use proc_macro2::Span;
-use quote::quote;
+use quote::{
+    quote,
+    quote_spanned,
+};
 use syn::{
     FnArg,
     ReturnType,
+    spanned::Spanned,
 };
 
 use crate::{
@@ -36,12 +40,25 @@ use crate::{
 /// }
 /// ```
 ///
+/// # Return types
+///
+/// Every return type must implement [`Default`]: when an evolved
+/// implementation panics, the in-dylib `catch_unwind` wrapper substitutes
+/// `Default::default()` as a safe placeholder return value (retrieve the
+/// panic message with `Runtime::take_panic`). The bound is enforced with a
+/// compile error at the declaration site, so generated dylibs always
+/// compile.
+///
 /// This generates:
 /// - A `SYMBIONT_DECLS` constant with metadata for each function
 /// - Wrapper functions that dispatch calls through the loaded dylib
 /// - Per-function `<name>_fn(revision)` accessors returning typed
 ///   `RevisionFn` handles to any retained revision
 #[proc_macro]
+#[expect(
+    clippy::too_many_lines,
+    reason = "One big macro, better be left undisturbed."
+)]
 pub fn evolvable(input: TokenStream) -> TokenStream {
     let block = syn::parse_macro_input!(input as EvolvableBlock);
 
@@ -95,6 +112,25 @@ pub fn evolvable(input: TokenStream) -> TokenStream {
             ReturnType::Default => quote! { () },
             ReturnType::Type(_, ty) => quote! { #ty },
         };
+
+        // On panic inside the dylib, the `catch_unwind` wrapper substitutes
+        // `Default::default()` as the return value, so every evolvable
+        // return type must implement `Default`. Enforce this at declaration
+        // time so generated dylibs always compile.
+        let ret_span = match &sig.output {
+            ReturnType::Type(_, ty) => ty.span(),
+            ReturnType::Default => ident.span(),
+        };
+        let assert_ident = syn::Ident::new(
+            &format!("__symbiont_return_type_of_{fn_name_str}_must_implement_default"),
+            ident.span(),
+        );
+        wrapper_fns.push(quote_spanned! {ret_span=>
+            const _: fn() = || {
+                fn #assert_ident<T: ::core::default::Default>() {}
+                #assert_ident::<#ret_ty>();
+            };
+        });
 
         // Build the EvolvableDecl entry (with reference to the AtomicPtr static)
         decl_entries.push(quote! {

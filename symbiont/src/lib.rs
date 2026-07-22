@@ -61,6 +61,18 @@ pub use revision::{
 };
 use rig_core::providers::openrouter::CompletionModel;
 pub use runtime::Runtime;
+/// Evolvable return types must implement [`Default`]: when an evolved
+/// implementation panics, the in-dylib `catch_unwind` wrapper substitutes
+/// `Default::default()` as a safe placeholder return value. The bound is
+/// enforced at the declaration site:
+///
+/// ```compile_fail
+/// struct NoDefault;
+///
+/// symbiont::evolvable! {
+///     fn make() -> NoDefault;
+/// }
+/// ```
 pub use symbiont_macros::evolvable;
 
 /// type alias for the return type of `init_agent`

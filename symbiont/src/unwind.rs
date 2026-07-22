@@ -18,11 +18,18 @@
 ///                       else if let Some(s) = e.downcast_ref::<String>() { s.as_str() }
 ///                       else { "unknown panic" };
 ///             __symbiont_store_panic_fallback(msg);
-///             unsafe { core::mem::zeroed() }
+///             Default::default()
 ///         }
 ///     }
 /// }
 /// ```
+///
+/// The `Err` arm substitutes `Default::default()` as a placeholder return
+/// value — safe for every type, unlike a zeroed value, which is undefined
+/// behaviour for types like `String` or `&T`. The `evolvable!` macro
+/// enforces at declaration time that every return type implements
+/// [`Default`], so the wrapped code always compiles; hosts detect the
+/// panic via `Runtime::take_panic` and discard the placeholder.
 ///
 /// The panic *message with its source location* is recorded by the panic hook
 /// installed via `__symbiont_install_panic_hook` — the hook runs at panic
@@ -52,7 +59,7 @@ pub(crate) fn wrap_bodies_in_catch_unwind(file: &mut syn::File) {
                                 "unknown panic"
                             };
                         __symbiont_store_panic_fallback(__symbiont_msg);
-                        unsafe { ::core::mem::zeroed() }
+                        ::core::default::Default::default()
                     }
                 }
             });
@@ -102,7 +109,7 @@ mod tests {
                 "unknown panic"
             };
             __symbiont_store_panic_fallback(__symbiont_msg);
-            unsafe { ::core::mem::zeroed() }
+            ::core::default::Default::default()
         }
     }
 }
