@@ -54,9 +54,14 @@ pub struct AccountState {
 /// The trading decision returned by the evolved strategy.
 /// Only market orders are available; they fill immediately at the current
 /// bid/ask and pay taker fees.
-#[derive(Debug, Clone, Copy, PartialEq)]
+///
+/// `Hold` is the [`Default`]: if an evolved strategy panics, the harness
+/// substitutes `Action::default()` for the call's return value, and the
+/// safe reaction to a crashed strategy is to do nothing this candle.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum Action {
     /// Do nothing this candle.
+    #[default]
     Hold,
     /// Submit a market buy order for `qty` BTC.
     /// Increases long exposure or reduces/flips a short position.
