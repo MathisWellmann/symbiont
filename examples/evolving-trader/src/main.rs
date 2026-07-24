@@ -656,7 +656,7 @@ async fn main() -> symbiont::Result<()> {
     // in the system prompt. Cap generation so small local models that fail to
     // stop cannot overflow the inference server's context window.
     let model = std::env::var("MODEL").expect("the MODEL env var names the model slug");
-    let agent = symbiont::agent_builder(Some(host_crate), &model)
+    let agent = symbiont::agent_builder_from_env(Some(host_crate), &model)
         .await?
         .max_tokens(4096)
         .build();
