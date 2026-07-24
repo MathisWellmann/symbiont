@@ -34,6 +34,7 @@
 //! | [`EVOLVE_ATTEMPTS`]         | histogram | —                      |
 //! | [`EVOLVE_DURATION`]         | histogram | —                      |
 //! | [`EVOLVE_CONTEXT_RESETS`]   | counter   | —                      |
+//! | [`EVOLVE_REPEAT_RESETS`]    | counter   | —                      |
 //! | [`PIPELINE_STAGE_DURATION`] | histogram | `stage`                |
 //! | [`LLM_RUNS`]                | counter   | `outcome`              |
 //! | [`LLM_TOKENS`]              | counter   | `kind`                 |
@@ -67,6 +68,11 @@ pub const EVOLVE_DURATION: &str = "symbiont_evolve_duration_seconds";
 /// Times the chat history had to be discarded because the request exceeded
 /// the model's context window. A rising value signals prompt/history bloat.
 pub const EVOLVE_CONTEXT_RESETS: &str = "symbiont_evolve_context_window_resets_total";
+/// Times the chat history had to be discarded because the agent repeated
+/// the exact same rejected code on consecutive self-healing attempts. A
+/// rising value signals a model that echoes its own broken answers instead
+/// of applying corrections.
+pub const EVOLVE_REPEAT_RESETS: &str = "symbiont_evolve_repeat_resets_total";
 /// Wall-clock seconds per pipeline stage of one evolution attempt, labelled
 /// by `stage` (`llm`, `parse_validate`, `compile`, `load`). The `llm` vs
 /// `compile` split is the key capacity signal: one is paid API latency, the
@@ -158,6 +164,11 @@ pub fn describe_metrics() {
         EVOLVE_CONTEXT_RESETS,
         Unit::Count,
         "Context-window overflows that discarded the chat history"
+    );
+    describe_counter!(
+        EVOLVE_REPEAT_RESETS,
+        Unit::Count,
+        "Verbatim-repeated rejected code that discarded the chat history"
     );
     describe_histogram!(
         PIPELINE_STAGE_DURATION,

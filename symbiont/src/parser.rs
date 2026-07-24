@@ -68,10 +68,19 @@ pub(crate) fn parse_rust_code(input: &str) -> Result<syn::File> {
     let code = extract_rust_code(input).ok_or(Error::NoRustCode)?;
     let file = parse_file(&code).map_err(|e| {
         let start: proc_macro2::LineColumn = e.span().start();
-        Error::CouldNotParseRust {
-            err: format!("{e} (line {}, column {})", start.line, start.column),
-            code,
+        let mut err = format!("{e} (line {}, column {})", start.line, start.column);
+        // Quote the offending source line with a caret marker so the agent
+        // does not have to count lines to locate the error.
+        if let Some(line) = code.lines().nth(start.line.saturating_sub(1)) {
+            use std::fmt::Write;
+            write!(
+                err,
+                "\nOffending line:\n{line}\n{caret_pad}^ error is here",
+                caret_pad = " ".repeat(start.column)
+            )
+            .expect("Can write to String");
         }
+        Error::CouldNotParseRust { err, code }
     })?;
     Ok(file)
 }
@@ -255,6 +264,14 @@ pub fn shade(x: f64, y: f64, t: f64) -> u32 {
                     "code must be echoed: {code}"
                 );
                 assert!(err.contains("line "), "error must carry a location: {err}");
+                assert!(
+                    err.contains("Offending line:\n    (r as u8 << 16) as u32"),
+                    "error must quote the offending source line: {err}"
+                );
+                assert!(
+                    err.contains("^ error is here"),
+                    "error must carry a caret marker: {err}"
+                );
             }
             other => panic!("expected CouldNotParseRust, got: {other}"),
         }
