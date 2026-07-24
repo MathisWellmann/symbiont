@@ -65,6 +65,7 @@ use crate::{
         EVOLVE_CONTEXT_RESETS,
         EVOLVE_DURATION,
         EVOLVE_FAILURES,
+        EVOLVE_REPEAT_RESETS,
         LLM_RETRY_BACKOFF,
         LLM_RUN_INPUT_TOKENS,
         LLM_RUN_MESSAGES,
@@ -485,6 +486,12 @@ impl Runtime {
     /// [`Self::MAX_TRANSIENT_RETRIES`] times, and do not count against the
     /// self-healing attempt budget.
     ///
+    /// If the agent answers a correction with the exact same rejected code
+    /// as the previous attempt (weak models echo their own broken answer
+    /// out of the chat history), the history is discarded and the next
+    /// request restarts from `base_prompt` with an explicit do-not-repeat
+    /// instruction. Such attempts still count against the retry budget.
+    ///
     /// Every failure that feeds backpressure to the agent is recorded and
     /// can be drained afterwards with [`Runtime::take_evolve_failures`],
     /// e.g. to persist the compiler diagnostics of failed attempts for
@@ -518,6 +525,9 @@ impl Runtime {
             let mut history: Vec<Message> = Vec::new();
             let mut attempts: usize = 0;
             let mut transient_attempts: usize = 0;
+            // Code of the most recent rejected attempt, used to detect an
+            // agent that echoes the same broken code back verbatim.
+            let mut last_failed_code: Option<String> = None;
             self.evolve_failures
                 .write()
                 .map_err(|_| Error::MutexPoison)?
@@ -544,7 +554,14 @@ impl Runtime {
                         // the agent (including the one that exhausts the
                         // retry budget) so hosts can drain and persist them
                         // via `take_evolve_failures` for offline analysis.
+                        // Along the way, detect a verbatim repeat of the
+                        // previously rejected code.
+                        let mut repeated = false;
                         if let Some(failure) = EvolveFailure::from_error(&e, attempts) {
+                            let code = failure.generated_code();
+                            repeated = !code.is_empty()
+                                && last_failed_code.as_deref() == Some(code.as_str());
+                            last_failed_code = Some(code.clone());
                             self.evolve_failures
                                 .write()
                                 .map_err(|_| MutexPoison)?
@@ -629,13 +646,45 @@ impl Runtime {
 
                         prompt.clear();
 
+                        // A verbatim repeat of already-rejected code means the
+                        // correction nudge is not working: the agent is echoing
+                        // its own broken answer from the chat history (weak
+                        // models do this persistently). Quoting the same code
+                        // back a third time only reinforces the echo, so
+                        // discard the history and restart from the base prompt
+                        // with an explicit do-not-repeat instruction that does
+                        // NOT quote the rejected code.
+                        if repeated {
+                            counter!(EVOLVE_REPEAT_RESETS).increment(1);
+                            warn!(
+                                "Agent repeated the same rejected code verbatim; discarding {} \
+                                 history messages and restarting from the base prompt",
+                                history.len()
+                            );
+                            history.clear();
+                            // Only the first line of the error: the full
+                            // diagnostics quote the rejected code, which is
+                            // exactly the echo source being removed here.
+                            let brief = e.to_string();
+                            let brief = brief.lines().next().unwrap_or_default().to_string();
+                            write!(
+                                prompt,
+                                "{base_prompt}\n\nYour previous attempt was rejected: {brief}\n\
+                                 You already answered with that exact code before and it was \
+                                 rejected with the same error, so do NOT repeat it. Respond \
+                                 with a different, valid implementation."
+                            )
+                            .expect("Can write to prompt");
+                            continue;
+                        }
+
                         use Error::*;
                         match e {
                         NoRustCode => prompt.push_str(
                             "Your response did not contain a rust code block. Please try again and make sure its wrapped like this: ```CODE```",
                         ),
                         CouldNotParseRust { code, err } => write!(prompt,
-                            "Your generated code ```{}``` is not valid Rust. Parse error: ```{}```. Fix the syntax error and respond with the full corrected code.", code.blue(), err.red()
+                            "Your generated code ```{code}``` is not valid Rust. Parse error: ```{err}```. Fix the syntax error and respond with the full corrected code.",
                         ).expect("Can write to prompt"),
                         RigPrompt(rig_core::completion::PromptError::MaxTurnsError { .. }) => prompt.push_str(
                             "You exhausted the tool-call turn budget before producing code. Respond with the final Rust code block now.",
@@ -652,23 +701,20 @@ impl Runtime {
                             "Your generated code contains {construct}, but unsafe code is forbidden in evolvable code. \
                             Rewrite it in safe Rust only: no `unsafe` blocks, `unsafe fn`, `unsafe impl`, `unsafe trait`, \
                             `extern` blocks, unsafe attributes, or `unsafe` tokens inside macros. \
-                            Keep the logic and the function signatures unchanged. Full code: ```{}```",
-                            code.blue()
+                            Keep the logic and the function signatures unchanged. Full code: ```{code}```",
                         ).expect("Can write to prompt"),
                         ForbiddenConstruct { code, construct, reason } => write!(prompt,
                             "Your generated code contains {construct}, which is forbidden in evolvable code: {reason}. \
-                            Rewrite the code without it, keeping the logic and the function signatures unchanged. Full code: ```{}```",
-                            code.blue()
+                            Rewrite the code without it, keeping the logic and the function signatures unchanged. Full code: ```{code}```",
                         ).expect("Can write to prompt"),
                         CompilationFailed{code, err} => write!(prompt,
-                            "Your generated code ```{}``` failed to compile. Compiler output:\n```\n{}\n```\n\
+                            "Your generated code ```{code}``` failed to compile. Compiler output:\n```\n{err}\n```\n\
                             Fix the compilation errors while preserving the existing logic and behaviour. \
                             Change only the expressions the compiler diagnostics point at (match the `src/lib.rs:<line>:<col>` markers); \
                             do not rewrite, restructure, rename, reformat or otherwise alter the rest of the code. \
                             A trait error (E0277) means you used an operator or conversion the type does not implement: \
                             consult the documented `impl ... for ...` blocks for that type and use only listed impls, \
                             adjusting the operand types instead of forcing an unsupported operation.",
-                            code.blue(), err.red()
                         ).expect("Can write to prompt"),
                         e => {
                             warn!("Unhandled error: {e}");

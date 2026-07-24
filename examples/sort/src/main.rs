@@ -301,10 +301,12 @@ async fn main() -> symbiont::Result<()> {
             )
         };
 
-        runtime
-            .evolve(&agent, &prompt)
-            .await
-            .expect("evolution should succeed");
+        if let Err(e) = runtime.evolve(&agent, &prompt).await {
+            warn!(
+                "Evolution failed this round: {e}. Keeping previous code; skipping to next round."
+            );
+            continue;
+        }
 
         prev_code = runtime.current_code();
 
