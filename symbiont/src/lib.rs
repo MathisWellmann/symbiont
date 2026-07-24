@@ -51,7 +51,9 @@ pub use evolution_agent::{
 pub use evolve_failure::EvolveFailure;
 pub use inference::{
     agent_builder,
+    agent_builder_from_env,
     init_agent,
+    init_agent_from_env,
 };
 pub use init_tracing::init_tracing;
 pub use profile::Profile;
