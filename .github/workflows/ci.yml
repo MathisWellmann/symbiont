@@ -79,6 +79,9 @@ jobs:
     # Target self-hosted runner by label
     runs-on: [nixos]
     needs: [rust-checks]
+    env:
+      BASE_URL: http://127.0.0.1:8231/v1
+      MODEL: local
     # SECURITY: Require manual approval for external PRs
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     steps:
@@ -92,7 +95,7 @@ jobs:
           nix develop --command bash -c '
             devenv up -d
             devenv processes wait llama-server --timeout 120
-            BASE_URL=http://127.0.0.1:8231 cargo run -p counter-example
+            cargo run -p counter-example
             devenv processes down
           '
       - name: fizzbuzz-example-smoke-test
@@ -100,7 +103,7 @@ jobs:
           nix develop --command bash -c '
             devenv up -d
             devenv processes wait llama-server --timeout 120
-            BASE_URL=http://127.0.0.1:8231 cargo run -p fizzbuzz-example
+            cargo run -p fizzbuzz-example
             devenv processes down
           '
       - name: rastrigin-example-smoke-test
@@ -108,7 +111,7 @@ jobs:
           nix develop --command bash -c '
             devenv up -d
             devenv processes wait llama-server --timeout 120
-            BASE_URL=http://127.0.0.1:8231 timeout 120s cargo run -p rastrigin-example
+            timeout 120s cargo run -p rastrigin-example
             devenv processes down
           '
       - name: sort-example-smoke-test
@@ -119,7 +122,7 @@ jobs:
           nix develop --command bash -c '
             devenv up -d
             devenv processes wait llama-server --timeout 120
-            BASE_URL=http://127.0.0.1:8231 timeout 180s cargo run -p sort-example
+            timeout 180s cargo run -p sort-example
             devenv processes down
           '
       - name: struct-support-example-smoke-test
@@ -127,7 +130,7 @@ jobs:
           nix develop --command bash -c '
             devenv up -d
             devenv processes wait llama-server --timeout 120
-            BASE_URL=http://127.0.0.1:8231 cargo run -p struct-support-example
+            cargo run -p struct-support-example
             devenv processes down
           '
       - name: tool-calling-example-smoke-test
@@ -135,6 +138,6 @@ jobs:
           nix develop --command bash -c '
             devenv up -d
             devenv processes wait llama-server --timeout 120
-            BASE_URL=http://127.0.0.1:8231 cargo run -p tool-calling-example
+            cargo run -p tool-calling-example
             devenv processes down
           '
