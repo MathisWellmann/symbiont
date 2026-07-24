@@ -655,7 +655,8 @@ async fn main() -> symbiont::Result<()> {
     // Include the host crate's documented API (Candle, AccountState, Action)
     // in the system prompt. Cap generation so small local models that fail to
     // stop cannot overflow the inference server's context window.
-    let agent = symbiont::agent_builder(Some(host_crate))
+    let model = std::env::var("MODEL").expect("the MODEL env var names the model slug");
+    let agent = symbiont::agent_builder(Some(host_crate), &model)
         .await?
         .max_tokens(4096)
         .build();

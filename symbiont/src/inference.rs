@@ -10,10 +10,11 @@ use rig_core::{
 
 use crate::Result;
 
-/// Initialize a pre-configured [`crate::AgentBuilder`] using the environment variables.
+/// Initialize a pre-configured [`crate::AgentBuilder`] for `model`.
 ///
-/// The returned builder already has the inference client (from the env vars
-/// below) and the symbiont system prompt attached. Customize it with the full
+/// The returned builder already has the inference client (endpoint and
+/// credentials from the env vars below, talking to `model`) and the symbiont
+/// system prompt attached. Customize it with the full
 /// `rig` builder API — most notably tool registration — before calling
 /// `.build()`:
 ///
@@ -50,7 +51,7 @@ use crate::Result;
 /// }
 ///
 /// # async fn example() -> symbiont::Result<()> {
-/// let agent = symbiont::agent_builder(Some("my-crate"))
+/// let agent = symbiont::agent_builder(Some("my-crate"), "qwen3.6")
 ///     .await?
 ///     .tool(RunTests)
 ///     .default_max_turns(5)
@@ -68,16 +69,18 @@ use crate::Result;
 /// - `opt_crate_name`: If `Some`, then documentation for that crate will be built and included in the system prompt,
 ///   to inform the agent which methods are available in the dylib.
 ///   Usually this will be `Some(env!("CARGO_PKG_NAME"))`;
+/// - `model`: The model slug served at `BASE_URL`.
 ///
 /// # Required Env vars:
 /// - `API_KEY`: The API key for authenticating the requests, if any. Can be empty
 /// - `BASE_URL`: The inference endpoint for `/v1/chat/completions` based requests.
-/// - `MODEL`: The model slug.
 ///
-pub async fn agent_builder(opt_crate_name: Option<&str>) -> Result<crate::AgentBuilder> {
+pub async fn agent_builder(
+    opt_crate_name: Option<&str>,
+    model: &str,
+) -> Result<crate::AgentBuilder> {
     let api_key = var("API_KEY").unwrap_or_default();
     let base_url = var("BASE_URL").unwrap_or_default();
-    let model = var("MODEL").unwrap_or_default();
 
     let client = openrouter::Client::builder()
         .api_key(api_key)
@@ -88,7 +91,7 @@ pub async fn agent_builder(opt_crate_name: Option<&str>) -> Result<crate::AgentB
     Ok(client.agent(model).preamble(&system_prompt))
 }
 
-/// Initialize the agent using the environment variables.
+/// Initialize the agent for `model`.
 ///
 /// Convenience wrapper around [`agent_builder`] for agents without tools.
 /// To register tools or customize the agent (temperature, max turns, hooks),
@@ -98,14 +101,14 @@ pub async fn agent_builder(opt_crate_name: Option<&str>) -> Result<crate::AgentB
 /// - `opt_crate_name`: If `Some`, then documentation for that crate will be built and included in the system prompt,
 ///   to inform the agent which methods are available in the dylib.
 ///   Usually this will be `Some(env!("CARGO_PKG_NAME"))`;
+/// - `model`: The model slug served at `BASE_URL`.
 ///
 /// # Required Env vars:
 /// - `API_KEY`: The API key for authenticating the requests, if any. Can be empty
 /// - `BASE_URL`: The inference endpoint for `/v1/chat/completions` based requests.
-/// - `MODEL`: The model slug.
 ///
-pub async fn init_agent(opt_crate_name: Option<&str>) -> Result<crate::Agent> {
-    Ok(agent_builder(opt_crate_name).await?.build())
+pub async fn init_agent(opt_crate_name: Option<&str>, model: &str) -> Result<crate::Agent> {
+    Ok(agent_builder(opt_crate_name, model).await?.build())
 }
 
 /* TODO: collect the token usage in the runtime and provide summary stats. This test is used for exploring this path.
@@ -117,7 +120,7 @@ mod tests {
 
     #[tokio::test]
     async fn inference_usage() {
-        let agent = init_agent(None).await.unwrap();
+        let agent = init_agent(None, "test-model").await.unwrap();
         let resp = agent
             .prompt("Hello, whats 1+1?")
             .extended_details()

@@ -34,7 +34,8 @@ async fn main() -> symbiont::Result<()> {
     info!("fn_prelude: {fn_prelude:#?}, fn_source: {fn_source:#?}");
 
     let doc_crate = Some(host_crate); // Include documentation of the host crate in the system prompt.
-    let agent = symbiont::init_agent(doc_crate).await?;
+    let model = std::env::var("MODEL").expect("the MODEL env var names the model slug");
+    let agent = symbiont::init_agent(doc_crate, &model).await?;
 
     let base_prompt = format!(
         "Give an implementation for this evolvable function:\n

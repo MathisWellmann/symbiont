@@ -97,7 +97,8 @@ async fn main() -> symbiont::Result<()> {
     let fn_sigs = runtime.fn_sigs();
     info!("fn_sigs: {fn_sigs:?}");
 
-    let agent = symbiont::init_agent(None).await?;
+    let model = std::env::var("MODEL").expect("the MODEL env var names the model slug");
+    let agent = symbiont::init_agent(None, &model).await?;
 
     // -- Round 0: run the default (wrong) implementation ----------------
     println!("\n=== Round 0: default implementation ===");
