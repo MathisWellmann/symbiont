@@ -15,6 +15,7 @@ in {
     exec = ''
       llama-server \
         -hf LiquidAi/LFM2.5-8B-A1B-GGUF \
+        --alias local \
         --host 127.0.0.1 \
         --port ${toString port} \
         --n-gpu-layers 999 \
