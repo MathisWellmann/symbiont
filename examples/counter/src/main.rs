@@ -35,7 +35,8 @@ async fn main() -> symbiont::Result<()> {
     let fn_sigs = runtime.fn_sigs(); // Alternatively, `fn_full_sources` can be used to also show doc string and default function body.
     info!("fn_sigs: {fn_sigs:?}");
 
-    let agent = symbiont::init_agent(None).await?;
+    let model = std::env::var("MODEL").expect("the MODEL env var names the model slug");
+    let agent = symbiont::init_agent(None, &model).await?;
 
     let base_prompt = format!(
         "Give a concise implementation for this function signature: ```{}```, \

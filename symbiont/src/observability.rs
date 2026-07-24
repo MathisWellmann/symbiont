@@ -11,8 +11,8 @@
 //!
 //! ## Global labels: distinguishing processes in a fleet
 //!
-//! One process uses exactly one inference model (read once from the `MODEL`
-//! env var when the agent is built), so `model` is stamped as a *global*
+//! One process uses exactly one inference model (passed in once when the
+//! recorder is installed), so `model` is stamped as a *global*
 //! label on every series rather than threaded through individual emissions.
 //! [`init_observability`] does this automatically; it also adds `crate_name`
 //! and `instance` labels so many symbiont processes can be told apart in a
@@ -237,8 +237,8 @@ pub(crate) fn failure_kind_of(e: &crate::Error) -> &'static str {
 /// Initialize metrics with a Prometheus exporter and the process-wide global
 /// labels that distinguish this process in a fleet of harness binaries:
 ///
-/// - `model`: the `MODEL` env var (`unknown` if unset). One process uses one
-///   model for its lifetime, so it belongs on every series.
+/// - `model`: the inference model slug passed in (`unknown` if empty). One
+///   process uses one model for its lifetime, so it belongs on every series.
 /// - `crate_name`: the host crate name passed in (typically
 ///   `env!("CARGO_PKG_NAME")`).
 /// - `instance`: the `INSTANCE` env var, falling back to `<hostname>-<pid>`,
@@ -260,6 +260,7 @@ pub(crate) fn failure_kind_of(e: &crate::Error) -> &'static str {
 /// # fn f() -> symbiont::Result<()> {
 /// symbiont::observability::init_observability(
 ///     env!("CARGO_PKG_NAME"),
+///     "qwen3.6",
 ///     "127.0.0.1:9000".parse().unwrap(),
 /// )?;
 /// # Ok(())
@@ -268,11 +269,12 @@ pub(crate) fn failure_kind_of(e: &crate::Error) -> &'static str {
 #[cfg(feature = "prometheus")]
 pub fn init_observability(
     crate_name: &str,
+    model: &str,
     listen_addr: std::net::SocketAddr,
 ) -> crate::Result<()> {
     use metrics_exporter_prometheus::PrometheusBuilder;
 
-    let model = std::env::var("MODEL").unwrap_or_else(|_| "unknown".into());
+    let model = if model.is_empty() { "unknown" } else { model };
     let instance = std::env::var("INSTANCE")
         .ok()
         .filter(|s| !s.is_empty())

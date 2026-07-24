@@ -519,9 +519,11 @@ fn main() -> eframe::Result<()> {
         .expect("can initialize the symbiont runtime");
     info!("fn_sigs: {:?}", runtime.fn_sigs());
 
+    let model =
+        std::env::var("MODEL").expect("the MODEL env var names the model slug to evolve with");
     let agent = tokio_rt
-        .block_on(symbiont::init_agent(None))
-        .expect("can initialize the agent; check the API_KEY, BASE_URL and MODEL env vars");
+        .block_on(symbiont::init_agent(None, &model))
+        .expect("can initialize the agent; check the API_KEY and BASE_URL env vars");
     let tokio_handle = tokio_rt.handle().clone();
 
     let options = eframe::NativeOptions {
