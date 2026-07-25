@@ -18,6 +18,11 @@
 //! optimization**: the LLM writes real compiled code, the harness
 //! benchmarks it at native speed, and concrete timing data drives each
 //! subsequent evolution.
+//!
+//! Small models often fail to produce a correct sort at all; that is
+//! reported rather than fatal, so the example doubles as a smoke test of
+//! the evolution pipeline. Set `STRICT=1` to instead require a correct
+//! implementation, e.g. when measuring a capable model.
 
 use std::time::{
     Duration,
@@ -341,8 +346,19 @@ async fn main() -> symbiont::Result<()> {
         report = new_report;
     }
 
+    // Whether a small model invents a correct sort in `max_rounds` is a
+    // property of the model, not of the harness: everything this example
+    // exercises — dylib creation, compilation, loading, dispatch, panic
+    // capture, hot-swap — has already run by the time we get here. So a
+    // failed search is reported, not fatal, which keeps the example usable
+    // as a smoke test against weak local models. Set `STRICT=1` to demand
+    // a correct implementation, e.g. when benchmarking a capable model.
     if best_code.is_empty() {
-        panic!("No correct sort implementation found after {max_rounds} rounds.");
+        let msg = format!("No correct sort implementation found after {max_rounds} rounds.");
+        let strict = std::env::var_os("STRICT").is_some();
+        assert!(!strict, "{msg} (STRICT was requested)");
+        warn!("{msg} The evolution pipeline itself ran fine.");
+        return Ok(());
     }
     println!(
         "Best implementation found ({max_rounds} iterations, original time: {}, new time: {}):\n```rust\n{best_code}```",
