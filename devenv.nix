@@ -14,7 +14,7 @@ in {
   processes.llama-server = {
     exec = ''
       llama-server \
-        -hf LiquidAi/LFM2.5-8B-A1B-GGUF \
+        -hf prism-ml/Bonsai-8B-gguf \
         --alias local \
         --host 127.0.0.1 \
         --port ${toString port} \
