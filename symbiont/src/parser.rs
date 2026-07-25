@@ -17,28 +17,46 @@ use crate::{
     error::Error,
 };
 
-/// Extract the inner Rust source code from a markdown-fenced code block.
+/// Extract every candidate Rust source block from a markdown response, in
+/// source order.
 ///
 /// Handles the common pattern where an LLM response wraps code in
-/// ```rust ... ``` fences. Returns the first code block found, or `None`.
+/// ```rust ... ``` fences. An explicit ```rust fence wins outright when one
+/// is present: a response that tags its code also tags its answer, so the
+/// untagged blocks around it are prose or program output. Only when no
+/// tagged fence exists does an untagged ``` fence count.
 ///
 /// Fences only count when they open a line (ignoring leading whitespace),
 /// per CommonMark. This keeps fences embedded in doc comments, such as
 /// `/// ```ignore` examples the LLM re-emits from the function's docs,
 /// from being mistaken for the closing fence and truncating the code.
-pub(crate) fn extract_rust_code(input: &str) -> Option<String> {
-    // Prefer an explicit ```rust fence, then fall back to any ``` fence.
-    extract_fenced(input, "```rust").or_else(|| extract_fenced(input, "```"))
+fn extract_rust_code_blocks(input: &str) -> Vec<String> {
+    let tagged = fenced_blocks(input, "```rust");
+    if tagged.is_empty() {
+        fenced_blocks(input, "```")
+    } else {
+        tagged
+    }
 }
 
-/// Extract the contents of the first line-anchored fenced block opened by
-/// `start_marker` and closed by a line-anchored ``` fence.
-fn extract_fenced(input: &str, start_marker: &str) -> Option<String> {
-    let start = find_line_anchored_fence(input, start_marker, 0)?;
-    // Skip the rest of the opening fence line (language tag, whitespace).
-    let code_start = start + input[start..].find('\n')? + 1;
-    let end = find_line_anchored_fence(input, "```", code_start)?;
-    Some(input[code_start..end].trim().to_string())
+/// Contents of every line-anchored block opened by `start_marker` and closed
+/// by a line-anchored ``` fence, in source order.
+fn fenced_blocks(input: &str, start_marker: &str) -> Vec<String> {
+    let mut blocks = Vec::new();
+    let mut from = 0;
+    while let Some(start) = find_line_anchored_fence(input, start_marker, from) {
+        // Skip the rest of the opening fence line (language tag, whitespace).
+        let Some(rel_newline) = input[start..].find('\n') else {
+            break;
+        };
+        let code_start = start + rel_newline + 1;
+        let Some(end) = find_line_anchored_fence(input, "```", code_start) else {
+            break;
+        };
+        blocks.push(input[code_start..end].trim().to_string());
+        from = end + "```".len();
+    }
+    blocks
 }
 
 /// Byte offset of the first occurrence of `marker` at or after `from` that
@@ -61,33 +79,75 @@ fn find_line_anchored_fence(input: &str, marker: &str, from: usize) -> Option<us
 /// This is the public entry point used by main.rs — callers pass the raw
 /// LLM response and this function handles fence extraction + parsing.
 ///
+/// A response often carries more than one fenced block: reasoning models
+/// quote scratch snippets while thinking themselves towards an answer, and
+/// some models append example usage or expected output after it. The answer
+/// is the *last* block holding real items, so candidates are considered from
+/// the end and the first one that parses into at least one function wins. A
+/// parseable but function-less block (a lone `use`, a snippet of output) only
+/// serves as a fallback.
+///
 /// On parse failure the returned [`Error::CouldNotParseRust`] carries the
 /// offending code and syn's diagnostic (with line/column), so the evolve
-/// loop can feed a precise nudge back to the LLM.
+/// loop can feed a precise nudge back to the LLM. The diagnostic describes
+/// the last block, which is the one the agent meant as its answer — quoting
+/// an earlier scratch snippet back at it only derails the next attempt.
 pub(crate) fn parse_rust_code(input: &str) -> Result<syn::File> {
-    let code = extract_rust_code(input).ok_or(Error::NoRustCode)?;
-    let file = parse_file(&code).map_err(|e| {
-        let start: proc_macro2::LineColumn = e.span().start();
-        let mut err = format!("{e} (line {}, column {})", start.line, start.column);
-        // Quote the offending source line with a caret marker so the agent
-        // does not have to count lines to locate the error.
-        if let Some(line) = code.lines().nth(start.line.saturating_sub(1)) {
-            use std::fmt::Write;
-            write!(
-                err,
-                "\nOffending line:\n{line}\n{caret_pad}^ error is here",
-                caret_pad = " ".repeat(start.column)
-            )
-            .expect("Can write to String");
+    let blocks = extract_rust_code_blocks(input);
+    if blocks.is_empty() {
+        return Err(Error::NoRustCode);
+    }
+
+    let mut function_less: Option<syn::File> = None;
+    let mut last_err: Option<Error> = None;
+    for code in blocks.iter().rev() {
+        match parse_file(code) {
+            Ok(file) if file.items.iter().any(|i| matches!(i, syn::Item::Fn(_))) => {
+                return Ok(file);
+            }
+            // Reverse iteration means the first candidate to set either of
+            // these is the latest one, so `or` keeps the block closest to
+            // the end of the response.
+            Ok(file) => function_less = function_less.or(Some(file)),
+            Err(e) => last_err = last_err.or_else(|| Some(could_not_parse(code, &e))),
         }
-        Error::CouldNotParseRust { err, code }
-    })?;
-    Ok(file)
+    }
+
+    function_less
+        .ok_or_else(|| last_err.expect("a block that neither parses nor errors is impossible"))
+}
+
+/// Build the [`Error::CouldNotParseRust`] backpressure payload for `code`.
+fn could_not_parse(code: &str, e: &syn::Error) -> Error {
+    let start: proc_macro2::LineColumn = e.span().start();
+    let mut err = format!("{e} (line {}, column {})", start.line, start.column);
+    // Quote the offending source line with a caret marker so the agent
+    // does not have to count lines to locate the error.
+    if let Some(line) = code.lines().nth(start.line.saturating_sub(1)) {
+        use std::fmt::Write;
+        write!(
+            err,
+            "\nOffending line:\n{line}\n{caret_pad}^ error is here",
+            caret_pad = " ".repeat(start.column)
+        )
+        .expect("Can write to String");
+    }
+    Error::CouldNotParseRust {
+        err,
+        code: code.to_string(),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The single block of a well-behaved response, i.e. the one
+    /// [`parse_rust_code`] settles on when there is nothing else to choose
+    /// between. Multi-block selection is covered separately below.
+    fn extract_rust_code(input: &str) -> Option<String> {
+        extract_rust_code_blocks(input).pop()
+    }
 
     #[test]
     fn test_extract_rust_code_simple_fence() {
@@ -275,5 +335,121 @@ pub fn shade(x: f64, y: f64, t: f64) -> u32 {
             }
             other => panic!("expected CouldNotParseRust, got: {other}"),
         }
+    }
+
+    /// Regression test for reasoning models that quote scratch snippets on
+    /// their way to an answer. Taking the *first* fence made the harness
+    /// reject `let data = &mut data;` — a fragment lifted out of the model's
+    /// own musings — and burn a self-healing attempt while the real
+    /// implementation sat in the final block.
+    #[test]
+    fn test_parse_rust_code_picks_answer_after_scratch_snippets() {
+        let input = "Let me think. I could rebind the slice:
+```rust
+let data = &mut data;
+```
+No, that does not work. Nor does this:
+```rust
+data = &mut temp[1];
+```
+Here is the final implementation:
+```rust
+pub fn sort(data: &mut [f64], len: usize) {
+    for i in 1..len {
+        let mut j = i;
+        while j > 0 && data[j - 1] > data[j] {
+            data.swap(j - 1, j);
+            j -= 1;
+        }
+    }
+}
+```";
+        let file = parse_rust_code(input).expect("must recover the final block");
+        assert_eq!(file.items.len(), 1);
+        assert!(
+            matches!(&file.items[0], syn::Item::Fn(f) if f.sig.ident == "sort"),
+            "must pick the implementation, not a scratch fragment"
+        );
+    }
+
+    /// The mirror case: some models append example usage or expected output
+    /// after the answer. Such a trailing block holds statements rather than
+    /// items, so the last block carrying a function is the answer.
+    #[test]
+    fn test_parse_rust_code_skips_trailing_usage_block() {
+        let input = "```rust
+pub fn double(x: i32) -> i32 {
+    x * 2
+}
+```
+Example usage:
+```rust
+let y = double(21);
+assert_eq!(y, 42);
+```";
+        let file = parse_rust_code(input).expect("must skip the usage block");
+        assert!(
+            matches!(&file.items[0], syn::Item::Fn(f) if f.sig.ident == "double"),
+            "must pick the function, not the usage snippet"
+        );
+    }
+
+    /// When no candidate parses, the diagnostic must describe the *last*
+    /// block: that is the agent's answer, and quoting an earlier scratch
+    /// snippet back at it would derail the next attempt.
+    #[test]
+    fn test_parse_error_describes_the_last_block() {
+        let input = "First idea:
+```rust
+let x = ;
+```
+Final answer:
+```rust
+pub fn shade(x: f64) -> u32 {
+    (x as u8 << 16) as u32
+}
+```";
+        let err = match parse_rust_code(input) {
+            Err(e) => e,
+            Ok(_) => panic!("neither block is valid Rust"),
+        };
+        match err {
+            Error::CouldNotParseRust { code, .. } => {
+                assert!(
+                    code.contains("x as u8 << 16"),
+                    "must quote the final block, got: {code}"
+                );
+                assert!(
+                    !code.contains("let x = ;"),
+                    "must not quote the scratch snippet, got: {code}"
+                );
+            }
+            other => panic!("expected CouldNotParseRust, got: {other}"),
+        }
+    }
+
+    /// A tagged fence anywhere in the response suppresses untagged blocks
+    /// entirely, so a trailing block of program output cannot win.
+    #[test]
+    fn test_extract_prefers_tagged_fences_over_later_untagged_ones() {
+        let input = "```rust
+pub fn f() -> i32 { 1 }
+```
+Output:
+```
+[1.0, 2.0, 3.0]
+```";
+        let blocks = extract_rust_code_blocks(input);
+        assert_eq!(blocks, vec!["pub fn f() -> i32 { 1 }"]);
+    }
+
+    /// Every untagged block counts when the response tags nothing.
+    #[test]
+    fn test_extract_collects_all_untagged_blocks_in_order() {
+        let input = "```\nfn first() {}\n```\nand\n```\nfn second() {}\n```";
+        assert_eq!(
+            extract_rust_code_blocks(input),
+            vec!["fn first() {}", "fn second() {}"]
+        );
     }
 }
