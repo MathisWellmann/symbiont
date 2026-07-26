@@ -1,6 +1,7 @@
 [workspace]
 exclude = ["assets", "website"]
 members = [
+  "examples/batched-evolution",
   "examples/counter",
   "examples/evolving-trader",
   "examples/fizzbuzz",

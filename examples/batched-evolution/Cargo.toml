@@ -1,0 +1,15 @@
+[package]
+edition = "2024"
+license = "MPL-2.0"
+name = "batched-evolution-example"
+publish = false
+version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+symbiont = { path = "../../symbiont" }
+
+tokio.workspace = true
+tracing.workspace = true
