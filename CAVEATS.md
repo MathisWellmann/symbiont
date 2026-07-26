@@ -40,6 +40,18 @@ would increase compilation time and break the fast feedback loop.
 Keep evolvable function bodies self-contained.
 Might change in the future see [TODO.md](TODO.md)
 
+Builds are serialized. The generated crate directory, the `.so`
+cargo writes, and the dense revision id are all process-wide, and
+cargo takes an exclusive lock on its build directory anyway, so
+`Runtime::evolve_batch` runs its lanes' inference concurrently but
+their compilations one at a time. That is the right trade while
+inference dominates a lane by an order of magnitude. Watch
+`symbiont_build_slot_wait_seconds`: if it starts to rival
+`symbiont_pipeline_stage_duration_seconds{stage="llm"}`, the batch
+has become build-bound and the crate directory needs splitting per
+lane — which costs a separate target directory, and therefore a
+separate dependency build, for each.
+
 ## Destructors bypassed on unload
 
 Loaded dylibs are retained by the revision registry and only

@@ -8,6 +8,15 @@
 - Bidirectionality, like evolving a fractal rendering function using `evolvable` and a UI in the main harness binary shows the results.
 - Capture the number of evolution failures by category, e.g how many compile errors, how many parse errors, how many HTTP errors, etc.
 - Capture the inference cost in the responses, if available.
+- Prefix-cache visibility is provider-dependent: `LLM_TOKENS{kind="cached_input"}` comes from
+  `usage.prompt_tokens_details.cached_tokens`, which vLLM never populates (verified: identical
+  923-token prompt sent twice, field stays `null`) even though its prefix cache is working.
+  The throughput bench works around this by scraping `vllm:prefix_cache_hits_total` from
+  `/metrics`. Consider an optional hook so hosts can feed a server-side cache metric back in.
+- Split the generated crate directory per lane if `evolve_batch` ever becomes build-bound.
+  Cargo locks its build directory, so real build parallelism needs a target dir per lane, which
+  means paying dependency compilation per lane. Only worth it once
+  `symbiont_build_slot_wait_seconds` says so — see [CAVEATS.md](CAVEATS.md).
 - Track the context length of the prompt (system + user) and make it available to query.
 - Cap the runtime of agent code to a user-specified maximum to prevent infine loops in agent code.
   This is not really possible, unless the function signature has cooperative cancellation code passed in like an `stop: AtomicBool` and the agent must ensure to check it in each loop round.

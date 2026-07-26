@@ -135,6 +135,18 @@ cargo run -p fractal-studio-example --release
   ensembles, tournaments, A/B comparisons — or mix functions from different revisions;
   handle calls dispatch at active-pointer speed.
   See the [evolving-trader-example](examples/evolving-trader/README.md)'s top-3 ensemble.
+- **Batched evolution**:
+  `evolve_batch` runs one lane per prompt concurrently — eight slightly different prompts, eight
+  independent retry budgets, eight candidate implementations. Against a server that batches
+  (vLLM, SGLang, `llama-server --parallel n`) the lanes merge into shared forward passes, so a
+  population round costs a fraction of the same eight evolutions run in a loop —
+  measured on Bonsai-8B under vLLM: **32 candidates in 41s against 407s sequentially** (9.1x the
+  decode throughput), still improving at 32 lanes.
+  Crucially it registers every candidate but activates *none*: you evaluate them through
+  `RevisionFn` handles and commit to a winner with `activate_revision`, which turns the loop from
+  hill-climbing into an actual population search.
+  See the [batched-evolution-example](examples/batched-evolution/README.md) and the
+  [throughput benchmark](symbiont/benches/vllm/README.md).
 - **Bare-metal performance**:
   Evolved functions run as native compiled code.
   The dispatch overhead is **~1 ns per call** (a single atomic pointer load + indirect call).
@@ -176,6 +188,8 @@ cargo run -p fractal-studio-example --release
   - See [tool-calling-example](examples/tool-calling/src/main.rs)
 - Auto-research workflows with native-speed evaluation.
   - See [quatize-example](examples/quantize/README.md)
+- Population search: many prompt variants per round, evaluated against each other before one is adopted.
+  - See [batched-evolution-example](examples/batched-evolution/README.md)
 - Black-box optimization of inputs that produce desired outputs, e.g. Parameter Search.
 - Self-evolving feature processing pipelines.
 - Agentic code evolution generally.
