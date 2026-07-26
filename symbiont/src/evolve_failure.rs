@@ -12,7 +12,7 @@ use crate::{
 };
 
 /// One failed attempt inside the self-healing loop of
-/// [`crate::Runtime::evolve`].
+/// [`crate::Runtime::evolve`], or of one lane of a batched evolution.
 ///
 /// Captures exactly the failures that are rendered back into the retry
 /// prompt as backpressure: missing code blocks, parse errors, exhausted
@@ -21,11 +21,22 @@ use crate::{
 /// Hosts can drain these via [`crate::Runtime::take_evolve_failures`] and
 /// persist them for offline analysis of common failure patterns, e.g. to
 /// tune prompts or the documented API surface.
+///
+/// After a batch, records from all lanes land in one buffer in completion
+/// order. Group them by [`EvolveFailure::lane`] to reconstruct what each
+/// prompt variant struggled with — that per-variant view is the point of
+/// running a batch in the first place.
 #[derive(Debug, Clone, Getters, CopyGetters)]
 pub struct EvolveFailure {
-    /// 1-based attempt index within a single `evolve` call.
+    /// 1-based attempt index within a single `evolve` call, or within a
+    /// single lane of an `evolve_batch` call.
     #[getset(get_copy = "pub")]
     attempt: usize,
+    /// Index of the batch lane (and therefore of the prompt) this failure
+    /// belongs to. Always `0` for the single-prompt
+    /// [`crate::Runtime::evolve`].
+    #[getset(get_copy = "pub")]
+    lane: usize,
     /// Failure kind label; the same values as the `kind` label of
     /// [`crate::observability::EVOLVE_FAILURES`]: one of `no_rust_code`,
     /// `parse`, `max_turns`, `signature`, `unsafe`, `forbidden` or
@@ -48,6 +59,9 @@ impl EvolveFailure {
     /// Build a record from an evolution error, returning `None` for errors
     /// that do not feed backpressure to the agent (transient HTTP errors,
     /// IO failures, dylib load failures, ...).
+    ///
+    /// The record is attributed to lane `0`; batch lanes re-attribute it with
+    /// [`EvolveFailure::with_lane`].
     pub fn from_error(error: &Error, attempt: usize) -> Option<Self> {
         let (generated_code, diagnostics) = match error {
             Error::NoRustCode => (String::new(), error.to_string()),
@@ -74,10 +88,18 @@ impl EvolveFailure {
         };
         Some(Self {
             attempt,
+            lane: 0,
             kind: failure_kind_of(error),
             generated_code,
             diagnostics,
         })
+    }
+
+    /// Attribute this record to batch lane `lane`.
+    #[must_use]
+    pub fn with_lane(mut self, lane: usize) -> Self {
+        self.lane = lane;
+        self
     }
 }
 
@@ -159,6 +181,17 @@ mod tests {
 
         assert_eq!(failure.kind(), "no_rust_code");
         assert!(failure.generated_code().is_empty());
+    }
+
+    #[test]
+    fn records_default_to_lane_zero_and_can_be_reattributed() {
+        let failure = EvolveFailure::from_error(&Error::NoRustCode, 1)
+            .expect("missing code blocks feed backpressure");
+        assert_eq!(failure.lane(), 0, "the single-prompt path is lane 0");
+
+        let relaned = failure.with_lane(5);
+        assert_eq!(relaned.lane(), 5);
+        assert_eq!(relaned.attempt(), 1, "re-attribution preserves the attempt");
     }
 
     #[test]
