@@ -24,6 +24,7 @@
       </p>
       <ul class="hero-features">
         <li>Constrained Generation</li>
+        <li>Batched Population Search</li>
         <li>Auto-Research</li>
         <li>Function Performance Optimization</li>
         <li>Black-Box Parameter Search</li>
@@ -213,6 +214,138 @@
     </div>
   </section>
 
+  <!-- Showcase: Batched Evolution -->
+  <section class="showcase batch">
+    <div class="container">
+      <h2>Showcase: Batched Evolution</h2>
+      <p class="showcase-intro">
+        <code>evolve_batch</code> runs <strong>one lane per prompt, concurrently</strong> &mdash;
+        thirty-two slightly different prompts, thirty-two independent retry budgets,
+        thirty-two candidate implementations. Against a server that batches
+        (vLLM, SGLang, <code>llama-server --parallel n</code>) the lanes merge into
+        shared forward passes, so a whole population round costs a fraction of the
+        same evolutions run in a loop.
+      </p>
+
+      <div class="bench-grid batch-stats">
+        <div class="bench-card">
+          <h3>Population round</h3>
+          <div class="value">41s</div>
+          <div class="unit">32 candidates &mdash; 407s one at a time</div>
+        </div>
+        <div class="bench-card">
+          <h3>Decode throughput</h3>
+          <div class="value">9.1&times;</div>
+          <div class="unit">72 &rarr; 656 tok/s, still climbing at 32 lanes</div>
+        </div>
+        <div class="bench-card">
+          <h3>Prefix cache</h3>
+          <div class="value">74&ndash;76%</div>
+          <div class="unit">of prompt tokens, shared across every lane</div>
+        </div>
+      </div>
+
+      <figure class="chart-figure">
+        <figcaption class="chart-title">
+          Decode throughput by concurrency
+          <span>tokens/second, Bonsai-8B on vLLM, RTX PRO 6000 Blackwell</span>
+        </figcaption>
+        <svg viewBox="0 0 440 290" class="batch-chart" role="img"
+             aria-label="Column chart: decode throughput rises from 72 tokens per second at 1 lane in flight to 656 at 32 lanes.">
+
+          <!-- gridlines: hairline, recessive, solid -->
+          <line x1="50" y1="51.43" x2="426" y2="51.43" class="grid"/>
+          <line x1="50" y1="114.29" x2="426" y2="114.29" class="grid"/>
+          <line x1="50" y1="177.14" x2="426" y2="177.14" class="grid"/>
+          <line x1="50" y1="240" x2="426" y2="240" class="axis"/>
+
+          <!-- y ticks -->
+          <text x="42" y="55.4" class="tick" text-anchor="end">600</text>
+          <text x="42" y="118.3" class="tick" text-anchor="end">400</text>
+          <text x="42" y="181.1" class="tick" text-anchor="end">200</text>
+          <text x="42" y="244" class="tick" text-anchor="end">0</text>
+
+          <!-- columns: 24px, 4px rounded cap, square at the baseline -->
+          <path class="bar" d="M69.33,240 L69.33,221.37 Q69.33,217.37 73.33,217.37 L89.33,217.37 Q93.33,217.37 93.33,221.37 L93.33,240 Z">
+            <title>1 lane in flight — 72 tok/s, 407.1s wall</title>
+          </path>
+          <path class="bar" d="M132,240 L132,216.34 Q132,212.34 136,212.34 L152,212.34 Q156,212.34 156,216.34 L156,240 Z">
+            <title>2 lanes in flight — 88 tok/s, 679.6s wall (retry-heavy outlier)</title>
+          </path>
+          <path class="bar" d="M194.67,240 L194.67,182.40 Q194.67,178.40 198.67,178.40 L214.67,178.40 Q218.67,178.40 218.67,182.40 L218.67,240 Z">
+            <title>4 lanes in flight — 196 tok/s, 149.8s wall</title>
+          </path>
+          <path class="bar" d="M257.33,240 L257.33,149.71 Q257.33,145.71 261.33,145.71 L277.33,145.71 Q281.33,145.71 281.33,149.71 L281.33,240 Z">
+            <title>8 lanes in flight — 300 tok/s, 102.3s wall</title>
+          </path>
+          <path class="bar" d="M320,240 L320,94.71 Q320,90.71 324,90.71 L340,90.71 Q344,90.71 344,94.71 L344,240 Z">
+            <title>16 lanes in flight — 475 tok/s, 57.2s wall</title>
+          </path>
+          <path class="bar" d="M382.67,240 L382.67,37.83 Q382.67,33.83 386.67,33.83 L402.67,33.83 Q406.67,33.83 406.67,37.83 L406.67,240 Z">
+            <title>32 lanes in flight — 656 tok/s, 40.8s wall</title>
+          </path>
+
+          <!-- endpoints labelled; the axis carries the rest -->
+          <text x="81.33" y="210" class="value-label" text-anchor="middle">72</text>
+          <text x="394.67" y="27" class="value-label" text-anchor="middle">656</text>
+
+          <!-- x ticks -->
+          <text x="81.33" y="258" class="tick" text-anchor="middle">1</text>
+          <text x="144" y="258" class="tick" text-anchor="middle">2</text>
+          <text x="206.67" y="258" class="tick" text-anchor="middle">4</text>
+          <text x="269.33" y="258" class="tick" text-anchor="middle">8</text>
+          <text x="332" y="258" class="tick" text-anchor="middle">16</text>
+          <text x="394.67" y="258" class="tick" text-anchor="middle">32</text>
+          <text x="238" y="280" class="axis-title" text-anchor="middle">lanes in flight</text>
+        </svg>
+      </figure>
+
+      <details class="chart-data">
+        <summary>Measured data</summary>
+        <table>
+          <thead>
+            <tr><th>Lanes in flight</th><th>Wall</th><th>Decode tok/s</th><th>Lanes converged</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>1</td><td>407.1s</td><td>72</td><td>18/32</td></tr>
+            <tr><td>2</td><td>679.6s</td><td>88</td><td>18/32</td></tr>
+            <tr><td>4</td><td>149.8s</td><td>196</td><td>18/32</td></tr>
+            <tr><td>8</td><td>102.3s</td><td>300</td><td>16/32</td></tr>
+            <tr><td>16</td><td>57.2s</td><td>475</td><td>16/32</td></tr>
+            <tr><td>32</td><td>40.8s</td><td>656</td><td>17/32</td></tr>
+          </tbody>
+        </table>
+        <p>
+          The 2-lane row is an outlier: it drew a set of lanes that ground through
+          their full retry budgets and generated twice the tokens of every other
+          level. Retries within a lane are sequential, so they lengthen that lane's
+          critical path &mdash; and a level's wall clock is its slowest lane.
+        </p>
+      </details>
+
+      <ul class="showcase-points">
+        <li>A batch registers every candidate but activates <strong>none</strong>.
+            A pile of implementations with no fitness signal between them is not a
+            hill to climb &mdash; you evaluate them through pinned
+            <code>RevisionFn</code> handles and commit to a winner with
+            <code>activate_revision</code>.</li>
+        <li>Because nothing is published, a batch is exempt from the feedback-loop
+            contract: generation of the next round can overlap evaluation of the
+            current one.</li>
+        <li>Each lane owns its retry budget and chat history. A lane that answers
+            with prose ten times fails alone; its siblings neither see the
+            corrections nor lose budget to them.</li>
+        <li>Candidates that come back byte-identical share one revision instead of
+            each spending a <code>cargo build</code>.</li>
+      </ul>
+      <p class="showcase-cta">
+        <a href="{{ config.extra.github_url }}/tree/main/examples/batched-evolution">
+          Explore the batched-evolution example &rarr;
+        </a>
+      </p>
+    </div>
+  </section>
+
   <!-- Features -->
   <section class="features">
     <div class="container">
@@ -237,6 +370,18 @@
           <h3>Bare-metal performance</h3>
           <p>~1 ns dispatch overhead. Lock-free hot path via
              AtomicPtr. Multi-thread safe.</p>
+        </div>
+        <div class="card">
+          <h3>Batched evolution</h3>
+          <p>One lane per prompt, run concurrently and merged into
+             shared forward passes by the inference server. A whole
+             population per round, for a fraction of the wall clock.</p>
+        </div>
+        <div class="card">
+          <h3>Revision registry</h3>
+          <p>Every hot-swapped dylib stays loaded and addressable.
+             Roll back, A/B compare, or run an ensemble of past
+             revisions concurrently &mdash; no recompilation.</p>
         </div>
         <div class="card">
           <h3>Panic catching</h3>
