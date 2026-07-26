@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
-//! Shared scripted-agent test double for the backpressure integration tests.
+//! Shared agent test doubles for the integration tests.
 //!
 //! [`ScriptedAgent`] replays a fixed sequence of [`Turn`]s and records the
 //! exact prompt and chat-history length it receives on every call, so each
 //! test can assert on the precise feedback the runtime generated.
+//!
+//! [`RoutedAgent`] instead answers based on what the prompt *contains*. Batch
+//! lanes run concurrently and finish in nondeterministic order, so a FIFO
+//! script cannot address a particular lane — routing on prompt content can.
 #![allow(
     dead_code,
     reason = "Each integration test binary only uses a subset of these helpers"
@@ -110,5 +114,93 @@ impl EvolutionAgent for ScriptedAgent {
             }
             Turn::Fail(err) => Err(err),
         }
+    }
+}
+
+/// An [`EvolutionAgent`] that answers by matching the prompt against a routing
+/// table, rather than by position in a script.
+///
+/// Concurrent batch lanes interleave their calls in nondeterministic order, so
+/// "the n-th call" is not a stable way to address a lane. Each route is a
+/// `(needle, reply)` pair: the first route whose `needle` appears in the prompt
+/// wins. A lane can therefore be given a deterministic answer no matter when it
+/// happens to run.
+///
+/// Replies are consumed in order per route, so a route can hand out a broken
+/// answer first and a good one on the retry.
+///
+/// Note that the runtime's correction prompts replace the base prompt rather
+/// than extending it, so a lane's retries no longer carry its distinguishing
+/// hint. Give such a lane the [`ANY_PROMPT`] catch-all route, placed last.
+pub(crate) struct RoutedAgent {
+    /// Routing table: prompt needle -> remaining replies for that route.
+    routes: Mutex<Vec<(String, VecDeque<String>)>>,
+    /// Prompts received, in call order.
+    prompts: Mutex<Vec<String>>,
+}
+
+/// Needle that matches every prompt: every string contains the empty string.
+/// Use it as the last route of a [`RoutedAgent`] to catch retries, whose
+/// correction prompts no longer carry the lane's distinguishing hint.
+pub(crate) const ANY_PROMPT: &str = "";
+
+impl RoutedAgent {
+    /// Build an agent from `(needle, replies)` routes. Routes are matched in
+    /// the given order, so put more specific needles first and
+    /// [`ANY_PROMPT`] last.
+    pub(crate) fn new<N, R>(routes: impl IntoIterator<Item = (N, R)>) -> Self
+    where
+        N: Into<String>,
+        R: IntoIterator,
+        R::Item: Into<String>,
+    {
+        Self {
+            routes: Mutex::new(Vec::from_iter(routes.into_iter().map(
+                |(needle, replies)| {
+                    (
+                        needle.into(),
+                        VecDeque::from_iter(replies.into_iter().map(Into::into)),
+                    )
+                },
+            ))),
+            prompts: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Number of times the runtime invoked this agent, across all lanes.
+    pub(crate) fn calls(&self) -> usize {
+        self.prompts.lock().expect("Mutex is not poisoned").len()
+    }
+
+    /// Every prompt received, in (nondeterministic) call order.
+    pub(crate) fn prompts(&self) -> Vec<String> {
+        self.prompts.lock().expect("Mutex is not poisoned").clone()
+    }
+}
+
+impl EvolutionAgent for RoutedAgent {
+    async fn run(&self, prompt: &str, _history: Vec<Message>) -> Result<AgentRun, PromptError> {
+        self.prompts
+            .lock()
+            .expect("Mutex is not poisoned")
+            .push(prompt.to_string());
+
+        let text = {
+            let mut routes = self.routes.lock().expect("Mutex is not poisoned");
+            let (_, replies) = routes
+                .iter_mut()
+                .find(|(needle, _)| prompt.contains(needle.as_str()))
+                .expect("RoutedAgent received a prompt matching no route");
+            replies
+                .pop_front()
+                .expect("RoutedAgent route ran out of replies — unexpected extra retry")
+        };
+
+        let new_messages = vec![Message::user(prompt), Message::assistant(text.as_str())];
+        Ok(AgentRun {
+            output: text,
+            new_messages,
+            usage: Usage::new(),
+        })
     }
 }
