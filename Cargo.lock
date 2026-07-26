@@ -6012,6 +6012,7 @@ name = "symbiont"
 version = "0.21.0"
 dependencies = [
  "criterion",
+ "futures-util",
  "getset",
  "http",
  "libloading 0.9.0",

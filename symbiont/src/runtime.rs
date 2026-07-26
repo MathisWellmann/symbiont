@@ -29,6 +29,10 @@ use std::{
     time::Duration,
 };
 
+use futures_util::stream::{
+    self,
+    StreamExt,
+};
 use libloading::Library;
 use metrics::{
     counter,
@@ -98,6 +102,15 @@ use crate::{
 
 /// Singleton runtime instance.
 static RUNTIME: OnceLock<Runtime> = OnceLock::new();
+
+/// Whether a successfully registered revision should also become the active
+/// one. Batch lanes register without publishing, so the host can evaluate all
+/// candidates before choosing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Publish {
+    Yes,
+    No,
+}
 
 /// Cached pointer to the dylib's `__symbiont_take_panic` function.
 /// Updated on each reload alongside the evolvable function pointers.
@@ -286,17 +299,14 @@ impl Runtime {
         Ok(RUNTIME.get().expect("just set"))
     }
 
-    /// Generate LLM response, then parse, validate, compile, and hot-swap.
-    /// It does not catch validation errors and feed it back to the LLM, allowing the user to customize prompting behaviour.
+    /// Generate an LLM response, then parse, validate, compile and register it.
+    /// Validation errors are not caught here and fed back to the LLM — that is
+    /// [`Runtime::evolve_lane`]'s job — which keeps the prompting behaviour
+    /// customizable.
     ///
     /// On success, returns the [`Revision`] the new implementation was
-    /// registered under.
-    ///
-    /// # Contract
-    ///
-    /// All evolvable function calls must have returned before this is called.
-    /// In debug builds this is enforced with an assertion; in release it is
-    /// the caller's responsibility.
+    /// registered under. The dispatch pointers are left alone: publishing is
+    /// the caller's decision, because batch lanes register without activating.
     async fn evolve_no_backpressure<AgentT>(
         &self,
         agent: &AgentT,
@@ -378,12 +388,11 @@ impl Runtime {
             unparse(&ast)
         };
 
-        // Compile, load, and retain the new revision, then point the dispatch
-        // wrappers at it.
+        // Compile, load and retain the new revision. Whether it also becomes
+        // the active one is up to the caller.
         let revision = self.build_and_register(clean_ast_str).await?;
-        self.publish_revision(revision, "evolve")?;
 
-        info!("Hot-reloaded evolvable dylib (revision {revision}). LLM generation: {llm_time}ms.",);
+        info!("Built revision {revision}. LLM generation: {llm_time}ms.");
 
         Ok(revision)
     }
@@ -576,10 +585,6 @@ impl Runtime {
         clippy::manual_async_fn,
         reason = "Ensure the future is `Send` such that it works better with tokios multi-thread runtime"
     )]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "The retry policy is one sequential decision ladder; splitting it would obscure the order of the recovery rules"
-    )]
     pub fn evolve<AgentT>(
         &self,
         agent: &AgentT,
@@ -593,6 +598,190 @@ impl Runtime {
             // violation surfaces before minutes of inference rather than after.
             Self::assert_no_calls_in_flight();
 
+            self.evolve_failures
+                .write()
+                .map_err(|_| Error::MutexPoison)?
+                .clear();
+
+            self.evolve_lane(agent, base_prompt, 0, Publish::Yes).await
+        }
+    }
+
+    /// Evolve one candidate implementation per prompt, concurrently.
+    ///
+    /// Each prompt gets its own lane: its own chat history, its own
+    /// self-healing retry budget, and its own [`Revision`] on success. Lanes
+    /// are independent, so eight slightly different prompts can converge on
+    /// eight entirely different implementations — which is the point. The
+    /// returned vector is positionally aligned with `prompts`, and a lane that
+    /// exhausts its budget yields `Err` without affecting its siblings.
+    ///
+    /// Every lane defaults to running concurrently; use
+    /// [`Runtime::evolve_batch_limited`] to cap how many are in flight at once.
+    ///
+    /// # Why this is faster than a loop
+    ///
+    /// Against an OpenAI-compatible endpoint there is no batch API to call:
+    /// batching *is* issuing the requests concurrently and letting the server's
+    /// continuous batcher merge them into one forward pass. Two effects
+    /// compound:
+    ///
+    /// - Decode is memory-bandwidth-bound. At batch 1 the model weights are
+    ///   read once per token; at batch `n` they are read once for `n` tokens.
+    /// - All lanes share the symbiont system preamble — which embeds the
+    ///   rustdoc-derived API surface and is by far the largest part of the
+    ///   request — so with prefix caching enabled every lane after the first
+    ///   skips that prefill.
+    ///
+    /// Confirming the second effect is provider-dependent.
+    /// [`crate::observability::LLM_TOKENS`]`{kind="cached_input"}` reports it
+    /// only for backends that fill in the OpenAI-compatible
+    /// `usage.prompt_tokens_details.cached_tokens` field. vLLM does not, even
+    /// when its prefix cache is demonstrably working — there the figure lives
+    /// on its own `/metrics` endpoint as `vllm:prefix_cache_hits_total`.
+    ///
+    /// Keep the varying part of each prompt at the *end*. Prefix reuse stops at
+    /// the first differing token, so a per-lane preamble throws the second
+    /// effect away.
+    ///
+    /// Note that a server must be configured to batch: vLLM and SGLang do it by
+    /// default, but `llama-server` runs one sequence at a time unless started
+    /// with `--parallel n`.
+    ///
+    /// # The active revision is not changed
+    ///
+    /// Unlike [`Runtime::evolve`], no lane publishes. Every successful lane is
+    /// compiled, loaded and retained, but the `evolvable!` call sites keep
+    /// dispatching to whatever was active before. Evaluate the candidates
+    /// through the `<name>_fn` accessors — which return [`crate::RevisionFn`]
+    /// handles that pin their own revision — and then commit to a winner with
+    /// [`Runtime::activate_revision`]:
+    ///
+    /// ```rust,ignore
+    /// let revisions = runtime.evolve_batch(&agent, &prompts).await;
+    /// let best = revisions
+    ///     .iter()
+    ///     .filter_map(|r| r.as_ref().ok())
+    ///     .max_by_key(|rev| score(solve_fn(**rev).expect("just registered").get()))
+    ///     .copied()
+    ///     .expect("at least one lane succeeded");
+    /// runtime.activate_revision(best)?;
+    /// ```
+    ///
+    /// # Contract
+    ///
+    /// Because nothing is published, this method is **exempt** from the
+    /// feedback-loop contract that [`Runtime::evolve`] imposes: a
+    /// retained-but-inactive revision is invisible to running calls, so a batch
+    /// may generate while evolvable functions from an earlier round are still
+    /// executing. That is what makes it possible to overlap evaluation of round
+    /// `n` with generation of round `n + 1`.
+    ///
+    /// # Failures
+    ///
+    /// The failure buffer is cleared once for the whole batch, then filled by
+    /// all lanes in completion order. Group the drained records by
+    /// [`EvolveFailure::lane`] to see what each prompt variant struggled with.
+    pub fn evolve_batch<'a, AgentT, S>(
+        &'a self,
+        agent: &'a AgentT,
+        prompts: &'a [S],
+    ) -> impl Future<Output = Vec<Result<Revision>>> + Send + 'a
+    where
+        AgentT: EvolutionAgent + Sync,
+        S: AsRef<str> + Sync,
+    {
+        self.evolve_batch_limited(agent, prompts, prompts.len())
+    }
+
+    /// [`Runtime::evolve_batch`] with a ceiling on how many lanes are in flight
+    /// at once. The remaining lanes start as slots free up; results stay
+    /// positionally aligned with `prompts` either way.
+    ///
+    /// Cap this below `prompts.len()` when the endpoint is rate limited — eight
+    /// concurrent requests into a per-minute quota produce eight independent
+    /// 429 backoffs — or when the server's own batch width is smaller than the
+    /// batch, in which case the excess only queues server-side where you cannot
+    /// see it. For a local server, matching its `--max-num-seqs` is a good
+    /// default.
+    ///
+    /// `max_in_flight` is clamped to `1..=prompts.len()`.
+    #[expect(
+        clippy::manual_async_fn,
+        reason = "Ensure the future is `Send` such that it works better with tokios multi-thread runtime"
+    )]
+    pub fn evolve_batch_limited<'a, AgentT, S>(
+        &'a self,
+        agent: &'a AgentT,
+        prompts: &'a [S],
+        max_in_flight: usize,
+    ) -> impl Future<Output = Vec<Result<Revision>>> + Send + 'a
+    where
+        AgentT: EvolutionAgent + Sync,
+        S: AsRef<str> + Sync,
+    {
+        async move {
+            if prompts.is_empty() {
+                return Vec::new();
+            }
+            match self.evolve_failures.write() {
+                Ok(mut failures) => failures.clear(),
+                // Every lane would fail on the same poisoned lock; report it
+                // once per lane rather than pretending the batch ran.
+                Err(_) => return prompts.iter().map(|_| Err(Error::MutexPoison)).collect(),
+            }
+
+            let in_flight = max_in_flight.clamp(1, prompts.len());
+            info!(
+                "Evolving a batch of {} prompts, at most {in_flight} in flight.",
+                prompts.len()
+            );
+
+            // Constructing a lane future does no work, so building them all up
+            // front is free — and it pins the lifetimes, which a lazy
+            // `.map()` closure returning `impl Future` cannot do.
+            let lanes =
+                Vec::from_iter(prompts.iter().enumerate().map(|(lane, prompt)| {
+                    self.evolve_lane(agent, prompt.as_ref(), lane, Publish::No)
+                }));
+
+            // `buffered` polls up to `in_flight` lanes concurrently and yields
+            // results in input order, so the ordering guarantee costs nothing.
+            stream::iter(lanes)
+                .buffered(in_flight)
+                .collect::<Vec<_>>()
+                .await
+        }
+    }
+
+    /// One independent evolution: the self-healing retry ladder around
+    /// [`Runtime::evolve_no_backpressure`] for a single prompt.
+    ///
+    /// This is the body shared by [`Runtime::evolve`] (one lane, publishing)
+    /// and [`Runtime::evolve_batch`] (`n` concurrent lanes, not publishing).
+    /// It does not clear the failure buffer — the caller owns that, since a
+    /// batch clears once for the whole round rather than once per lane.
+    ///
+    /// `lane` only labels the [`EvolveFailure`] records this lane produces.
+    #[expect(
+        clippy::manual_async_fn,
+        reason = "Ensure the future is `Send` such that it works better with tokios multi-thread runtime"
+    )]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "The retry policy is one sequential decision ladder; splitting it would obscure the order of the recovery rules"
+    )]
+    fn evolve_lane<AgentT>(
+        &self,
+        agent: &AgentT,
+        base_prompt: &str,
+        lane: usize,
+        publish: Publish,
+    ) -> impl Future<Output = Result<Revision>> + Send
+    where
+        AgentT: EvolutionAgent + Sync,
+    {
+        async move {
             let t_start = Instant::now();
             let mut prompt = base_prompt.to_string();
             // Scoped to this call; see the doc comment above.
@@ -602,10 +791,6 @@ impl Runtime {
             // Code of the most recent rejected attempt, used to detect an
             // agent that echoes the same broken code back verbatim.
             let mut last_failed_code: Option<String> = None;
-            self.evolve_failures
-                .write()
-                .map_err(|_| Error::MutexPoison)?
-                .clear();
 
             loop {
                 attempts += 1;
@@ -614,6 +799,10 @@ impl Runtime {
                     .await
                 {
                     Ok(revision) => {
+                        if publish == Publish::Yes {
+                            self.publish_revision(revision, "evolve")?;
+                            info!("Hot-reloaded evolvable dylib (revision {revision}).");
+                        }
                         histogram!(EVOLVE_ATTEMPTS).record(attempts as f64);
                         histogram!(EVOLVE_DURATION).record(t_start.elapsed().as_secs_f64());
                         return Ok(revision);
@@ -631,7 +820,9 @@ impl Runtime {
                         // Along the way, detect a verbatim repeat of the
                         // previously rejected code.
                         let mut repeated = false;
-                        if let Some(failure) = EvolveFailure::from_error(&e, attempts) {
+                        if let Some(failure) =
+                            EvolveFailure::from_error(&e, attempts).map(|f| f.with_lane(lane))
+                        {
                             let code = failure.generated_code();
                             repeated = !code.is_empty()
                                 && last_failed_code.as_deref() == Some(code.as_str());
@@ -819,7 +1010,7 @@ impl Runtime {
     }
 
     /// Drain the failed attempts recorded during the most recent
-    /// [`Runtime::evolve`] call.
+    /// [`Runtime::evolve`] or [`Runtime::evolve_batch`] call.
     ///
     /// Each entry is one failure that fed backpressure to the agent inside
     /// the self-healing loop: missing code blocks, parse errors, exhausted
@@ -832,6 +1023,10 @@ impl Runtime {
     /// `Err`, where the recorded failures explain what exhausted the retry
     /// budget. Persist them (e.g. to a database) to analyze common failure
     /// patterns of the generation agent offline.
+    ///
+    /// A batch clears the buffer once for the whole round, not once per lane,
+    /// then fills it from all lanes in completion order. Group by
+    /// [`EvolveFailure::lane`] to attribute records back to their prompt.
     pub fn take_evolve_failures(&self) -> Vec<EvolveFailure> {
         self.evolve_failures
             .write()
