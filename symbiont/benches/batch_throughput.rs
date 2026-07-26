@@ -2,10 +2,11 @@
 //! Concurrency sweep for [`symbiont::Runtime::evolve_batch`] against a live
 //! inference server.
 //!
-//! Runs the same eight-lane batch at several in-flight limits and reports what
-//! each level cost. At limit 1 the lanes are fully serialized — the loop this
-//! API replaces. At limit 8 they are all in flight, which is what lets the
-//! server's continuous batcher merge them into shared forward passes.
+//! Runs the same batch of [`LANES`] candidates at several in-flight limits and
+//! reports what each level cost. At limit 1 the lanes are fully serialized —
+//! the loop this API replaces. At the top limit they are all in flight, which
+//! is what lets the server's continuous batcher merge them into shared forward
+//! passes.
 //!
 //! # Running it
 //!
@@ -23,9 +24,36 @@
 //!
 //! # Reading the output
 //!
-//! `s/candidate` is the number that should fall as the limit rises; the
-//! `speedup` column is against the serial level. The decomposition below each
-//! row separates what batching can help with from what it cannot:
+//! `s/candidate` is the number that should fall as the limit rises, and
+//! `speedup` is against the serial level. Prefer `dec tok/s` / `tok/s gain`
+//! when levels differ in how many retries they burned — wall clock rewards a
+//! level that got lucky with the model, generated-tokens-per-second does not.
+//!
+//! # Retry variance dominates, and it is not symmetric
+//!
+//! Check `output tok` before believing any single row. Levels are supposed to
+//! do equal work, but whether a lane converges is stochastic, and a lane that
+//! spends all [`Runtime::MAX_EVOLVE_ATTEMPTS`] attempts costs roughly ten
+//! times one that succeeds immediately. Observed in practice: individual
+//! levels landing at exactly double the usual `output tok` and running 4-8x
+//! slower than their neighbours — including one that came out *slower than
+//! serial*.
+//!
+//! The asymmetry is the important part. Retries within a lane are sequential,
+//! so they extend that lane's critical path, and a level's wall clock is its
+//! slowest lane. Extra concurrency cannot recover any of it. A level with 2x
+//! the tokens is therefore far worse than 2x slower.
+//!
+//! So: run the sweep more than once, and discard levels whose `output tok`
+//! departs from the others. Reducing [`Runtime::MAX_EVOLVE_ATTEMPTS`] or using
+//! prompts the model reliably satisfies would shrink the variance at the cost
+//! of measuring a less realistic workload.
+//! Expect wall clock to flatten before throughput does: every lane still
+//! parses, validates, compiles and loads on its own, and that tail does not
+//! shrink with concurrency.
+//!
+//! The decomposition below separates what batching can help with from what it
+//! cannot:
 //!
 //! - **llm** is summed per-lane inference time. It stays roughly flat in total
 //!   across levels — batching does not make any single request faster, it
@@ -72,10 +100,18 @@ use symbiont::{
 };
 
 /// In-flight limits to sweep. 1 is the serial baseline this API replaces.
-const LEVELS: &[usize] = &[1, 2, 4, 8];
+///
+/// The top of this range is where saturation shows up, so it is worth going
+/// past the point where the curve stops improving rather than stopping at the
+/// first flat step. Note the server has to be configured to match: vLLM
+/// admits at most `--max-num-seqs` sequences at a time and queues the rest,
+/// and a limit above that measures the queue rather than the batcher.
+const LEVELS: &[usize] = &[1, 2, 4, 8, 16, 32];
 /// Lanes per batch. Constant across levels so every level does the same amount
-/// of inference work and only the overlap differs.
-const LANES: usize = 8;
+/// of inference work and only the overlap differs — which also means it must
+/// be at least the highest limit, or that limit is silently clamped and two
+/// rows of the table measure the same thing.
+const LANES: usize = 32;
 /// How long to wait for a TCP connection to the inference endpoint.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 /// Output cap per lane.
@@ -114,26 +150,58 @@ symbiont::evolvable! {
     }
 }
 
+/// One distinct hint per lane, so a lane is a different program rather than a
+/// paraphrase of its neighbour. There must be at least [`LANES`] of them.
+///
+/// Difficulty is deliberately mixed. The hard ones (Atkin, Legendre) mostly
+/// fail on a small model, and that is fine for a throughput benchmark: a lane
+/// that burns its retry budget still generates tokens, which is what is being
+/// measured. It does mean levels do unequal work when their failure counts
+/// differ — see the `dec tok/s` column, which normalizes for that.
 const STRATEGIES: &[&str] = &[
     "a direct trial-division loop",
     "trial division bounded by the square root of the candidate",
     "trial division that skips even candidates",
+    "trial division against only the primes found so far",
+    "trial division against a hardcoded table of small primes",
     "a sieve of Eratosthenes over a boolean array",
+    "a sieve of Eratosthenes that starts marking at i*i",
     "a sieve of Eratosthenes with bit-packed flags",
+    "an odd-only sieve that stores no slots for even numbers",
     "a segmented sieve sized to fit in cache",
+    "a block-wise sieve that processes one cache line at a time",
+    "a sieve stored as u64 words, counting with count_ones",
+    "a two-pass approach: sieve the small primes first, then the rest",
+    "an incremental sieve that grows a list of primes",
+    "the sieve of Sundaram",
+    "the sieve of Atkin",
     "wheel factorization modulo 6",
+    "wheel factorization modulo 30",
+    "a deterministic Miller-Rabin test applied to each candidate",
+    "a Fermat primality test with a few small bases",
+    "Legendre's prime-counting recurrence",
     "an allocation-free strategy",
+    "a fixed-size stack array instead of a heap allocation",
+    "a branch-free inner marking loop",
+    "an unrolled inner marking loop",
+    "iterator chains rather than explicit indexing",
+    "a single flat loop with no helper functions",
+    "the fewest memory writes you can manage",
+    "u64 arithmetic internally to keep overflow impossible",
+    "an approach tuned for small n",
+    "an approach tuned for large n",
+    "the most readable implementation you can write",
 ];
 
-/// Build the eight prompts for one level.
+/// Build the [`LANES`] prompts for one level.
 ///
 /// The shared part comes first and the varying hint last, which is the layout
-/// prefix caching rewards. `level` is folded into the hint so that a level does
-/// not silently ride on revisions an earlier level already registered: an
-/// identical candidate is deduplicated and skips its build, which would make a
-/// later level look faster than it is.
+/// prefix caching rewards. `level` is folded into the hint so a level does not
+/// ride on revisions an earlier level registered — though only partly: dedup
+/// keys on generated source, which the tag never reaches, so lanes that emit
+/// identical code across levels still share a revision and skip its build.
 fn prompts_for(signature: &str, level: usize) -> Vec<String> {
-    Vec::from_iter(STRATEGIES.iter().map(|strategy| {
+    Vec::from_iter(STRATEGIES.iter().take(LANES).map(|strategy| {
         format!(
             "Implement this function, which returns how many prime numbers are \
              strictly less than `n`:\n\
@@ -170,6 +238,21 @@ struct LevelResult {
 impl LevelResult {
     fn per_candidate(&self) -> Duration {
         self.wall / u32::try_from(LANES).expect("lane count fits in u32")
+    }
+
+    /// Generated tokens per second of wall clock.
+    ///
+    /// The work-normalized view of the same run, and the one to trust when
+    /// levels differ in how many retries they burned: wall clock rewards a
+    /// level that happened to get lucky with the model, this does not. It is
+    /// also the quantity batching actually improves — decode is
+    /// memory-bandwidth-bound, so overlapping requests raises tokens/s even
+    /// where it can no longer lower wall clock.
+    fn decode_throughput(&self) -> f64 {
+        if self.wall.is_zero() {
+            return 0.0;
+        }
+        self.output_tokens as f64 / self.wall.as_secs_f64()
     }
 
     /// Share of the prompt served from the server's prefix cache.
@@ -311,13 +394,21 @@ fn prometheus_counter(body: &str, name: &str) -> f64 {
 /// Scrape vLLM's prefix-cache counters, if the endpoint exposes them.
 fn scrape_prefix_cache(base_url: &str) -> Option<PrefixCache> {
     let body = http_get(&endpoint_of(base_url)?, "/metrics")?;
-    let queries = prometheus_counter(&body, "vllm:prefix_cache_queries_total");
-    if queries == 0.0 {
+    // Presence of the series, not a non-zero value, is what says the server
+    // exposes this. A freshly started server reports a legitimate zero, and
+    // treating that as "unavailable" would discard the *baseline* of the very
+    // first level's diff and silently fall back to the provider-reported
+    // figure — which is always zero on vLLM, so the level would report a
+    // confident 0% instead of its real hit rate.
+    if !body
+        .lines()
+        .any(|line| !line.starts_with('#') && line.starts_with("vllm:prefix_cache_queries_total"))
+    {
         return None;
     }
     Some(PrefixCache {
         hits: prometheus_counter(&body, "vllm:prefix_cache_hits_total"),
-        queries,
+        queries: prometheus_counter(&body, "vllm:prefix_cache_queries_total"),
     })
 }
 
@@ -370,19 +461,31 @@ fn format_duration(d: Duration) -> String {
 fn print_results(results: &[LevelResult]) {
     let baseline = results.first().map(|r| r.wall);
 
-    println!("\n| in flight | wall    | s/candidate | speedup | lanes ok | built |");
-    println!("|-----------|---------|-------------|---------|----------|-------|");
+    let baseline_throughput = results.first().map(LevelResult::decode_throughput);
+
+    println!(
+        "\n| in flight | wall    | s/candidate | speedup | dec tok/s | tok/s gain | lanes ok | built |"
+    );
+    println!(
+        "|-----------|---------|-------------|---------|-----------|------------|----------|-------|"
+    );
     for r in results {
         let speedup = baseline.map_or_else(
             || "-".to_string(),
             |b| format!("{:.2}x", b.as_secs_f64() / r.wall.as_secs_f64()),
         );
+        let gain = baseline_throughput.filter(|b| *b > 0.0).map_or_else(
+            || "-".to_string(),
+            |b| format!("{:.2}x", r.decode_throughput() / b),
+        );
         println!(
-            "| {:>9} | {:>7} | {:>11} | {:>7} | {:>8} | {:>5} |",
+            "| {:>9} | {:>7} | {:>11} | {:>7} | {:>9.0} | {:>10} | {:>8} | {:>5} |",
             r.limit,
             format_duration(r.wall),
             format_duration(r.per_candidate()),
             speedup,
+            r.decode_throughput(),
+            gain,
             format!("{}/{LANES}", r.ok_lanes),
             r.built,
         );
@@ -411,27 +514,28 @@ fn print_results(results: &[LevelResult]) {
 
 /// One level: eight lanes at the given in-flight limit, measured in isolation.
 ///
-/// Each level installs its own recorder, so the metrics read back afterwards
-/// belong to that level alone rather than to the whole sweep.
+/// One shared global recorder, snapshotted once per level. `snapshot()` drains
+/// what it reports, so each snapshot contains exactly the level that just ran —
+/// no diffing, provided nothing else snapshots in between.
+///
+/// A global rather than a per-level thread-local recorder, because the sweep
+/// runs on a multi-threaded runtime: lanes are polled on whichever worker is
+/// free, and a thread-local recorder would silently miss everything recorded
+/// off the installing thread.
 async fn run_level<A>(
     runtime: &'static Runtime,
     agent: &A,
     signature: &str,
     limit: usize,
     base_url: &str,
+    snapshotter: &Snapshotter,
 ) -> LevelResult
 where
     A: symbiont::EvolutionAgent + Sync,
 {
     let cache_before = scrape_prefix_cache(base_url);
-    let recorder = DebuggingRecorder::new();
-    let snapshotter = recorder.snapshotter();
-    // A local recorder rather than a global one: the bench runs on a
-    // current-thread runtime, so every lane records on this thread. That the
-    // lanes still overlap on one thread is the point — they are I/O bound, and
-    // since `compile_dylib` awaits cargo rather than blocking, even the builds
-    // do not stall the others.
-    let _guard = metrics::set_default_local_recorder(&recorder);
+    // Drain anything left from the previous level so this level starts clean.
+    let _ = take_snapshot(snapshotter);
 
     let revisions_before = runtime.revision_count();
     let prompts = prompts_for(signature, limit);
@@ -450,7 +554,7 @@ where
         .zip(scrape_prefix_cache(base_url))
         .and_then(|(before, after)| after.rate_since(before));
 
-    let snapshot = take_snapshot(&snapshotter);
+    let snapshot = take_snapshot(snapshotter);
     let stage = observability::PIPELINE_STAGE_DURATION;
     let tokens = observability::LLM_TOKENS;
 
@@ -472,8 +576,32 @@ where
 // Current-thread: the lanes are I/O bound and the metrics recorder is
 // thread-local, so a single worker both suffices and keeps the measurement
 // attributable.
-#[tokio::main(flavor = "current_thread")]
+// Multi-threaded, because every lane does real CPU work off the wire —
+// deserializing the response, parsing it with `syn`, re-rendering it with
+// `prettyplease`, validating signatures, then `dlopen`ing the result — and on
+// one worker that serializes behind itself.
+//
+// Measured, it turns out not to matter much here: limit 16 came in at 56.4s,
+// 58.4s and 57.2s across two single-threaded runs and one multi-threaded one.
+// The wild outliers that prompted the switch (a level landing 4-8x slower than
+// its neighbours) were not the runtime at all — see the note on retry variance
+// in the module docs. Multi-threaded is kept as the honest default for a
+// benchmark at these widths, not as a fix.
+#[tokio::main]
 async fn main() -> symbiont::Result<()> {
+    // `evolve_batch_limited` clamps its limit to the lane count, so a level
+    // above `LANES` would quietly duplicate the `LANES` row instead of
+    // measuring anything new.
+    assert!(
+        LEVELS.iter().all(|&level| level <= LANES),
+        "every level must be <= LANES ({LANES}), else it is silently clamped"
+    );
+    assert!(
+        STRATEGIES.len() >= LANES,
+        "need at least one distinct strategy per lane ({LANES}), have {}",
+        STRATEGIES.len()
+    );
+
     let base_url = env::var("BASE_URL").unwrap_or_default();
     let model = env::var("MODEL").unwrap_or_default();
 
@@ -492,6 +620,11 @@ async fn main() -> symbiont::Result<()> {
     // Debug profile: this benchmark measures the evolution pipeline, not the
     // speed of the generated code, and a release build per candidate would add
     // seconds of cargo to every lane for no measurement value.
+    let recorder = DebuggingRecorder::new();
+    let snapshotter = recorder.snapshotter();
+    metrics::set_global_recorder(recorder)
+        .expect("no other recorder is installed in this benchmark");
+
     let runtime = Runtime::new(SYMBIONT_DECLS, SYMBIONT_PRELUDE, Profile::Debug).await?;
     let signature = runtime.fn_sigs()[0].clone();
     let agent = symbiont::agent_builder_from_env(None, &model)
@@ -504,7 +637,7 @@ async fn main() -> symbiont::Result<()> {
     let mut results = Vec::with_capacity(LEVELS.len());
     for &limit in LEVELS {
         println!("\n=== in flight: {limit} ===");
-        let result = run_level(runtime, &agent, &signature, limit, &base_url).await;
+        let result = run_level(runtime, &agent, &signature, limit, &base_url, &snapshotter).await;
         println!(
             "  {} wall, {} per candidate, {}/{LANES} lanes ok",
             format_duration(result.wall),

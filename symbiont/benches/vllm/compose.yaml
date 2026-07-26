@@ -17,10 +17,10 @@ services:
       # the dev shell, so BASE_URL/MODEL work unchanged against either server.
       - --served-model-name=local
       - --max-model-len=32768
-      # Must be at least the benchmark's highest in-flight limit, or the excess
-      # lanes queue server-side and the sweep measures the queue instead of the
-      # batcher.
-      - --max-num-seqs=16
+      # Must be at least the benchmark's highest in-flight limit (`LEVELS` in
+      # batch_throughput.rs), or the excess lanes queue server-side and the top
+      # rows of the sweep measure the queue instead of the batcher.
+      - --max-num-seqs=32
       - --gpu-memory-utilization=0.85
       # On by default in vLLM v1; explicit because the benchmark's `cached`
       # column is meaningless without it.

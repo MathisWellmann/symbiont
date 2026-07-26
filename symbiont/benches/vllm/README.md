@@ -96,65 +96,72 @@ memory utilization`, something else is holding the card — including a
 ## Measured result
 
 vLLM v0.26.0 serving `prism-ml/Bonsai-8B-unpacked` on an RTX PRO 6000 Blackwell,
-via the `compose.yaml` in this directory (prefix caching on, `--max-num-seqs=16`),
-dylibs built in the debug profile:
+via the `compose.yaml` in this directory (prefix caching on, `--max-num-seqs=32`),
+32 lanes, dylibs built in the debug profile, server restarted cold beforehand:
 
 ```
-| in flight | wall    | s/candidate | speedup | lanes ok | built |
-|-----------|---------|-------------|---------|----------|-------|
-|         1 |   74.0s |        9.2s |   1.00x |      5/8 |     5 |
-|         2 |   37.3s |        4.7s |   1.98x |      7/8 |     6 |
-|         4 |   21.6s |        2.7s |   3.43x |      6/8 |     2 |
-|         8 |   21.3s |        2.7s |   3.47x |      5/8 |     3 |
+| in flight | wall    | s/candidate | speedup | dec tok/s | tok/s gain | lanes ok | built |
+|-----------|---------|-------------|---------|-----------|------------|----------|-------|
+|         1 |  407.1s |       12.7s |   1.00x |        72 |      1.00x |    18/32 |    17 |
+|         2 |  679.6s |       21.2s |   0.60x |        88 |      1.22x |    18/32 |    16 |  <-- outlier, see below
+|         4 |  149.8s |        4.7s |   2.72x |       196 |      2.71x |    18/32 |    13 |
+|         8 |  102.3s |        3.2s |   3.98x |       300 |      4.15x |    16/32 |     9 |
+|        16 |   57.2s |        1.8s |   7.12x |       475 |      6.59x |    16/32 |    10 |
+|        32 |   40.8s |        1.3s |   9.97x |       656 |      9.10x |    17/32 |     5 |
 
 | in flight | llm (sum) | compile | slot wait | prompt tok | output tok | prefix hit |
 |-----------|-----------|---------|-----------|------------|------------|------------|
-|         1 |     71.2s |    1.3s |       0ms |      81245 |       5653 |        72% |
-|         2 |     50.0s |    1.6s |     142ms |      46287 |       3819 |        78% |
-|         4 |     63.0s |   524ms |     239ms |      79247 |       4576 |        75% |
-|         8 |     71.1s |   776ms |     873ms |      81274 |       5052 |        72% |
+|         1 |    394.8s |    4.5s |       0ms |     363278 |      29380 |        74% |
+|         2 |    840.3s |    4.0s |     353ms |     365529 |      59687 |        75% |
+|         4 |    410.5s |    3.3s |     605ms |     405417 |      29311 |        74% |
+|         8 |    461.0s |    2.3s |      1.3s |     406015 |      30640 |        75% |
+|        16 |    458.8s |    2.5s |      2.8s |     362446 |      27184 |        76% |
+|        32 |    578.3s |    1.3s |      5.8s |     387498 |      26794 |        75% |
 ```
 
-**A population round costs about what three sequential evolutions cost.**
-Eight candidates in 21s against 74s for the same eight run one at a time.
+**A population round costs about a tenth of the sequential loop.** 32
+candidates in 41s against 407s one at a time, at 9.1x the decode throughput.
 
-**Decode throughput is the work-normalized view, and it does not saturate.**
-Wall-clock speedup flattens between 4 and 8 (3.43x → 3.47x), but output
-tokens ÷ wall clock keeps climbing: **76 → 102 → 212 → 237 tok/s**, a 3.1x
-gain. The flattening is a fixed serial tail, not the batcher giving up — each
-lane still parses, validates, compiles and loads on its own, and the lanes that
-exhaust their retry budget run the full ten attempts regardless of how many
-siblings are in flight.
+**No saturation through 32, but clear diminishing returns.** 16 → 32 doubled
+concurrency for 1.4x wall clock. `llm (sum)` climbing from ~460s to 578s at the
+top limit is per-request latency rising under batch pressure — the aggregate
+still improves, but the marginal lane buys less.
 
-`llm (sum)` staying in the 50-71s band rather than growing with the limit is
-the check that the server is batching rather than queueing. Dividing it by
-wall clock gives the concurrency actually achieved — 0.96, 1.34, 2.92, 3.34 —
-consistently below the limit, because lanes spend part of their life in the
-local pipeline instead of in flight.
+**Level 16 is the most trustworthy row in the table**, at 56.4s, 58.4s and
+57.2s across three separate runs (two single-threaded, one multi-threaded).
 
-**The build slot behaves as designed.** `slot wait` grows with concurrency
-exactly as predicted (0ms → 873ms) but stays under 4% of wall clock even at
-eight lanes, while total `compile` never exceeds 1.6s. The batch is
-inference-bound throughout, which is the regime the single-slot design assumes.
+**The build slot is starting to show.** `slot wait` grows monotonically with
+concurrency, 0ms → 5.8s, reaching ~14% of wall clock at limit 32 — up from
+under 4% at limit 8. Still not the bottleneck, but this is the column that says
+when splitting the crate directory per lane starts to pay. Total `compile`
+*falls* with concurrency (4.5s → 1.3s) because dedup collapses more lanes at
+higher limits, visible in `built` dropping 17 → 5.
 
-**Prefix caching is doing real work**: 72-78% of prompt tokens served from
-cache. Note this figure comes from vLLM's `/metrics`; the provider-reported
-`cached_input_tokens` was 0 for every one of these requests.
+**Prefix caching is doing real work**: a steady 74-76% of prompt tokens served
+from cache. This comes from vLLM's `/metrics`; the provider-reported
+`cached_input_tokens` was 0 for every single request in every run.
 
-Two caveats on the numbers:
+### Retry variance dominates — check `output tok` before trusting a row
 
-- **Levels do unequal work.** A lane that exhausts its budget spends ten
-  requests, so a level with more failures does more inference — visible in the
-  `prompt tok` column (level 2 did 46k tokens against level 1's 81k). Bonsai-8B
-  gets 5-7 of 8 lanes to compiling code; the sieve-family prompts mostly die on
-  `u32`-vs-`usize` indexing against the `fn(n: u32) -> u32` signature. Treat the
-  speedup column as indicative, and prefer the tok/s figures.
-- **`built` is below `lanes ok` at limits 4 and 8** because candidates
-  deduplicated against revisions earlier levels had already registered. The
-  prompts carry a per-level tag, but dedup keys on generated source, which the
-  tag does not reach. It saves those levels roughly a second of compile time —
-  immaterial against a 74s → 21s change, but it is why their `compile` column
-  is lower.
+The limit-2 row above reads 0.60x, *slower than serial*. It is not a
+concurrency effect: its `output tok` is 59687, almost exactly double every
+other level's ~29000. That level drew a set of lanes that ground through their
+full retry budgets.
+
+The asymmetry matters. Retries within a lane are sequential, so they lengthen
+that lane's critical path, and a level's wall clock is its slowest lane —
+concurrency cannot recover any of it. A level with 2x the tokens is far worse
+than 2x slower. The same thing hit limit 32 in an earlier run (57124 output
+tokens, 429.9s, 0.90x) while two other runs put it at 40.8s and 47.3s.
+
+This is the workload, not the harness: Bonsai-8B converges on 16-20 of 32
+lanes, with the sieve-family prompts mostly dying on `u32`-vs-`usize` indexing
+against the `fn(n: u32) -> u32` signature. Run the sweep more than once and
+discard rows whose `output tok` departs from the rest.
+
+One further caveat: `built` falls below `lanes ok` because candidates
+deduplicate against revisions earlier levels registered. The prompts carry a
+per-level tag, but dedup keys on generated source, which the tag never reaches.
 
 ## Reading the output
 
