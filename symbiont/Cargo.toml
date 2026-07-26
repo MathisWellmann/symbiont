@@ -58,3 +58,10 @@ version = "0.18"
 [[bench]]
 harness = false
 name = "dispatch_overhead"
+
+# Needs a live inference server; skips cleanly (exit 0) without one, so
+# `cargo bench` and CI's `cargo bench --no-run` stay green on machines
+# that have none. See `benches/vllm/README.md`.
+[[bench]]
+harness = false
+name = "batch_throughput"

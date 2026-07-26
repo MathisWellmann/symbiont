@@ -1,0 +1,50 @@
+# vLLM serving the same model CI uses, for `cargo bench --bench batch_throughput`.
+#
+# The dev shell's `llama-server` (devenv.nix) also batches once given
+# `--parallel n`, but vLLM is the reference implementation of continuous
+# batching and paged prefix caching, so it is the recommended target for the
+# sweep. Both listen on 8231, so run one or the other — not both.
+services:
+  vllm:
+    image: vllm/vllm-openai:v0.26.0
+    container_name: symbiont-vllm
+    # `prism-ml/Bonsai-8B-unpacked` is the safetensors base that
+    # `prism-ml/Bonsai-8B-gguf` — the model devenv.nix serves — was quantized
+    # from. Same weights, in the format vLLM loads natively.
+    command:
+      - --model=prism-ml/Bonsai-8B-unpacked
+      # Matches the `--alias local` / `MODEL=local` convention used by CI and
+      # the dev shell, so BASE_URL/MODEL work unchanged against either server.
+      - --served-model-name=local
+      - --max-model-len=32768
+      # Must be at least the benchmark's highest in-flight limit, or the excess
+      # lanes queue server-side and the sweep measures the queue instead of the
+      # batcher.
+      - --max-num-seqs=16
+      - --gpu-memory-utilization=0.85
+      # On by default in vLLM v1; explicit because the benchmark's `cached`
+      # column is meaningless without it.
+      - --enable-prefix-caching
+    # CDI rather than `deploy.resources.reservations.devices`: on hosts where
+    # the NVIDIA container runtime is not registered with the daemon (the
+    # common NixOS setup, where nvidia-container-toolkit only drops a CDI spec
+    # into /var/run/cdi), `--gpus all` fails but the CDI device resolves.
+    devices:
+      - nvidia.com/gpu=all
+    # vLLM's workers communicate over shared memory; the 64 MB default is not
+    # enough and shows up as an opaque worker crash.
+    ipc: host
+    ports:
+      # Loopback only: this serves an unauthenticated completions API.
+      - "127.0.0.1:8231:8000"
+    volumes:
+      # ~16 GB of weights, fetched once and reused across runs.
+      - "${HOME}/.cache/huggingface:/root/.cache/huggingface"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      # Generous: the first run downloads the weights, and vLLM compiles CUDA
+      # graphs on every cold start.
+      retries: 120
+      start_period: 60s
