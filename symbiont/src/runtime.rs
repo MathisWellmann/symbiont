@@ -63,9 +63,13 @@ use crate::{
         Result,
     },
     observability::{
+        BUILD_SLOT_WAIT,
         DYLIB_SIZE_BYTES,
         DYLIB_SOURCE_BYTES,
         EVOLVE_ATTEMPTS,
+        EVOLVE_BATCH_DURATION,
+        EVOLVE_BATCH_LANES,
+        EVOLVE_BATCH_SIZE,
         EVOLVE_CONTEXT_RESETS,
         EVOLVE_DURATION,
         EVOLVE_FAILURES,
@@ -417,6 +421,7 @@ impl Runtime {
         let t_wait = Instant::now();
         let _build_permit = self.build_slot.lock().await;
         let waited = t_wait.elapsed();
+        histogram!(BUILD_SLOT_WAIT).record(waited.as_secs_f64());
 
         // Identical source compiles to an identical dylib, so there is nothing
         // to gain from building it twice. The check runs inside the build
@@ -780,6 +785,8 @@ impl Runtime {
                 "Evolving a batch of {} prompts, at most {in_flight} in flight.",
                 prompts.len()
             );
+            let t_batch = Instant::now();
+            histogram!(EVOLVE_BATCH_SIZE).record(prompts.len() as f64);
 
             // Constructing a lane future does no work, so building them all up
             // front is free — and it pins the lifetimes, which a lazy
@@ -791,10 +798,25 @@ impl Runtime {
 
             // `buffered` polls up to `in_flight` lanes concurrently and yields
             // results in input order, so the ordering guarantee costs nothing.
-            stream::iter(lanes)
+            let results: Vec<Result<Revision>> = stream::iter(lanes)
                 .buffered(in_flight)
                 .collect::<Vec<_>>()
-                .await
+                .await;
+
+            for result in &results {
+                let outcome = if result.is_ok() { "ok" } else { "error" };
+                counter!(EVOLVE_BATCH_LANES, "outcome" => outcome).increment(1);
+            }
+            let elapsed = t_batch.elapsed();
+            histogram!(EVOLVE_BATCH_DURATION).record(elapsed.as_secs_f64());
+            info!(
+                "Batch of {} lanes finished in {}ms ({} succeeded).",
+                results.len(),
+                elapsed.as_millis(),
+                results.iter().filter(|r| r.is_ok()).count(),
+            );
+
+            results
         }
     }
 
