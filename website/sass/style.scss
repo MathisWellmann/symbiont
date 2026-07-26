@@ -281,6 +281,132 @@ section {
   }
 }
 
+// --- Batched evolution showcase ---
+
+// Chart colors are validated against the dark surface with the dataviz
+// palette checker: $chart-mark sits inside the OKLCH lightness band and
+// clears 3:1 contrast on $bg. $teal does not (L 0.776), so it is used only
+// for the hover state, never to encode data.
+$chart-mark: #00897B;
+
+.batch {
+  .batch-stats {
+    margin-bottom: 3rem;
+    max-width: 900px;
+    grid-template-columns: repeat(3, 1fr);
+
+    @media (max-width: 800px) {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  .chart-figure {
+    max-width: 620px;
+    margin: 0 auto 1.5rem;
+    background: $bg-card;
+    border: 1px solid $border;
+    border-radius: 8px;
+    padding: 1.5rem;
+
+    .chart-title {
+      font-size: 0.95rem;
+      font-weight: 600;
+      color: $text;
+      margin-bottom: 1rem;
+      text-align: center;
+
+      span {
+        display: block;
+        font-size: 0.8rem;
+        font-weight: 400;
+        color: $text-muted;
+        margin-top: 0.2rem;
+      }
+    }
+  }
+
+  .batch-chart {
+    display: block;
+    width: 100%;
+    height: auto;
+
+    // One series, one hue: length encodes magnitude, color carries no value.
+    .bar {
+      fill: $chart-mark;
+      transition: fill 0.15s;
+
+      &:hover { fill: $teal; }
+    }
+
+    // Hairline, solid, recessive — never dashed, never competing with the data.
+    .grid,
+    .axis {
+      stroke: $border;
+      stroke-width: 1;
+    }
+
+    .axis { stroke: lighten($border, 8%); }
+
+    // Text wears text tokens, never the series color.
+    .tick {
+      fill: $text-muted;
+      font-size: 10px;
+      font-family: monospace;
+    }
+
+    .value-label {
+      fill: $text;
+      font-size: 11px;
+      font-family: monospace;
+      font-weight: 700;
+    }
+
+    .axis-title {
+      fill: $text-muted;
+      font-size: 10px;
+    }
+  }
+
+  .chart-data {
+    max-width: 620px;
+    margin: 0 auto 2rem;
+    font-size: 0.85rem;
+    color: $text-muted;
+
+    summary {
+      cursor: pointer;
+      color: $teal;
+      margin-bottom: 0.8rem;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-family: monospace;
+      margin-bottom: 0.8rem;
+    }
+
+    th,
+    td {
+      padding: 0.35rem 0.6rem;
+      text-align: right;
+      border-bottom: 1px solid $border;
+    }
+
+    th {
+      color: $text;
+      font-weight: 600;
+    }
+
+    th:first-child,
+    td:first-child { text-align: left; }
+
+    p {
+      line-height: 1.6;
+    }
+  }
+}
+
 // --- Features ---
 
 .features {
@@ -317,48 +443,50 @@ section {
 
 // --- Benchmarks ---
 
+// Shared stat tiles — used by the benchmarks section and the batched-evolution
+// showcase, so they live at the top level rather than scoped to one section.
+.bench-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.5rem;
+  max-width: 700px;
+  margin: 0 auto;
+
+  @media (max-width: 600px) {
+    grid-template-columns: 1fr;
+  }
+}
+
+.bench-card {
+  background: $bg-card;
+  border: 1px solid $border;
+  border-radius: 8px;
+  padding: 1.5rem;
+  text-align: center;
+
+  h3 {
+    font-size: 0.85rem;
+    color: $text-muted;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 0.5rem;
+  }
+
+  .value {
+    font-family: monospace;
+    font-size: 2rem;
+    font-weight: 700;
+    color: $teal;
+  }
+
+  .unit {
+    font-size: 0.85rem;
+    color: $text-muted;
+  }
+}
+
 .benchmarks {
   h2 { text-align: center; margin-bottom: 2rem; }
-
-  .bench-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 1.5rem;
-    max-width: 700px;
-    margin: 0 auto;
-
-    @media (max-width: 600px) {
-      grid-template-columns: 1fr;
-    }
-  }
-
-  .bench-card {
-    background: $bg-card;
-    border: 1px solid $border;
-    border-radius: 8px;
-    padding: 1.5rem;
-    text-align: center;
-
-    h3 {
-      font-size: 0.85rem;
-      color: $text-muted;
-      text-transform: uppercase;
-      letter-spacing: 1px;
-      margin-bottom: 0.5rem;
-    }
-
-    .value {
-      font-family: monospace;
-      font-size: 2rem;
-      font-weight: 700;
-      color: $teal;
-    }
-
-    .unit {
-      font-size: 0.85rem;
-      color: $text-muted;
-    }
-  }
 }
 
 // --- Positioning Quadrant ---
