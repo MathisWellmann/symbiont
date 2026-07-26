@@ -35,6 +35,10 @@
 //! | [`EVOLVE_DURATION`]         | histogram | —                      |
 //! | [`EVOLVE_CONTEXT_RESETS`]   | counter   | —                      |
 //! | [`EVOLVE_REPEAT_RESETS`]    | counter   | —                      |
+//! | [`EVOLVE_BATCH_SIZE`]       | histogram | —                      |
+//! | [`EVOLVE_BATCH_DURATION`]   | histogram | —                      |
+//! | [`EVOLVE_BATCH_LANES`]      | counter   | `outcome`              |
+//! | [`BUILD_SLOT_WAIT`]         | histogram | —                      |
 //! | [`PIPELINE_STAGE_DURATION`] | histogram | `stage`                |
 //! | [`LLM_RUNS`]                | counter   | `outcome`              |
 //! | [`LLM_TOKENS`]              | counter   | `kind`                 |
@@ -64,8 +68,28 @@ pub const EVOLVE_FAILURES: &str = "symbiont_evolve_failures_total";
 /// agent produced valid, compiling code on the first try.
 pub const EVOLVE_ATTEMPTS: &str = "symbiont_evolve_attempts";
 /// Wall-clock seconds of a whole `Runtime::evolve` call, including all
-/// self-healing retries and transient-error backoffs.
+/// self-healing retries and transient-error backoffs. For a batch this is
+/// recorded once per lane, so the distribution describes lane latency rather
+/// than batch latency — see [`EVOLVE_BATCH_DURATION`] for the latter.
 pub const EVOLVE_DURATION: &str = "symbiont_evolve_duration_seconds";
+/// Lanes per `Runtime::evolve_batch` call. Divide [`EVOLVE_BATCH_DURATION`] by
+/// this to get seconds per candidate, which is the number that should fall as
+/// the batch grows if the server is really batching.
+pub const EVOLVE_BATCH_SIZE: &str = "symbiont_evolve_batch_size";
+/// Wall-clock seconds of a whole `Runtime::evolve_batch` call: from the first
+/// lane starting to the last one finishing. Because lanes overlap, this is far
+/// below the sum of their [`EVOLVE_DURATION`]s — the ratio between the two is
+/// the batching speedup.
+pub const EVOLVE_BATCH_DURATION: &str = "symbiont_evolve_batch_duration_seconds";
+/// Batch lanes that finished, by `outcome` (`ok`, `error`). Lanes fail
+/// independently, so a rising `error` share against a steady batch size means
+/// specific prompt variants are unproductive, not that the batch is broken.
+pub const EVOLVE_BATCH_LANES: &str = "symbiont_evolve_batch_lanes_total";
+/// Seconds a lane spent waiting for the build slot before it could compile.
+/// Builds are serialized against one shared crate directory, so this is the
+/// cost of that choice. It should stay near zero while inference dominates;
+/// if it does not, the batch is bottlenecked on `cargo`, not on the model.
+pub const BUILD_SLOT_WAIT: &str = "symbiont_build_slot_wait_seconds";
 /// Times the chat history had to be discarded because the request exceeded
 /// the model's context window. A rising value signals prompt/history bloat.
 pub const EVOLVE_CONTEXT_RESETS: &str = "symbiont_evolve_context_window_resets_total";
@@ -145,6 +169,10 @@ pub(crate) mod stage {
 /// Register units and descriptions for every symbiont metric with the
 /// installed recorder. Called by [`init_observability`]; call it manually if
 /// you install your own recorder.
+#[expect(
+    clippy::too_many_lines,
+    reason = "One `describe_*!` per metric in catalogue order; splitting the list would only hide which metrics are registered"
+)]
 pub fn describe_metrics() {
     use metrics::{
         describe_counter,
@@ -176,6 +204,26 @@ pub fn describe_metrics() {
         EVOLVE_REPEAT_RESETS,
         Unit::Count,
         "Verbatim-repeated rejected code that discarded the chat history"
+    );
+    describe_histogram!(
+        EVOLVE_BATCH_SIZE,
+        Unit::Count,
+        "Lanes per Runtime::evolve_batch call"
+    );
+    describe_histogram!(
+        EVOLVE_BATCH_DURATION,
+        Unit::Seconds,
+        "Wall-clock duration of Runtime::evolve_batch calls"
+    );
+    describe_counter!(
+        EVOLVE_BATCH_LANES,
+        Unit::Count,
+        "Finished batch lanes by outcome"
+    );
+    describe_histogram!(
+        BUILD_SLOT_WAIT,
+        Unit::Seconds,
+        "Time a lane waited for the build slot before compiling"
     );
     describe_histogram!(
         PIPELINE_STAGE_DURATION,
