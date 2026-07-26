@@ -46,6 +46,7 @@
 //! | [`REVISION_ACTIVE`]         | gauge     | —                      |
 //! | [`REVISIONS_LOADED`]        | gauge     | —                      |
 //! | [`REVISION_ACTIVATIONS`]    | counter   | `source`               |
+//! | [`REVISION_DEDUP_HITS`]     | counter   | —                      |
 //! | [`DYLIB_SIZE_BYTES`]        | histogram | —                      |
 //! | [`DYLIB_SOURCE_BYTES`]      | histogram | —                      |
 //!
@@ -106,6 +107,12 @@ pub const REVISIONS_LOADED: &str = "symbiont_revisions_loaded";
 /// Revision activations, by `source` (`evolve`, `manual`). `manual`
 /// activations are rollbacks or re-deploys via `Runtime::activate_revision`.
 pub const REVISION_ACTIVATIONS: &str = "symbiont_revision_activations_total";
+/// Candidates that were byte-identical to an already-registered revision and
+/// therefore reused it instead of being compiled again. Each hit is one
+/// `cargo build` saved. A high rate against a batch means the prompt variants
+/// are not actually diversifying the output — raise the sampling temperature
+/// or make the per-lane hints more distinct.
+pub const REVISION_DEDUP_HITS: &str = "symbiont_revision_dedup_hits_total";
 /// Size in bytes of each successfully loaded dylib.
 pub const DYLIB_SIZE_BYTES: &str = "symbiont_dylib_size_bytes";
 /// Size in bytes of the generated Rust source per revision. Detects code
@@ -212,6 +219,11 @@ pub fn describe_metrics() {
         REVISION_ACTIVATIONS,
         Unit::Count,
         "Revision activations by source"
+    );
+    describe_counter!(
+        REVISION_DEDUP_HITS,
+        Unit::Count,
+        "Candidates that reused an identical registered revision instead of rebuilding"
     );
     describe_histogram!(
         DYLIB_SIZE_BYTES,
