@@ -80,6 +80,7 @@ use crate::{
         PIPELINE_STAGE_DURATION,
         REVISION_ACTIVATIONS,
         REVISION_ACTIVE,
+        REVISION_DEDUP_HITS,
         failure_kind_of,
         stage,
     },
@@ -408,10 +409,26 @@ impl Runtime {
     /// The whole body runs under [`Runtime::build_slot`], which is what makes
     /// concurrent lanes safe: the shared crate dir, the shared `so_path`, and
     /// the id assignment are all inside one critical section.
+    ///
+    /// A candidate that is byte-identical to an already-registered revision
+    /// reuses it instead of being built again — see
+    /// [`Runtime::registered_with_source`].
     async fn build_and_register(&self, clean_ast_str: String) -> Result<Revision> {
         let t_wait = Instant::now();
         let _build_permit = self.build_slot.lock().await;
         let waited = t_wait.elapsed();
+
+        // Identical source compiles to an identical dylib, so there is nothing
+        // to gain from building it twice. The check runs inside the build
+        // permit, which is what makes it airtight for a batch: two lanes that
+        // generated the same code cannot both miss and then both build.
+        if let Some(existing) = self.registered_with_source(&clean_ast_str)? {
+            counter!(REVISION_DEDUP_HITS).increment(1);
+            info!(
+                "Candidate is byte-identical to revision {existing}; reusing it instead of spending a build."
+            );
+            return Ok(existing);
+        }
 
         let source_bytes = clean_ast_str.len();
         debug!("clean_ast_str: {clean_ast_str}");
@@ -477,6 +494,20 @@ impl Runtime {
         );
 
         Ok(Revision::new(id))
+    }
+
+    /// The revision whose source is exactly `source`, if one is registered.
+    ///
+    /// A linear scan with a full string comparison rather than a hash index:
+    /// the registry holds tens to hundreds of entries of a few KB each, so a
+    /// miss costs microseconds against a build that costs seconds, and there
+    /// is no collision case to get wrong.
+    fn registered_with_source(&self, source: &str) -> Result<Option<Revision>> {
+        let revisions = self.revisions.read().map_err(|_| Error::MutexPoison)?;
+        Ok(revisions
+            .iter()
+            .position(|entry| entry.source() == source)
+            .map(|idx| Revision::new(u64::try_from(idx).expect("registry index fits in u64"))))
     }
 
     /// Point every `evolvable!` dispatch wrapper at `revision` and record it as
@@ -547,6 +578,12 @@ impl Runtime {
     /// registered under. The revision stays loaded for the lifetime of the
     /// process, so it can be pointed at again later.
     ///
+    /// If the agent produced source byte-identical to an already-registered
+    /// revision, that revision is returned and activated instead of being
+    /// compiled again — so a returned id is not necessarily a *new* id. Watch
+    /// [`crate::observability::REVISION_DEDUP_HITS`] if you need to tell the
+    /// two apart.
+    ///
     /// If constrained generation fails (parse error, signature mismatch, or
     /// compilation failure), the next turn contains only the latest correction;
     /// prior context remains available in chat history. The LLM retries until it
@@ -615,6 +652,13 @@ impl Runtime {
     /// eight entirely different implementations — which is the point. The
     /// returned vector is positionally aligned with `prompts`, and a lane that
     /// exhausts its budget yields `Err` without affecting its siblings.
+    ///
+    /// Lanes that converge on byte-identical source share one revision rather
+    /// than compiling it repeatedly, so the returned ids are not guaranteed to
+    /// be distinct. Repeated ids are a useful signal in their own right: the
+    /// prompt variants are not diversifying the output. Deduplicate before
+    /// evaluating if your fitness function is expensive, and watch
+    /// [`crate::observability::REVISION_DEDUP_HITS`] to quantify the collapse.
     ///
     /// Every lane defaults to running concurrently; use
     /// [`Runtime::evolve_batch_limited`] to cap how many are in flight at once.
