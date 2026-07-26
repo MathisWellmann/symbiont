@@ -93,6 +93,69 @@ If vLLM exits with `Free memory on device cuda:0 (...) is less than desired GPU
 memory utilization`, something else is holding the card — including a
 `llama-server` left running from `devenv up`.
 
+## Measured result
+
+vLLM v0.26.0 serving `prism-ml/Bonsai-8B-unpacked` on an RTX PRO 6000 Blackwell,
+via the `compose.yaml` in this directory (prefix caching on, `--max-num-seqs=16`),
+dylibs built in the debug profile:
+
+```
+| in flight | wall    | s/candidate | speedup | lanes ok | built |
+|-----------|---------|-------------|---------|----------|-------|
+|         1 |   74.0s |        9.2s |   1.00x |      5/8 |     5 |
+|         2 |   37.3s |        4.7s |   1.98x |      7/8 |     6 |
+|         4 |   21.6s |        2.7s |   3.43x |      6/8 |     2 |
+|         8 |   21.3s |        2.7s |   3.47x |      5/8 |     3 |
+
+| in flight | llm (sum) | compile | slot wait | prompt tok | output tok | prefix hit |
+|-----------|-----------|---------|-----------|------------|------------|------------|
+|         1 |     71.2s |    1.3s |       0ms |      81245 |       5653 |        72% |
+|         2 |     50.0s |    1.6s |     142ms |      46287 |       3819 |        78% |
+|         4 |     63.0s |   524ms |     239ms |      79247 |       4576 |        75% |
+|         8 |     71.1s |   776ms |     873ms |      81274 |       5052 |        72% |
+```
+
+**A population round costs about what three sequential evolutions cost.**
+Eight candidates in 21s against 74s for the same eight run one at a time.
+
+**Decode throughput is the work-normalized view, and it does not saturate.**
+Wall-clock speedup flattens between 4 and 8 (3.43x → 3.47x), but output
+tokens ÷ wall clock keeps climbing: **76 → 102 → 212 → 237 tok/s**, a 3.1x
+gain. The flattening is a fixed serial tail, not the batcher giving up — each
+lane still parses, validates, compiles and loads on its own, and the lanes that
+exhaust their retry budget run the full ten attempts regardless of how many
+siblings are in flight.
+
+`llm (sum)` staying in the 50-71s band rather than growing with the limit is
+the check that the server is batching rather than queueing. Dividing it by
+wall clock gives the concurrency actually achieved — 0.96, 1.34, 2.92, 3.34 —
+consistently below the limit, because lanes spend part of their life in the
+local pipeline instead of in flight.
+
+**The build slot behaves as designed.** `slot wait` grows with concurrency
+exactly as predicted (0ms → 873ms) but stays under 4% of wall clock even at
+eight lanes, while total `compile` never exceeds 1.6s. The batch is
+inference-bound throughout, which is the regime the single-slot design assumes.
+
+**Prefix caching is doing real work**: 72-78% of prompt tokens served from
+cache. Note this figure comes from vLLM's `/metrics`; the provider-reported
+`cached_input_tokens` was 0 for every one of these requests.
+
+Two caveats on the numbers:
+
+- **Levels do unequal work.** A lane that exhausts its budget spends ten
+  requests, so a level with more failures does more inference — visible in the
+  `prompt tok` column (level 2 did 46k tokens against level 1's 81k). Bonsai-8B
+  gets 5-7 of 8 lanes to compiling code; the sieve-family prompts mostly die on
+  `u32`-vs-`usize` indexing against the `fn(n: u32) -> u32` signature. Treat the
+  speedup column as indicative, and prefer the tok/s figures.
+- **`built` is below `lanes ok` at limits 4 and 8** because candidates
+  deduplicated against revisions earlier levels had already registered. The
+  prompts carry a per-level tag, but dedup keys on generated source, which the
+  tag does not reach. It saves those levels roughly a second of compile time —
+  immaterial against a 74s → 21s change, but it is why their `compile` column
+  is lower.
+
 ## Reading the output
 
 `s/candidate` is the headline: it should fall as the limit rises. Below it, the
