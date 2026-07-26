@@ -225,7 +225,7 @@ impl Runtime {
         let initial_source_bytes = lib_rs.len();
 
         // Compile
-        compile_dylib(&crate_dir, config.profile(), &lib_rs)?;
+        compile_dylib(&crate_dir, config.profile(), &lib_rs).await?;
 
         // Copy the build output to the revision-0 path: later `cargo build`
         // runs replace the unversioned artifact, while the versioned copy
@@ -333,42 +333,47 @@ impl Runtime {
         )
         .record(t0.elapsed().as_secs_f64());
 
-        // Parse Rust from markdown fences, validate signatures.
-        let t1 = Instant::now();
-        let mut ast = parse_rust_code(&llm_response)?;
+        // Parse Rust from markdown fences, validate signatures, and render
+        // the candidate source. Scoped so the `syn` AST is dropped before the
+        // compile `await` below: `syn` trees are `!Send`, and holding one
+        // across an await would make this future `!Send`.
+        let clean_ast_str = {
+            let t1 = Instant::now();
+            let mut ast = parse_rust_code(&llm_response)?;
 
-        // Validate signatures match declarations
-        validate_generated_ast(&mut ast, &self.fn_sigs, &self.denied_paths)?;
-        histogram!(
-            PIPELINE_STAGE_DURATION,
-            "stage" => stage::PARSE_VALIDATE
-        )
-        .record(t1.elapsed().as_secs_f64());
+            // Validate signatures match declarations
+            validate_generated_ast(&mut ast, &self.fn_sigs, &self.denied_paths)?;
+            histogram!(
+                PIPELINE_STAGE_DURATION,
+                "stage" => stage::PARSE_VALIDATE
+            )
+            .record(t1.elapsed().as_secs_f64());
 
-        // Re-inject the prelude (inline helper items and configured imports)
-        // so the dylib still sees the same API surface used at initialization.
-        // The LLM is asked to emit only the function bodies, so we control
-        // the prelude here rather than relying on the model to repeat it.
-        if !self.prelude.is_empty() {
-            let mut combined: Vec<syn::Item> = Vec::new();
-            for part in &self.prelude {
-                if part.is_empty() {
-                    continue;
+            // Re-inject the prelude (inline helper items and configured imports)
+            // so the dylib still sees the same API surface used at initialization.
+            // The LLM is asked to emit only the function bodies, so we control
+            // the prelude here rather than relying on the model to repeat it.
+            if !self.prelude.is_empty() {
+                let mut combined: Vec<syn::Item> = Vec::new();
+                for part in &self.prelude {
+                    if part.is_empty() {
+                        continue;
+                    }
+                    let prelude_file: syn::File = syn::parse_str(part)
+                        .expect("prelude was successfully parsed at init; should still be valid");
+                    combined.extend(prelude_file.items);
                 }
-                let prelude_file: syn::File = syn::parse_str(part)
-                    .expect("prelude was successfully parsed at init; should still be valid");
-                combined.extend(prelude_file.items);
+                combined.append(&mut ast.items);
+                ast.items = combined;
             }
-            combined.append(&mut ast.items);
-            ast.items = combined;
-        }
+            unparse(&ast)
+        };
 
         // Recompile
         let t0 = Instant::now();
-        let clean_ast_str = unparse(&ast);
         let source_bytes = clean_ast_str.len();
         debug!("clean_ast_str: {clean_ast_str}");
-        compile_dylib(&self.crate_dir, self.profile, &clean_ast_str)?;
+        compile_dylib(&self.crate_dir, self.profile, &clean_ast_str).await?;
         let compile_time = t0.elapsed().as_millis();
         histogram!(
             PIPELINE_STAGE_DURATION,
