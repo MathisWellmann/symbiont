@@ -154,6 +154,20 @@ pub struct Runtime {
     /// backpressure to the agent; drained by
     /// [`Runtime::take_evolve_failures`].
     evolve_failures: RwLock<Vec<EvolveFailure>>,
+    /// Serializes the compile-and-register critical section.
+    ///
+    /// Everything guarded by it is process-wide shared state: the generated
+    /// `crate_dir/src/lib.rs`, the unversioned `so_path` cargo writes, and the
+    /// dense revision id (which is the registry length, so it can only be
+    /// chosen by whoever is about to push). Cargo additionally takes an
+    /// exclusive lock on its own build directory, so concurrent builds in one
+    /// crate dir would serialize regardless — this just makes the boundary
+    /// explicit and keeps the id assignment correct.
+    ///
+    /// A `tokio` mutex rather than a `std` one: the guard is held across the
+    /// `cargo build` await, and holding a `std` guard there would make
+    /// `evolve`'s future `!Send`.
+    build_slot: tokio::sync::Mutex<()>,
 }
 
 impl Runtime {
@@ -255,6 +269,7 @@ impl Runtime {
             profile: config.profile(),
             prelude,
             evolve_failures: RwLock::new(Vec::new()),
+            build_slot: tokio::sync::Mutex::new(()),
         };
 
         RUNTIME
@@ -282,10 +297,6 @@ impl Runtime {
     /// All evolvable function calls must have returned before this is called.
     /// In debug builds this is enforced with an assertion; in release it is
     /// the caller's responsibility.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "One sequential pipeline (run -> parse -> validate -> compile -> load -> publish) with metric emission between stages; splitting would scatter the stage boundaries the metrics annotate"
-    )]
     async fn evolve_no_backpressure<AgentT>(
         &self,
         agent: &AgentT,
@@ -295,8 +306,6 @@ impl Runtime {
     where
         AgentT: EvolutionAgent,
     {
-        Self::assert_no_calls_in_flight();
-
         info!("prompt: {}", prompt.green());
         let t0 = Instant::now();
         debug!("chat history: {history:?}");
@@ -369,22 +378,53 @@ impl Runtime {
             unparse(&ast)
         };
 
-        // Recompile
-        let t0 = Instant::now();
+        // Compile, load, and retain the new revision, then point the dispatch
+        // wrappers at it.
+        let revision = self.build_and_register(clean_ast_str).await?;
+        self.publish_revision(revision, "evolve")?;
+
+        info!("Hot-reloaded evolvable dylib (revision {revision}). LLM generation: {llm_time}ms.",);
+
+        Ok(revision)
+    }
+
+    /// Compile `clean_ast_str`, load the resulting dylib, and retain it in the
+    /// registry under a fresh revision id.
+    ///
+    /// Does **not** touch the dispatch pointers: the returned revision is
+    /// registered and callable through [`crate::RevisionFn`] handles, but the
+    /// active revision is unchanged. Use [`Runtime::publish_revision`] to make
+    /// it the one `evolvable!` call sites dispatch to.
+    ///
+    /// The whole body runs under [`Runtime::build_slot`], which is what makes
+    /// concurrent lanes safe: the shared crate dir, the shared `so_path`, and
+    /// the id assignment are all inside one critical section.
+    async fn build_and_register(&self, clean_ast_str: String) -> Result<Revision> {
+        let t_wait = Instant::now();
+        let _build_permit = self.build_slot.lock().await;
+        let waited = t_wait.elapsed();
+
         let source_bytes = clean_ast_str.len();
         debug!("clean_ast_str: {clean_ast_str}");
+
+        let t_compile = Instant::now();
         compile_dylib(&self.crate_dir, self.profile, &clean_ast_str).await?;
-        let compile_time = t0.elapsed().as_millis();
+        let compile_time = t_compile.elapsed();
         histogram!(
             PIPELINE_STAGE_DURATION,
             "stage" => stage::COMPILE
         )
-        .record(t0.elapsed().as_secs_f64());
+        .record(compile_time.as_secs_f64());
 
         // Copy the build output to the next revision's own path (which also
-        // defeats dlopen path caching) and load it.
-        let t2 = Instant::now();
-        let id = self.next_revision_id()?;
+        // defeats dlopen path caching) and load it. The id is the registry
+        // length, read while holding the build permit so no other lane can
+        // claim the same one — and therefore not the same versioned path.
+        let t_load = Instant::now();
+        let id = {
+            let revisions = self.revisions.read().map_err(|_| Error::MutexPoison)?;
+            u64::try_from(revisions.len()).expect("registry length fits in u64")
+        };
         let versioned_so = versioned_so_path(&self.crate_dir, id);
         std::fs::copy(&self.so_path, &versioned_so)?;
         let dylib_size = std::fs::metadata(&versioned_so).ok().map(|meta| meta.len());
@@ -394,24 +434,21 @@ impl Runtime {
             })?
         };
 
-        // Resolve the new revision's symbols, publish its function pointers
-        // (atomic stores with Release ordering), and retain it in the
-        // registry. The previous library stays loaded (keep-all), so earlier
-        // revisions remain callable for the lifetime of the process.
+        // Resolve the new revision's symbols and retain it in the registry.
+        // Every earlier library stays loaded (keep-all), so earlier revisions
+        // remain callable for the lifetime of the process.
         let entry = unsafe { RevisionEntry::resolve(new_lib, self.decls, clean_ast_str)? };
-        entry.publish(self.decls);
         {
             let mut revisions = self.revisions.write().map_err(|_| Error::MutexPoison)?;
             debug_assert_eq!(
                 u64::try_from(revisions.len()).expect("registry length fits in u64"),
                 id,
-                "concurrent evolve() calls are not supported"
+                "the registry grew while the build permit was held"
             );
             revisions.push(Arc::new(entry));
             metrics::gauge!(crate::observability::REVISIONS_LOADED)
                 .set(u64::try_from(revisions.len()).expect("registry length fits in u64") as f64);
         }
-        self.active.store(id, Ordering::Release);
 
         histogram!(DYLIB_SOURCE_BYTES).record(source_bytes as f64);
         if let Some(bytes) = dylib_size {
@@ -421,25 +458,49 @@ impl Runtime {
             PIPELINE_STAGE_DURATION,
             "stage" => stage::LOAD
         )
-        .record(t2.elapsed().as_secs_f64());
-        gauge!(REVISION_ACTIVE).set(id as f64);
-        counter!(
-            REVISION_ACTIVATIONS,
-            "source" => "evolve"
-        )
-        .increment(1);
+        .record(t_load.elapsed().as_secs_f64());
 
         info!(
-            "Hot-reloaded evolvable dylib (revision {id}). Timings: LLM generation: {llm_time}ms, compilation: {compile_time}ms.",
+            "Registered revision {id}. Timings: build slot wait: {}ms, compilation: {}ms, load: {}ms.",
+            waited.as_millis(),
+            compile_time.as_millis(),
+            t_load.elapsed().as_millis(),
         );
 
         Ok(Revision::new(id))
     }
 
-    /// The id the next successfully loaded revision will be registered under.
-    fn next_revision_id(&self) -> Result<u64> {
-        let revisions = self.revisions.read().map_err(|_| Error::MutexPoison)?;
-        Ok(u64::try_from(revisions.len()).expect("registry length fits in u64"))
+    /// Point every `evolvable!` dispatch wrapper at `revision` and record it as
+    /// active. `source` is the `source` label of
+    /// [`crate::observability::REVISION_ACTIVATIONS`].
+    ///
+    /// This is the only operation that mutates the swappable dispatch
+    /// pointers, so it is where the feedback-loop contract is enforced.
+    fn publish_revision(&self, revision: Revision, source: &'static str) -> Result<()> {
+        Self::assert_no_calls_in_flight();
+
+        {
+            let revisions = self.revisions.read().map_err(|_| Error::MutexPoison)?;
+            let entry = usize::try_from(revision.as_u64())
+                .ok()
+                .and_then(|idx| revisions.get(idx))
+                .ok_or_else(|| Error::UnknownRevision {
+                    requested: revision,
+                    latest: Revision::new(
+                        u64::try_from(revisions.len()).expect("registry length fits in u64") - 1,
+                    ),
+                })?;
+            entry.publish(self.decls);
+        }
+        self.active.store(revision.as_u64(), Ordering::Release);
+
+        gauge!(REVISION_ACTIVE).set(revision.as_u64() as f64);
+        counter!(
+            REVISION_ACTIVATIONS,
+            "source" => source
+        )
+        .increment(1);
+        Ok(())
     }
 
     /// Assert (debug builds only) that no evolvable function calls are in
@@ -447,6 +508,10 @@ impl Runtime {
     /// longer a use-after-unload — but a swap concurrent with running calls
     /// could still publish a torn set of pointers from two different
     /// revisions, so the feedback-loop contract remains.
+    ///
+    /// Only publishing can tear the pointers, which is why registration
+    /// ([`Runtime::build_and_register`]) does not check this — a revision that
+    /// is merely retained is invisible to running calls.
     fn assert_no_calls_in_flight() {
         #[cfg(debug_assertions)]
         {
@@ -524,6 +589,10 @@ impl Runtime {
         AgentT: EvolutionAgent + Sync,
     {
         async move {
+            // Checked up front as well as in `publish_revision`, so a contract
+            // violation surfaces before minutes of inference rather than after.
+            Self::assert_no_calls_in_flight();
+
             let t_start = Instant::now();
             let mut prompt = base_prompt.to_string();
             // Scoped to this call; see the doc comment above.
@@ -857,26 +926,7 @@ impl Runtime {
     /// returned before this is called. Enforced with an assertion in debug
     /// builds, zero-cost in release.
     pub fn activate_revision(&self, revision: Revision) -> Result<()> {
-        Self::assert_no_calls_in_flight();
-
-        let revisions = self.revisions.read().map_err(|_| Error::MutexPoison)?;
-        let entry = usize::try_from(revision.as_u64())
-            .ok()
-            .and_then(|idx| revisions.get(idx))
-            .ok_or_else(|| Error::UnknownRevision {
-                requested: revision,
-                latest: Revision::new(
-                    u64::try_from(revisions.len()).expect("registry length fits in u64") - 1,
-                ),
-            })?;
-        entry.publish(self.decls);
-        self.active.store(revision.as_u64(), Ordering::Release);
-        gauge!(REVISION_ACTIVE).set(revision.as_u64() as f64);
-        counter!(
-            REVISION_ACTIVATIONS,
-            "source" => "manual"
-        )
-        .increment(1);
+        self.publish_revision(revision, "manual")?;
         info!("Activated revision {revision}.");
         Ok(())
     }
