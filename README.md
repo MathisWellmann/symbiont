@@ -109,7 +109,7 @@ Type a prompt — *"an animated Julia set, c orbiting the main cardioid, with a 
 <video src="https://github.com/user-attachments/assets/1527ea1d-decd-46a4-9687-5189cac16bd9" width="80%" controls></video>
 </p>
 
-- `shade` is called once per pixel (~0.5M calls/frame at 960×540), parallelized over all cores with rayon — an interpreted agent-code loop would be orders of magnitude too slow to animate.
+- `shade` is called once per pixel (~0.5M calls/frame at 960×540, and the canvas re-renders at the window's size and aspect ratio), parallelized over all cores with rayon — an interpreted agent-code loop would be orders of magnitude too slow to animate.
 - The user is the evaluator: the runtime keeps the chat history, so follow-up prompts refine the current shader.
 - The canvas never freezes while the agent works: a single-lane `evolve_batch` compiles and registers the
   candidate without touching the dispatch pointers, so rendering continues on the current revision until

@@ -16,7 +16,7 @@ hot-swaps the dylib. The live animation morphs in place, no restart.
 ## Why this showcases symbiont
 
 - **Bare-metal performance where it matters**: `shade` is called once per pixel
-  (~0.5M calls/frame at 960×540), parallelized over all cores with rayon, with
+  (~0.5M calls/frame at 960×540, more on a larger window), parallelized over all cores with rayon, with
   fractal workloads running hundreds of iterations per pixel. The ~1.6 ns
   dispatch overhead makes the hot-swap abstraction effectively free — an
   interpreted agent-code loop would be orders of magnitude too slow to animate.
@@ -37,7 +37,13 @@ Three threads, coordinated around the feedback-loop contract
 - **egui UI** (main thread): canvas, prompt box, telemetry (ms/frame, Mpix/s),
   and a syntax-highlighted view of the live agent code.
 - **render thread**: tight frame loop calling `shade` for every pixel via
-  rayon. Parks at a frame boundary only for the revision swap.
+  rayon, at whatever size the UI last reported (capped at ~1080p worth of
+  pixels, then upscaled). Parks at a frame boundary only for the revision
+  swap.
+
+The canvas is re-rendered at the window's aspect ratio instead of being fitted
+into it, so resizing never letterboxes — which means `aspect` is not a
+constant, and the evolution prompt tells the agent as much.
 - **evolution worker**: runs a single-lane `Runtime::evolve_batch` on a tokio
   runtime, then drains the render gate and calls
   `Runtime::activate_revision`.
