@@ -27,6 +27,10 @@ use std::{
         Arc,
         Condvar,
         Mutex,
+        atomic::{
+            AtomicU64,
+            Ordering,
+        },
         mpsc::{
             Receiver,
             Sender,
@@ -53,7 +57,10 @@ symbiont::evolvable! {
     /// # Coordinates
     /// - `x`, `y`: canvas coordinates with `(0.0, 0.0)` at the center.
     ///   `y` spans `[-1.0, 1.0]` (positive is up); `x` spans
-    ///   `[-aspect, +aspect]` where `aspect = width / height` (~1.78).
+    ///   `[-aspect, +aspect]` where `aspect = width / height`. The canvas is
+    ///   re-rendered at the window's aspect ratio whenever it is resized, so
+    ///   `aspect` is not a constant: keep the composition centered instead of
+    ///   assuming a particular width.
     /// - `t`: seconds since program start — use it for smooth animation
     ///   (palette cycling, zooming, morphing parameters, ...).
     ///
@@ -144,26 +151,119 @@ symbiont::evolvable! {
     }
 }
 
-/// Fixed render resolution; the canvas is scaled to fit the window.
-const WIDTH: usize = 960;
-/// Fixed render resolution; the canvas is scaled to fit the window.
-const HEIGHT: usize = 540;
-/// Aspect ratio used to scale the `x` coordinate passed to `shade`.
-const ASPECT: f64 = WIDTH as f64 / HEIGHT as f64;
+/// Canvas size before the UI has reported how much space it has.
+const INITIAL_SIZE: (usize, usize) = (960, 540);
+/// Smallest canvas edge in physical pixels, so a collapsed panel cannot
+/// produce a zero-sized (or degenerate one-pixel) render target.
+const MIN_EDGE: usize = 64;
+/// Upper bound on the number of pixels rendered per frame (~1080p).
+///
+/// Beyond this the per-frame shader cost grows faster than the visible gain;
+/// the canvas keeps the window's aspect ratio and is upscaled by the GPU, so
+/// it still fills the panel edge to edge — a maximized 4K window just renders
+/// slightly softer instead of dropping to a few frames per second.
+const MAX_PIXELS: usize = 1920 * 1080;
+/// Canvas edges are rounded down to a multiple of this, so dragging the
+/// window does not reallocate and re-render on every sub-pixel change.
+const SIZE_QUANTUM: usize = 8;
 /// Frame pacing target (~60 fps). Rendering faster than this just burns CPU.
 const TARGET_FRAME_TIME: Duration = Duration::from_millis(16);
 
-/// Render one full frame into an RGB byte buffer (3 bytes per pixel) by
-/// calling the hot-swappable `shade` function for every pixel, parallelized
-/// over rows with rayon.
-fn render_frame(t: f64, rgb: &mut [u8]) {
-    rgb.par_chunks_mut(WIDTH * 3)
+/// The canvas size the UI wants, in physical pixels, packed as
+/// `(width << 32) | height`.
+///
+/// Written by the UI thread whenever the panel is laid out and read by the
+/// render thread at every frame boundary. A relaxed atomic rather than a
+/// mutex: the two sides never need to agree on *when* a resize takes effect,
+/// only that the render thread eventually picks the latest value up.
+#[derive(Debug)]
+struct CanvasSize(AtomicU64);
+
+impl CanvasSize {
+    /// Start at [`INITIAL_SIZE`] until the UI reports its available space.
+    fn new() -> Self {
+        let (width, height) = INITIAL_SIZE;
+        Self(AtomicU64::new(((width as u64) << 32) | height as u64))
+    }
+
+    /// Record the size the UI has room for, in physical pixels.
+    ///
+    /// The request is quantized, clamped to [`MIN_EDGE`], and scaled down to
+    /// [`MAX_PIXELS`] while preserving the requested aspect ratio — matching
+    /// that aspect ratio is what keeps the canvas free of letterbox bars.
+    fn request(&self, width: f32, height: f32) {
+        let (mut width, mut height) = (f64::from(width).max(1.0), f64::from(height).max(1.0));
+        let pixels = width * height;
+        let budget = MAX_PIXELS as f64;
+        if pixels > budget {
+            let scale = (budget / pixels).sqrt();
+            width *= scale;
+            height *= scale;
+        }
+        let quantize = |v: f64| {
+            let v = v as usize / SIZE_QUANTUM * SIZE_QUANTUM;
+            v.max(MIN_EDGE)
+        };
+        let packed = ((quantize(width) as u64) << 32) | quantize(height) as u64;
+        self.0.store(packed, Ordering::Relaxed);
+    }
+
+    /// The current canvas size in physical pixels.
+    fn get(&self) -> (usize, usize) {
+        let packed = self.0.load(Ordering::Relaxed);
+        ((packed >> 32) as usize, (packed & 0xFFFF_FFFF) as usize)
+    }
+}
+
+#[cfg(test)]
+mod canvas_size_tests {
+    use super::*;
+
+    #[test]
+    fn packs_and_unpacks_both_edges() {
+        let size = CanvasSize::new();
+        assert_eq!(size.get(), INITIAL_SIZE);
+        size.request(1280.0, 720.0);
+        assert_eq!(size.get(), (1280, 720));
+    }
+
+    #[test]
+    fn quantizes_and_clamps_to_min_edge() {
+        let size = CanvasSize::new();
+        size.request(1283.0, 727.0);
+        assert_eq!(size.get(), (1280, 720));
+        size.request(0.0, -5.0);
+        assert_eq!(size.get(), (MIN_EDGE, MIN_EDGE));
+    }
+
+    #[test]
+    fn scales_oversized_requests_down_keeping_the_aspect_ratio() {
+        let size = CanvasSize::new();
+        size.request(3840.0, 2160.0);
+        let (width, height) = size.get();
+        assert!(width * height <= MAX_PIXELS, "{width}x{height}");
+        // The aspect ratio is what keeps the canvas free of letterbox bars.
+        let aspect = width as f64 / height as f64;
+        assert!((aspect - 3840.0 / 2160.0).abs() < 0.01, "aspect {aspect}");
+    }
+}
+
+/// Render one full frame of `width` x `height` into an RGB byte buffer
+/// (3 bytes per pixel) by calling the hot-swappable `shade` function for
+/// every pixel, parallelized over rows with rayon.
+///
+/// The aspect ratio is derived from the frame size rather than fixed, so the
+/// coordinate system `shade` sees always matches the shape of the window and
+/// the result can be blitted edge to edge.
+fn render_frame(t: f64, rgb: &mut [u8], width: usize, height: usize) {
+    let aspect = width as f64 / height as f64;
+    rgb.par_chunks_mut(width * 3)
         .enumerate()
         .for_each(|(py, row)| {
             // `y` points up: top row maps to +1, bottom row to -1.
-            let y = 1.0 - 2.0 * (py as f64 / (HEIGHT - 1) as f64);
+            let y = 1.0 - 2.0 * (py as f64 / (height - 1) as f64);
             for (px, pixel) in row.chunks_exact_mut(3).enumerate() {
-                let x = (2.0 * (px as f64 / (WIDTH - 1) as f64) - 1.0) * ASPECT;
+                let x = (2.0 * (px as f64 / (width - 1) as f64) - 1.0) * aspect;
                 // Bare-metal call into the hot-loaded native dylib.
                 let c = shade(x, y, t);
                 pixel[0] = ((c >> 16) & 0xFF) as u8;
@@ -255,6 +355,8 @@ struct SharedUi {
     panic_msg: Option<String>,
     /// Error message of the last failed evolution, if any.
     evolve_error: Option<String>,
+    /// Size of the most recently rendered frame, in physical pixels.
+    canvas: (usize, usize),
     /// Most recent frame time in milliseconds.
     frame_ms: f64,
     /// Most recent throughput in megapixels per second.
@@ -277,6 +379,7 @@ fn spawn_render_thread(
     gate: Arc<Gate>,
     shared: Arc<Mutex<SharedUi>>,
     frame_slot: FrameSlot,
+    canvas_size: Arc<CanvasSize>,
     runtime: &'static Runtime,
     ctx: egui::Context,
 ) {
@@ -284,12 +387,18 @@ fn spawn_render_thread(
         .name("symbiont-render".to_string())
         .spawn(move || {
             let start = Instant::now();
-            let mut rgb = vec![0_u8; WIDTH * HEIGHT * 3];
+            let mut rgb = Vec::new();
             loop {
                 gate.frame_boundary();
 
+                // Adopt the size the UI last asked for. Resizing between
+                // frames (never during one) keeps `shade`'s coordinate system
+                // consistent across a single image.
+                let (width, height) = canvas_size.get();
+                rgb.resize(width * height * 3, 0);
+
                 let frame_start = Instant::now();
-                render_frame(start.elapsed().as_secs_f64(), &mut rgb);
+                render_frame(start.elapsed().as_secs_f64(), &mut rgb, width, height);
                 let frame_time = frame_start.elapsed();
 
                 // Panics inside the agent code are caught in the dylib and
@@ -303,11 +412,12 @@ fn spawn_render_thread(
                 }
 
                 *frame_slot.lock().expect("frame slot mutex is not poisoned") =
-                    Some(egui::ColorImage::from_rgb([WIDTH, HEIGHT], &rgb));
+                    Some(egui::ColorImage::from_rgb([width, height], &rgb));
                 {
                     let mut s = shared.lock().expect("shared state mutex is not poisoned");
+                    s.canvas = (width, height);
                     s.frame_ms = frame_time.as_secs_f64() * 1e3;
-                    s.mpix_per_s = (WIDTH * HEIGHT) as f64 / frame_time.as_secs_f64() / 1e6;
+                    s.mpix_per_s = (width * height) as f64 / frame_time.as_secs_f64() / 1e6;
                 }
                 ctx.request_repaint();
 
@@ -328,10 +438,13 @@ fn spawn_render_thread(
 fn evolution_prompt(
     fn_sig: &str,
     user_prompt: &str,
+    canvas: (usize, usize),
     frame_ms: f64,
     mpix_per_s: f64,
     panic_msg: Option<String>,
 ) -> String {
+    let (width, height) = canvas;
+    let aspect = width as f64 / height as f64;
     let panic_feedback = panic_msg.map_or_else(String::new, |msg| {
         format!(
             "The previous implementation panicked at runtime: \"{msg}\". Avoid that failure mode.\n"
@@ -342,10 +455,13 @@ fn evolution_prompt(
          The user wants the canvas to show: {user_prompt}\n\
          Canvas conventions: `(x, y)` is the pixel position with `(0, 0)` at \
          the center; `y` spans [-1, 1] (positive is up) and `x` spans \
-         [-{ASPECT:.2}, {ASPECT:.2}]. `t` is seconds since program start — use \
-         it for smooth animation. Return the color packed as `0x00_RR_GG_BB`.\n\
+         [-aspect, +aspect] where aspect is the window's aspect ratio, \
+         currently {aspect:.2} but it changes when the user resizes the \
+         window — do not hard-code it, and keep the composition centered. \
+         `t` is seconds since program start — use it for smooth animation. \
+         Return the color packed as `0x00_RR_GG_BB`.\n\
          Telemetry of the previous implementation: {frame_ms:.1} ms/frame at \
-         {WIDTH}x{HEIGHT} ({mpix_per_s:.1} Mpix/s).\n\
+         {width}x{height} ({mpix_per_s:.1} Mpix/s).\n\
          {panic_feedback}\
          Hard constraints: keep the exact signature. The function must be pure \
          (no allocation, no I/O, no statics, no unsafe). It is called once per \
@@ -382,16 +498,22 @@ fn spawn_evolution_worker(
             // agent is free to invent a fresh algorithm each evolution.
             let fn_sig = runtime.fn_sigs()[0].clone();
             while let Ok(user_prompt) = prompt_rx.recv() {
-                let (frame_ms, mpix_per_s, panic_msg) = {
+                let (canvas, frame_ms, mpix_per_s, panic_msg) = {
                     let mut s = shared.lock().expect("shared state mutex is not poisoned");
                     s.evolving = true;
                     s.evolve_error = None;
-                    (s.frame_ms, s.mpix_per_s, s.panic_msg.take())
+                    (s.canvas, s.frame_ms, s.mpix_per_s, s.panic_msg.take())
                 };
                 ctx.request_repaint();
 
-                let prompt =
-                    evolution_prompt(&fn_sig, &user_prompt, frame_ms, mpix_per_s, panic_msg);
+                let prompt = evolution_prompt(
+                    &fn_sig,
+                    &user_prompt,
+                    canvas,
+                    frame_ms,
+                    mpix_per_s,
+                    panic_msg,
+                );
 
                 // One lane, one candidate. Unlike `evolve`, this registers the
                 // revision without publishing it, so the render thread needs
@@ -449,6 +571,8 @@ struct FractalApp {
     shared: Arc<Mutex<SharedUi>>,
     /// Latest rendered frame, produced by the render thread.
     frame_slot: FrameSlot,
+    /// Canvas size requested from the render thread, updated on every layout.
+    canvas_size: Arc<CanvasSize>,
     /// GPU texture holding the current frame.
     texture: Option<egui::TextureHandle>,
     /// Contents of the prompt input box.
@@ -465,8 +589,8 @@ impl FractalApp {
             s.frame_ms, s.mpix_per_s
         ));
         ui.monospace(format!(
-            "canvas     {WIDTH}x{HEIGHT}   evolutions {}",
-            s.evolutions
+            "canvas     {}x{}   evolutions {}",
+            s.canvas.0, s.canvas.1, s.evolutions
         ));
         if let Some(secs) = s.last_evolve_secs {
             ui.monospace(format!("last evolution took {secs:.1} s"));
@@ -566,19 +690,31 @@ impl FractalApp {
         }
     }
 
-    /// The central canvas, scaled to fit while preserving aspect ratio.
+    /// The central canvas, filling all the space the side panel leaves.
+    ///
+    /// Rather than fitting a fixed-resolution image into the panel — which
+    /// letterboxes as soon as the window's aspect ratio differs from the
+    /// render target's — the panel size is reported back to the render thread,
+    /// which renders the *next* frame at exactly that aspect ratio. The image
+    /// is then drawn at the full available size, so there are no bars.
     fn canvas(&self, ui: &mut egui::Ui) {
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(egui::Color32::BLACK))
             .show_inside(ui, |ui| {
+                let avail = ui.available_size();
+                let points_to_pixels = ui.ctx().pixels_per_point();
+                self.canvas_size
+                    .request(avail.x * points_to_pixels, avail.y * points_to_pixels);
+
                 let Some(texture) = &self.texture else {
                     ui.centered_and_justified(|ui| ui.spinner());
                     return;
                 };
-                let avail = ui.available_size();
-                let scale = (avail.x / WIDTH as f32).min(avail.y / HEIGHT as f32);
-                let size = egui::vec2(WIDTH as f32 * scale, HEIGHT as f32 * scale);
-                ui.centered_and_justified(|ui| ui.image((texture.id(), size)));
+                // While a resize is in flight the last frame still has the
+                // previous aspect ratio; stretching it for the frame or two
+                // until the render thread catches up reads better than bars
+                // appearing and disappearing during the drag.
+                ui.image((texture.id(), avail));
             });
     }
 }
@@ -647,6 +783,7 @@ fn main() -> eframe::Result<()> {
                 code: runtime.current_code(),
                 panic_msg: None,
                 evolve_error: None,
+                canvas: INITIAL_SIZE,
                 frame_ms: 0.0,
                 mpix_per_s: 0.0,
                 evolutions: 0,
@@ -654,12 +791,14 @@ fn main() -> eframe::Result<()> {
                 last_swap_us: None,
             }));
             let frame_slot: FrameSlot = Arc::new(Mutex::new(None));
+            let canvas_size = Arc::new(CanvasSize::new());
             let (prompt_tx, prompt_rx) = channel();
 
             spawn_render_thread(
                 Arc::clone(&gate),
                 Arc::clone(&shared),
                 Arc::clone(&frame_slot),
+                Arc::clone(&canvas_size),
                 runtime,
                 cc.egui_ctx.clone(),
             );
@@ -676,6 +815,7 @@ fn main() -> eframe::Result<()> {
             Ok(Box::new(FractalApp {
                 shared,
                 frame_slot,
+                canvas_size,
                 texture: None,
                 prompt_input: String::new(),
                 prompt_tx,
