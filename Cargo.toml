@@ -3,6 +3,7 @@ exclude = ["assets", "website"]
 members = [
   "examples/batched-evolution",
   "examples/counter",
+  "examples/cuda-softmax",
   "examples/evolving-trader",
   "examples/fizzbuzz",
   "examples/fractal-studio",

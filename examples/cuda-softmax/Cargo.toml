@@ -1,0 +1,31 @@
+[package]
+edition = "2024"
+license = "MPL-2.0"
+name = "cuda-softmax-example"
+publish = false
+version.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["dylib", "rlib"]
+
+[dependencies]
+symbiont = { path = "../../symbiont" }
+
+# `dynamic-loading` (the default) resolves libcuda/libnvrtc with `dlopen` at
+# runtime, so this example builds on machines with no CUDA toolkit and no GPU
+# — it only needs a device to *run*. An explicit `cuda-12000` pins the driver
+# API subset: the CUDA driver API is backward compatible, so binding to the
+# 12.0 symbols works on every 12.x driver, while `cuda-version-from-build-system`
+# would shell out to `nvcc` at build time and break GPU-less CI.
+cudarc = { version = "0.19", default-features = false, features = [
+  "cuda-12000",
+  "driver",
+  "dynamic-loading",
+  "nvrtc",
+  "std",
+] }
+tokio.workspace = true
+tracing.workspace = true

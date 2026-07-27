@@ -120,6 +120,26 @@ Type a prompt — *"an animated Julia set, c orbiting the main cardioid, with a 
 cargo run -p fractal-studio-example --release
 ```
 
+## Showcase: evolving a CUDA kernel
+
+The [cuda-softmax-example](examples/cuda-softmax/README.md) puts the loop on a GPU: the agent implements
+`fn plan(rows, cols) -> KernelPlan`, returning **CUDA C source plus the launch geometry**, and the host
+compiles it with NVRTC, checks it against a CPU oracle, and times it.
+
+- The fitness function is not a matter of taste: a row-wise softmax must move exactly one read and one write
+  of the matrix, and the ceiling is *measured* — a copy kernel over the same buffers on the same card — so
+  every candidate scores as a percentage of something real.
+- Measured on an RTX PRO 6000 Blackwell, one round of two lanes against a local Qwen3.6-35B-A3B took the
+  naive starting kernel from 523 us to **12.7 us (41x, 47% of the copy ceiling)**.
+- A GPU kernel cannot be `catch_unwind`-ed: an illegal access is a *sticky* CUDA error, after which no
+  context can be created in that process at all. So candidates are compiled and timed in a **child process** —
+  the process boundary is the GPU's panic handler — and a kernel that faults the device costs one child and
+  one table row instead of the run.
+
+```bash
+MODEL=... cargo run -p cuda-softmax-example --release
+```
+
 ## Core highlights
 
 - **Type-safe agentic code**:
@@ -266,12 +286,6 @@ These constraints arise from the binary/dylib interaction boundary. The harness 
   The LLM can only rewrite function *bodies* — the signature declared in `evolvable!` is fixed at compile time and enforced on every evolution.
   This is by design (it's what makes constrained generation possible), but it means the agent cannot add parameters, change return types, or introduce new functions at runtime.
   It would be UB to hot-swap a different function signature in, when the main binary expects a certain memory layout.
-- **Sequential feedback loop**:
-  All evolvable function calls must have returned before `evolve()` or `activate_revision()` is called.
-  Retained revisions are never unmapped, so a violating in-flight call executes stale but still-mapped code rather than UB — the contract remains so a swap cannot publish a torn set of pointers from two different revisions.
-  This matches the intended usage pattern (run functions, collect results, evolve, repeat) and is enforced with an assertion in debug builds at zero cost in release.
-  Calls through `RevisionFn` handles are exempt: they pin their revision and never read the swapped pointers, so they may run concurrently with `evolve()` / `activate_revision()` and with each other.
-  Multi-threading is possible, but requires extra care.
 - **Same toolchain required**:
   Rust has no stable ABI. The binary and dylib must be compiled with the same `rustc` version to guarantee matching calling conventions and memory layouts. The harness ensures this by compiling the dylib on the same machine with the same toolchain.
 - **Shared API crates for custom types**:
