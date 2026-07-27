@@ -14,9 +14,13 @@
 //!   live telemetry, and the current agent-generated code.
 //! - render thread: tight loop calling the evolvable `shade` for every pixel
 //!   via `rayon`, pushing finished frames to the UI.
-//! - evolution worker: receives user prompts, parks the render thread at a
-//!   frame boundary (the feedback-loop contract: no evolvable calls may be in
-//!   flight during `Runtime::evolve`), evolves, then resumes rendering.
+//! - evolution worker: receives user prompts and runs `Runtime::evolve_batch`
+//!   with a single lane, which generates, validates, compiles and *registers*
+//!   the candidate without touching the dispatch pointers. Rendering keeps
+//!   running off the active revision the whole time; only the final
+//!   `activate_revision` needs the render thread parked, and that costs a
+//!   handful of atomic stores at a frame boundary instead of the multi-second
+//!   generate-and-compile round.
 
 use std::{
     sync::{
@@ -126,8 +130,12 @@ enum GateState {
 }
 
 /// Synchronizes the render thread with the evolution worker so that no
-/// evolvable function call is in flight while [`Runtime::evolve`] hot-swaps
-/// the dylib (the feedback-loop contract).
+/// evolvable function call is in flight while
+/// [`Runtime::activate_revision`] republishes the dispatch pointers (the
+/// feedback-loop contract).
+///
+/// Only the pointer swap is gated — generation and compilation happen while
+/// the render thread runs freely against the previous revision.
 #[derive(Debug)]
 struct Gate {
     /// Current gate state.
@@ -158,8 +166,10 @@ impl Gate {
         }
     }
 
-    /// Called by the evolution worker. Blocks until the render thread has
-    /// parked at a frame boundary, guaranteeing no in-flight `shade` calls.
+    /// Called by the evolution worker right before the swap. Blocks until the
+    /// render thread has parked at a frame boundary, guaranteeing no in-flight
+    /// `shade` calls. Held for the duration of one pointer store, so the
+    /// animation misses at most a frame.
     fn drain(&self) {
         let mut state = self.state.lock().expect("gate mutex is not poisoned");
         if *state == GateState::Run {
@@ -170,7 +180,7 @@ impl Gate {
         }
     }
 
-    /// Called by the evolution worker after the hot-swap to resume rendering.
+    /// Called by the evolution worker after the swap to resume rendering.
     fn resume(&self) {
         *self.state.lock().expect("gate mutex is not poisoned") = GateState::Run;
         self.cvar.notify_all();
@@ -181,6 +191,7 @@ impl Gate {
 #[derive(Debug, Clone)]
 struct SharedUi {
     /// True while the evolution worker is generating / compiling / swapping.
+    /// Rendering continues throughout; only the swap parks the render thread.
     evolving: bool,
     /// The current agent-generated code running in the dylib.
     code: String,
@@ -196,6 +207,9 @@ struct SharedUi {
     evolutions: usize,
     /// Wall-clock duration of the last successful evolution in seconds.
     last_evolve_secs: Option<f64>,
+    /// How long the render thread was parked for the last revision swap, in
+    /// microseconds — the only part of an evolution that stalls the animation.
+    last_swap_us: Option<f64>,
 }
 
 /// Slot holding the most recently rendered frame for the UI to pick up.
@@ -285,9 +299,17 @@ fn evolution_prompt(
     )
 }
 
-/// Spawn the evolution worker: for each user prompt it parks the render
-/// thread (feedback-loop contract), runs [`Runtime::evolve`] on the tokio
-/// runtime, publishes the new agent code to the UI, and resumes rendering.
+/// Spawn the evolution worker: for each user prompt it runs a single-lane
+/// [`Runtime::evolve_batch`] on the tokio runtime, which registers the new
+/// revision *without* activating it, then parks the render thread just long
+/// enough to [`Runtime::activate_revision`].
+///
+/// This is what keeps the canvas alive during an evolution: `evolve_batch` is
+/// explicitly exempt from the feedback-loop contract, because a
+/// retained-but-inactive revision is invisible to running calls. So the render
+/// thread keeps hammering the previous revision's function pointer for the
+/// entire generate → validate → compile round, and the animation only pauses
+/// for the atomic stores that commit the winner.
 fn spawn_evolution_worker(
     prompt_rx: Receiver<String>,
     gate: Arc<Gate>,
@@ -315,22 +337,41 @@ fn spawn_evolution_worker(
                 let prompt =
                     evolution_prompt(&fn_sig, &user_prompt, frame_ms, mpix_per_s, panic_msg);
 
-                // Feedback-loop contract: park the render thread so no
-                // evolvable call is in flight while the dylib is swapped.
-                gate.drain();
+                // One lane, one candidate. Unlike `evolve`, this registers the
+                // revision without publishing it, so the render thread needs
+                // no gating here and the animation keeps running.
                 let evolve_start = Instant::now();
-                let result = tokio_handle.block_on(runtime.evolve(&agent, &prompt));
+                let result = tokio_handle
+                    .block_on(runtime.evolve_batch(&agent, std::slice::from_ref(&prompt)))
+                    .pop()
+                    .expect("one result per prompt");
+                let evolve_secs = evolve_start.elapsed().as_secs_f64();
+
+                // The candidate is compiled and loaded; committing to it is
+                // the only step bound by the feedback-loop contract. Park the
+                // render thread at a frame boundary, swap, resume.
+                let swap = result.and_then(|revision| {
+                    let swap_start = Instant::now();
+                    gate.drain();
+                    let activated = runtime.activate_revision(revision);
+                    gate.resume();
+                    activated.map(|()| (revision, swap_start.elapsed()))
+                });
+
                 {
                     let mut s = shared.lock().expect("shared state mutex is not poisoned");
-                    match result {
-                        Ok(revision) => {
+                    match swap {
+                        Ok((revision, swap_time)) => {
                             s.code = runtime.current_code();
                             s.evolutions += 1;
-                            s.last_evolve_secs = Some(evolve_start.elapsed().as_secs_f64());
+                            s.last_evolve_secs = Some(evolve_secs);
+                            s.last_swap_us = Some(swap_time.as_secs_f64() * 1e6);
                             s.panic_msg = None;
                             info!(
-                                "Evolution #{} hot-swapped successfully (revision {revision}).",
-                                s.evolutions
+                                "Evolution #{} hot-swapped successfully (revision {revision}, \
+                                 render thread parked for {:.0} us).",
+                                s.evolutions,
+                                swap_time.as_secs_f64() * 1e6
                             );
                         }
                         Err(e) => {
@@ -340,7 +381,6 @@ fn spawn_evolution_worker(
                     }
                     s.evolving = false;
                 }
-                gate.resume();
                 ctx.request_repaint();
             }
         })
@@ -375,10 +415,16 @@ impl FractalApp {
         if let Some(secs) = s.last_evolve_secs {
             ui.monospace(format!("last evolution took {secs:.1} s"));
         }
+        if let Some(us) = s.last_swap_us {
+            ui.monospace(format!("of which the canvas was parked {us:.0} us"));
+        }
         if s.evolving {
             ui.horizontal(|ui| {
                 ui.spinner();
-                ui.label("evolving: generating → validating → compiling → hot-swapping ...");
+                ui.label(
+                    "evolving: generating → validating → compiling ... \
+                     (canvas keeps animating on the current revision)",
+                );
             });
         }
         if let Some(err) = &s.evolve_error {
@@ -457,7 +503,9 @@ impl FractalApp {
                 Self::code_section(ui, &snapshot);
             });
         if snapshot.evolving {
-            // Keep the spinner animated while the render thread is parked.
+            // The render thread requests repaints on its own, but the cargo
+            // build competes for every core: keep the spinner ticking even if
+            // frames get sparse.
             ui.ctx().request_repaint_after(Duration::from_millis(100));
         }
     }
@@ -547,6 +595,7 @@ fn main() -> eframe::Result<()> {
                 mpix_per_s: 0.0,
                 evolutions: 0,
                 last_evolve_secs: None,
+                last_swap_us: None,
             }));
             let frame_slot: FrameSlot = Arc::new(Mutex::new(None));
             let (prompt_tx, prompt_rx) = channel();

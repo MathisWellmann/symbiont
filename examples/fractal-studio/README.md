@@ -32,17 +32,33 @@ hot-swaps the dylib. The live animation morphs in place, no restart.
 ## Architecture
 
 Three threads, coordinated around the feedback-loop contract
-(*no evolvable call may be in flight while the dylib is swapped*):
+(*no evolvable call may be in flight while the dispatch pointers are swapped*):
 
 - **egui UI** (main thread): canvas, prompt box, telemetry (ms/frame, Mpix/s),
   and a syntax-highlighted view of the live agent code.
 - **render thread**: tight frame loop calling `shade` for every pixel via
-  rayon. Parks at a frame boundary when an evolution is requested.
-- **evolution worker**: drains the render gate, runs `Runtime::evolve` on a
-  tokio runtime, publishes the new code, resumes rendering.
+  rayon. Parks at a frame boundary only for the revision swap.
+- **evolution worker**: runs a single-lane `Runtime::evolve_batch` on a tokio
+  runtime, then drains the render gate and calls
+  `Runtime::activate_revision`.
 
-The animation freezes (showing the last frame) while the agent generates and
-compiles, then resumes with the new shader — that pause *is* the contract.
+### The animation keeps running while the agent works
+
+`evolve_batch` compiles and *registers* the candidate without touching the
+dispatch pointers, which is why it is exempt from the feedback-loop contract:
+a retained-but-inactive revision is invisible to running calls. The render
+thread therefore keeps calling the **current** revision's function pointer for
+the whole generate → validate → compile round — seconds of LLM inference plus a
+`cargo build --release` — and the canvas never freezes.
+
+Only the commit is gated. `activate_revision` republishes function pointers
+that were resolved when the dylib was loaded, so it is a handful of atomic
+stores: the render thread parks at a frame boundary, the swap happens, and
+rendering resumes. The side panel reports that park time in microseconds next
+to the multi-second evolution time.
+
+The one visible effect during an evolution is a frame-rate dip: the nested
+`cargo build` competes for the same cores rayon renders on.
 
 ## Running
 
