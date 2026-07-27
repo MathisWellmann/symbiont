@@ -106,7 +106,7 @@ The [fractal-studio-example](examples/fractal-studio/README.md) is an interactiv
 Type a prompt — *"an animated Julia set, c orbiting the main cardioid, with a glowing sunset palette"* — and the agent implements `fn shade(x: f64, y: f64, t: f64) -> u32`; the live animation morphs in place, no restart:
 
 <p align="center" width="100%">
-<video src="https://github.com/user-attachments/assets/1527ea1d-decd-46a4-9687-5189cac16bd9" width="80%" controls></video>
+<video src="https://github.com/user-attachments/assets/31363d70-1fed-4811-b59b-160d769a928d" width="80%" controls></video>
 </p>
 
 - `shade` is called once per pixel (~0.5M calls/frame at 960×540, and the canvas re-renders at the window's size and aspect ratio), parallelized over all cores with rayon — an interpreted agent-code loop would be orders of magnitude too slow to animate.
