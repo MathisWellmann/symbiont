@@ -10,7 +10,13 @@
 //! ```"
 //!
 
-use syn::parse_file;
+use syn::{
+    parse_file,
+    visit::{
+        self,
+        Visit,
+    },
+};
 
 use crate::{
     Result,
@@ -87,6 +93,10 @@ fn find_line_anchored_fence(input: &str, marker: &str, from: usize) -> Option<us
 /// parseable but function-less block (a lone `use`, a snippet of output) only
 /// serves as a fallback.
 ///
+/// A block that parses but carries an item `syn` only kept as raw tokens (see
+/// [`find_verbatim`]) is rejected like a parse error: `prettyplease` panics on
+/// most of those instead of printing them.
+///
 /// On parse failure the returned [`Error::CouldNotParseRust`] carries the
 /// offending code and syn's diagnostic (with line/column), so the evolve
 /// loop can feed a precise nudge back to the LLM. The diagnostic describes
@@ -102,13 +112,18 @@ pub(crate) fn parse_rust_code(input: &str) -> Result<syn::File> {
     let mut last_err: Option<Error> = None;
     for code in blocks.iter().rev() {
         match parse_file(code) {
-            Ok(file) if file.items.iter().any(|i| matches!(i, syn::Item::Fn(_))) => {
-                return Ok(file);
+            Ok(file) => {
+                // Reverse iteration means the first candidate to set any of
+                // these is the latest one, so `or` keeps the block closest to
+                // the end of the response.
+                if let Some(tokens) = find_verbatim(&file) {
+                    last_err = last_err.or_else(|| Some(unprintable_item(code, &tokens)));
+                } else if file.items.iter().any(|i| matches!(i, syn::Item::Fn(_))) {
+                    return Ok(file);
+                } else {
+                    function_less = function_less.or(Some(file));
+                }
             }
-            // Reverse iteration means the first candidate to set either of
-            // these is the latest one, so `or` keeps the block closest to
-            // the end of the response.
-            Ok(file) => function_less = function_less.or(Some(file)),
             Err(e) => last_err = last_err.or_else(|| Some(could_not_parse(code, &e))),
         }
     }
@@ -120,9 +135,31 @@ pub(crate) fn parse_rust_code(input: &str) -> Result<syn::File> {
 /// Build the [`Error::CouldNotParseRust`] backpressure payload for `code`.
 fn could_not_parse(code: &str, e: &syn::Error) -> Error {
     let start: proc_macro2::LineColumn = e.span().start();
-    let mut err = format!("{e} (line {}, column {})", start.line, start.column);
-    // Quote the offending source line with a caret marker so the agent
-    // does not have to count lines to locate the error.
+    let err = format!("{e} (line {}, column {})", start.line, start.column);
+    Error::CouldNotParseRust {
+        err: with_offending_line(err, code, start),
+        code: code.to_string(),
+    }
+}
+
+/// Build the [`Error::CouldNotParseRust`] backpressure payload for an item
+/// `syn` kept as raw tokens (see [`find_verbatim`]).
+fn unprintable_item(code: &str, tokens: &proc_macro2::TokenStream) -> Error {
+    let start: proc_macro2::LineColumn = syn::spanned::Spanned::span(tokens).start();
+    let err = format!(
+        "incomplete item `{tokens}` (line {}, column {}): an item without a body or \
+         initializer is only valid inside a trait definition",
+        start.line, start.column,
+    );
+    Error::CouldNotParseRust {
+        err: with_offending_line(err, code, start),
+        code: code.to_string(),
+    }
+}
+
+/// Quote the offending source line with a caret marker so the agent does not
+/// have to count lines to locate the error.
+fn with_offending_line(mut err: String, code: &str, start: proc_macro2::LineColumn) -> String {
     if let Some(line) = code.lines().nth(start.line.saturating_sub(1)) {
         use std::fmt::Write;
         write!(
@@ -132,9 +169,67 @@ fn could_not_parse(code: &str, e: &syn::Error) -> Error {
         )
         .expect("Can write to String");
     }
-    Error::CouldNotParseRust {
-        err,
-        code: code.to_string(),
+    err
+}
+
+/// The tokens of the first item `syn` parked in a `Verbatim` variant, if any.
+///
+/// `syn` is deliberately lenient about a handful of malformed items: rather
+/// than failing, it stashes their raw tokens in `Item::Verbatim` (and the
+/// `ImplItem` / `TraitItem` / `ForeignItem` equivalents). `const NAME: Type;`
+/// and `fn f();` — bodyless forms that are only legal inside a trait — are the
+/// ones LLMs emit, typically as a half-finished edit.
+///
+/// `prettyplease` has no printer for most verbatim forms and answers them with
+/// `unimplemented!`, so leaving one in the AST turns a bad generation into a
+/// panic in the evolve loop. Rejecting the block here keeps every downstream
+/// `unparse` total — including the ones inside the validation error payloads,
+/// which would otherwise panic while *reporting* the problem.
+fn find_verbatim(file: &syn::File) -> Option<proc_macro2::TokenStream> {
+    let mut scan = VerbatimScan(None);
+    scan.visit_file(file);
+    scan.0
+}
+
+/// Records the first non-empty verbatim token stream found in a file.
+/// An empty one is fine: `prettyplease` prints it as a blank line.
+struct VerbatimScan(Option<proc_macro2::TokenStream>);
+
+impl VerbatimScan {
+    fn record(&mut self, tokens: &proc_macro2::TokenStream) {
+        if self.0.is_none() && !tokens.is_empty() {
+            self.0 = Some(tokens.clone());
+        }
+    }
+}
+
+impl<'ast> Visit<'ast> for VerbatimScan {
+    fn visit_item(&mut self, node: &'ast syn::Item) {
+        if let syn::Item::Verbatim(tokens) = node {
+            self.record(tokens);
+        }
+        visit::visit_item(self, node);
+    }
+
+    fn visit_impl_item(&mut self, node: &'ast syn::ImplItem) {
+        if let syn::ImplItem::Verbatim(tokens) = node {
+            self.record(tokens);
+        }
+        visit::visit_impl_item(self, node);
+    }
+
+    fn visit_trait_item(&mut self, node: &'ast syn::TraitItem) {
+        if let syn::TraitItem::Verbatim(tokens) = node {
+            self.record(tokens);
+        }
+        visit::visit_trait_item(self, node);
+    }
+
+    fn visit_foreign_item(&mut self, node: &'ast syn::ForeignItem) {
+        if let syn::ForeignItem::Verbatim(tokens) = node {
+            self.record(tokens);
+        }
+        visit::visit_foreign_item(self, node);
     }
 }
 
@@ -331,6 +426,42 @@ pub fn shade(x: f64, y: f64, t: f64) -> u32 {
                 assert!(
                     err.contains("^ error is here"),
                     "error must carry a caret marker: {err}"
+                );
+            }
+            other => panic!("expected CouldNotParseRust, got: {other}"),
+        }
+    }
+
+    /// Regression test for the `prettyplease` panic path: `syn` accepts
+    /// `const NAME: Type;` (no initializer) by parking it in `Item::Verbatim`,
+    /// and `prettyplease::unparse` then hits `unimplemented!("Item::Verbatim
+    /// ..")`. Such a block must be rejected as unparseable *before* it reaches
+    /// any `unparse`, so the evolve loop nudges the model instead of panicking.
+    #[test]
+    fn test_parse_rust_code_rejects_bodyless_item() {
+        let input = "```rust
+pub fn action(state: &mut usize) {
+    *state += 1;
+}
+const SELL_ID: User200;
+```";
+        let err = match parse_rust_code(input) {
+            Err(e) => e,
+            Ok(_) => panic!("a bodyless const must not reach prettyplease"),
+        };
+        match err {
+            Error::CouldNotParseRust { code, err } => {
+                assert!(
+                    code.contains("const SELL_ID"),
+                    "code must be echoed: {code}"
+                );
+                assert!(
+                    err.contains("incomplete item"),
+                    "error must name the problem: {err}"
+                );
+                assert!(
+                    err.contains("Offending line:\nconst SELL_ID: User200;"),
+                    "error must quote the offending source line: {err}"
                 );
             }
             other => panic!("expected CouldNotParseRust, got: {other}"),
