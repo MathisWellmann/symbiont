@@ -66,25 +66,81 @@ symbiont::evolvable! {
     /// and parallelized across all cores by the host, so per-call cost must
     /// stay bounded (cap iteration counts).
     fn shade(x: f64, y: f64, t: f64) -> u32 {
-        // Default implementation: a gently pulsing grayscale Mandelbrot set,
-        // so the canvas shows something before the first evolution.
-        const MAX_ITER: u32 = 256;
-        let cx = x * 0.95 - 0.6;
-        let cy = y * 0.95;
-        let (mut zx, mut zy) = (0.0_f64, 0.0_f64);
+        // Default implementation: a Julia set that morphs and cycles color,
+        // so the canvas is alive before the first evolution.
+        //
+        // `c` crawls along the boundary of the Mandelbrot set's main cardioid
+        // (pulled 0.5% inwards, where the sets stay connected but stringy), so
+        // the shape continuously grows and folds new filaments. The exterior
+        // is colored by the *smooth* (fractional) escape count and faded to
+        // black away from the set; the interior — flat black in the textbook
+        // rendering — is colored by an orbit trap on the closest the orbit
+        // ever came to the origin, which lights it up as glowing nebulae with
+        // contour rings. Both go through the same cosine palette, whose phase
+        // drifts with `t`.
+        const MAX_ITER: u32 = 192;
+        // A large bailout is what makes the smooth iteration count smooth:
+        // the fractional part converges as the escape radius grows.
+        const ESCAPE: f64 = 256.0;
+
+        /// Cosine palette: cheap, periodic, saturated everywhere.
+        fn palette(s: f64) -> (f64, f64, f64) {
+            use std::f64::consts::TAU;
+            (
+                0.55 + 0.45 * (TAU * (s + 0.00)).cos(),
+                0.45 + 0.40 * (TAU * (s + 0.28)).cos(),
+                0.55 + 0.45 * (TAU * (s + 0.62)).cos(),
+            )
+        }
+
+        /// Pack floats into `0x00_RR_GG_BB`, gamma corrected.
+        fn pack(r: f64, g: f64, b: f64) -> u32 {
+            let q = |v: f64| (v.clamp(0.0, 1.0).sqrt() * 255.0) as u32;
+            (q(r) << 16) | (q(g) << 8) | q(b)
+        }
+
+        // Slow breathing zoom keeps the composition from feeling static.
+        let zoom = 1.35 + 0.10 * (t * 0.19).sin();
+        let (mut zx, mut zy) = (x * zoom, y * zoom);
+
+        // Cardioid boundary: c(th) = e^(i*th)/2 - e^(2i*th)/4. The offset
+        // start angle opens on a filigreed set rather than a round blob.
+        let th = 0.8 + t * 0.09;
+        let (sin_th, cos_th) = th.sin_cos();
+        let (sin_2th, cos_2th) = (2.0 * th).sin_cos();
+        let cx = 0.995 * (0.5 * cos_th - 0.25 * cos_2th);
+        let cy = 0.995 * (0.5 * sin_th - 0.25 * sin_2th);
+
+        let mut m = zx * zx + zy * zy;
+        let mut trap = m;
         let mut i = 0_u32;
-        while zx * zx + zy * zy <= 4.0 && i < MAX_ITER {
+        while m <= ESCAPE && i < MAX_ITER {
             let next_zx = zx * zx - zy * zy + cx;
             zy = 2.0 * zx * zy + cy;
             zx = next_zx;
+            m = zx * zx + zy * zy;
+            if m < trap {
+                trap = m;
+            }
             i += 1;
         }
+
         if i == MAX_ITER {
-            return 0x000000;
+            // Interior: glow by how tightly the orbit hugged the origin.
+            let d = trap.sqrt();
+            let glow = (-2.0 * d).exp();
+            let band = 0.82 + 0.18 * (d * 26.0 - t).sin();
+            let (r, g, b) = palette(0.30 + 0.55 * d - 0.04 * t);
+            let k = (0.10 + 0.90 * glow) * band;
+            return pack(r * k, g * k, b * k);
         }
-        let pulse = 0.75 + 0.25 * (t * 0.8).sin();
-        let v = ((f64::from(i) / f64::from(MAX_ITER)).sqrt() * 255.0 * pulse) as u32;
-        (v << 16) | (v << 8) | v
+
+        // Exterior: continuous escape count, so no iteration banding.
+        let smooth = f64::from(i) + 1.0 - (0.5 * m.ln()).ln() / std::f64::consts::LN_2;
+        let (r, g, b) = palette(0.11 * smooth.max(0.0).sqrt() + 0.05 * t);
+        // Fade the fast-escaping far field to black to frame the set.
+        let v = (smooth / 22.0).min(1.0).powf(1.6);
+        pack(r * v, g * v, b * v)
     }
 }
 
