@@ -111,6 +111,9 @@ Type a prompt — *"an animated Julia set, c orbiting the main cardioid, with a 
 
 - `shade` is called once per pixel (~0.5M calls/frame at 960×540), parallelized over all cores with rayon — an interpreted agent-code loop would be orders of magnitude too slow to animate.
 - The user is the evaluator: the runtime keeps the chat history, so follow-up prompts refine the current shader.
+- The canvas never freezes while the agent works: a single-lane `evolve_batch` compiles and registers the
+  candidate without touching the dispatch pointers, so rendering continues on the current revision until
+  `activate_revision` commits the new one in a few atomic stores at a frame boundary.
 - Agent code panics are caught inside the dylib (rendered as black pixels) and fed back into the next evolution prompt.
 
 ```bash
