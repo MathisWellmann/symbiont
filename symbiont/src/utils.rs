@@ -219,14 +219,40 @@ pub(crate) fn is_context_size_error(err: &Error) -> bool {
         return false;
     };
 
-    // llama.cpp reports `exceed_context_size_error`, OpenAI-compatible
-    // servers `context_length_exceeded`, Anthropic a 400 with
-    // "prompt is too long".
-    status.as_u16() == 400
-        && (msg.contains("exceed_context_size")
-            || msg.contains("context_length_exceeded")
-            || msg.contains("prompt is too long"))
+    if status.as_u16() != 400 {
+        return false;
+    }
+    let msg = msg.to_ascii_lowercase();
+    CONTEXT_SIZE_MARKERS
+        .iter()
+        .any(|marker| msg.contains(marker))
 }
+
+/// Lower-case substrings that identify a context-window overflow in the body
+/// of a `400 Bad Request` from an inference endpoint.
+///
+/// Every provider phrases the same condition differently, and none of them
+/// expose a machine-readable code that all of them agree on, so matching the
+/// body is the only portable option.
+const CONTEXT_SIZE_MARKERS: [&str; 5] = [
+    // llama.cpp: `{"error":{"code":400,"message":"request (258963 tokens)
+    // exceeds the available context size (256000 tokens), try increasing
+    // it","type":"exceed_context_size_error",...}}`.
+    "exceed_context_size",
+    // OpenAI and other OpenAI-compatible servers:
+    // `{"error":{"code":"context_length_exceeded",...}}`.
+    "context_length_exceeded",
+    // Anthropic: "prompt is too long: 215591 tokens > 204798 maximum".
+    "prompt is too long",
+    // vLLM, request validation: "This model's maximum context length is
+    // 65536 tokens. However, you requested 70000 tokens (69000 in the
+    // messages, 1000 in the completion). Please reduce the length of the
+    // messages or completion."
+    "maximum context length",
+    // vLLM, engine-side validation: "The decoder prompt (length 70000) is
+    // longer than the maximum model length of 65536."
+    "longer than the maximum model length",
+];
 
 /// The provider HTTP error inside `err`, if that is what it wraps.
 fn http_error_of(err: &Error) -> Option<&rig_core::http_client::Error> {
@@ -337,5 +363,88 @@ mod tests {
             pub fn step(counter: &mut usize) {}
         };
         assert!(!is_no_mangle(&code));
+    }
+
+    /// The [`Error`] a provider surfaces for a `400 Bad Request` with `body`.
+    fn http_400(body: &str) -> Error {
+        Error::RigHttp(rig_core::http_client::Error::InvalidStatusCodeWithMessage(
+            http::StatusCode::BAD_REQUEST,
+            body.to_string(),
+        ))
+    }
+
+    #[test]
+    fn context_size_error_detects_every_provider_wording() {
+        for body in [
+            // llama.cpp
+            r#"{"error":{"code":400,"message":"request (258963 tokens) exceeds the available context size (256000 tokens), try increasing it","type":"exceed_context_size_error"}}"#,
+            // OpenAI-compatible
+            r#"{"error":{"message":"too long","code":"context_length_exceeded"}}"#,
+            // Anthropic
+            r#"{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 215591 tokens > 204798 maximum"}}"#,
+            // vLLM, request validation
+            r#"{"object":"error","message":"This model's maximum context length is 65536 tokens. However, you requested 70000 tokens (69000 in the messages, 1000 in the completion). Please reduce the length of the messages or completion.","type":"BadRequestError","param":null,"code":400}"#,
+            // vLLM, engine-side validation
+            r#"{"object":"error","message":"The decoder prompt (length 70000) is longer than the maximum model length of 65536. Make sure that `max_model_len` is no smaller than the number of text tokens.","type":"BadRequestError","param":null,"code":400}"#,
+        ] {
+            assert!(
+                is_context_size_error(&http_400(body)),
+                "overflow not detected: {body}"
+            );
+        }
+    }
+
+    #[test]
+    fn context_size_error_matching_ignores_case() {
+        assert!(is_context_size_error(&http_400(
+            "This Model's Maximum Context Length Is 65536 Tokens."
+        )));
+    }
+
+    #[test]
+    fn context_size_error_seen_through_the_rig_prompt_wrapper() {
+        // The shape the runtime actually receives: rig wraps the provider
+        // error in `PromptError::CompletionError`.
+        let err = Error::RigPrompt(rig_core::completion::PromptError::CompletionError(
+            rig_core::completion::CompletionError::HttpError(
+                rig_core::http_client::Error::InvalidStatusCodeWithMessage(
+                    http::StatusCode::BAD_REQUEST,
+                    "This model's maximum context length is 65536 tokens.".to_string(),
+                ),
+            ),
+        ));
+        assert!(is_context_size_error(&err));
+    }
+
+    #[test]
+    fn other_bad_requests_are_not_context_size_errors() {
+        for body in [
+            // vLLM rejects this before it ever looks at the context length.
+            r#"{"object":"error","message":"max_tokens must be at least 1, got -45.","type":"BadRequestError","code":400}"#,
+            r#"{"error":{"message":"model `qwen3.6` not found","code":"model_not_found"}}"#,
+            "",
+        ] {
+            assert!(
+                !is_context_size_error(&http_400(body)),
+                "false positive: {body}"
+            );
+        }
+    }
+
+    #[test]
+    fn context_size_wording_outside_a_400_is_ignored() {
+        // A 5xx carrying the same words is a server failure, not an oversized
+        // prompt: it stays retryable without shrinking the conversation.
+        let err = Error::RigHttp(rig_core::http_client::Error::InvalidStatusCodeWithMessage(
+            http::StatusCode::INTERNAL_SERVER_ERROR,
+            "This model's maximum context length is 65536 tokens".to_string(),
+        ));
+        assert!(!is_context_size_error(&err));
+        assert!(is_transient_http_error(&err));
+    }
+
+    #[test]
+    fn non_http_errors_are_not_context_size_errors() {
+        assert!(!is_context_size_error(&Error::NoRustCode));
     }
 }

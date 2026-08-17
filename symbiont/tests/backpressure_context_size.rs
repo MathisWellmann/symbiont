@@ -27,13 +27,17 @@ use symbiont::{
 const BASE_PROMPT: &str = "Implement the function. Code only.";
 
 /// The error body llama.cpp returns when the request overflows `n_ctx`.
-const CONTEXT_SIZE_BODY: &str = r#"{"error":{"code":400,"message":"request (258963 tokens) exceeds the available context size (256000 tokens), try increasing it","type":"exceed_context_size_error","n_prompt_tokens":258963,"n_ctx":256000}}"#;
+const LLAMA_CPP_BODY: &str = r#"{"error":{"code":400,"message":"request (258963 tokens) exceeds the available context size (256000 tokens), try increasing it","type":"exceed_context_size_error"}}"#;
 
-fn context_size_error() -> PromptError {
+/// The error body vLLM returns for the same condition. Worded completely
+/// differently, and it must drive the same recovery.
+const VLLM_BODY: &str = r#"{"object":"error","message":"This model's maximum context length is 65536 tokens. However, you requested 70000 tokens (69000 in the messages, 1000 in the completion). Please reduce the length of the messages or completion.","type":"BadRequestError","param":null,"code":400}"#;
+
+fn context_size_error(body: &str) -> PromptError {
     PromptError::CompletionError(CompletionError::HttpError(
         rig_core::http_client::Error::InvalidStatusCodeWithMessage(
             http::StatusCode::BAD_REQUEST,
-            CONTEXT_SIZE_BODY.to_string(),
+            body.to_string(),
         ),
     ))
 }
@@ -58,8 +62,9 @@ async fn context_size_overflow_restarts_from_the_base_prompt() {
         // Attempt 1: invalid Rust -> parse error, correction turn queued and
         // the exchange lands in the retry history.
         Turn::reply("```rust\nthis is not rust\n```"),
-        // Attempt 2: the grown request overflows the context window.
-        Turn::Fail(context_size_error()),
+        // Attempt 2: the grown request overflows the context window, as
+        // reported by vLLM.
+        Turn::Fail(context_size_error(VLLM_BODY)),
         // Attempt 3: restarted from the base prompt -> success.
         Turn::reply("```rust\npub fn bp_ctx_step(counter: &mut usize) { *counter += 31; }\n```"),
     ]);
@@ -100,7 +105,7 @@ async fn context_size_overflow_restarts_from_the_base_prompt() {
 
     // When even a fresh request overflows (no history to discard), the error
     // is surfaced to the caller: only the host can slim down the base prompt.
-    let agent = ScriptedAgent::new([Turn::Fail(context_size_error())]);
+    let agent = ScriptedAgent::new([Turn::Fail(context_size_error(LLAMA_CPP_BODY))]);
     let err = rt
         .evolve(&agent, BASE_PROMPT)
         .await
