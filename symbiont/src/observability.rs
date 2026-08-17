@@ -45,6 +45,7 @@
 //! | [`LLM_RUN_INPUT_TOKENS`]    | histogram | —                      |
 //! | [`LLM_RUN_OUTPUT_TOKENS`]   | histogram | —                      |
 //! | [`LLM_RUN_MESSAGES`]        | histogram | —                      |
+//! | [`REQUEST_BODY_BYTES`]      | histogram | —                      |
 //! | [`LLM_TRANSIENT_RETRIES`]   | counter   | —                      |
 //! | [`LLM_RETRY_BACKOFF`]       | histogram | —                      |
 //! | [`REVISION_ACTIVE`]         | gauge     | —                      |
@@ -118,6 +119,19 @@ pub const LLM_RUN_OUTPUT_TOKENS: &str = "symbiont_llm_run_output_tokens";
 /// exchanges). A rising mean indicates the agent needs more turns to
 /// converge.
 pub const LLM_RUN_MESSAGES: &str = "symbiont_llm_run_messages";
+/// Serialized size of a single outbound request body to the inference
+/// endpoint: the complete prompt payload (system preamble, chat history, tool
+/// definitions, new turn) plus its JSON framing.
+///
+/// Emitted by [`crate::MeteredHttpClient`], which is the HTTP backend of the
+/// agents built by [`crate::agent_builder`] and [`crate::init_agent`]. Unlike
+/// [`LLM_RUN_INPUT_TOKENS`] this is per HTTP request rather than per agentic
+/// run — every tool-calling turn and every retry is its own sample — and it
+/// is known before the provider answers, so it is also recorded for requests
+/// that the endpoint rejects for being too large. Divide it by
+/// [`LLM_RUN_INPUT_TOKENS`] over the same window to get the bytes-per-token
+/// ratio of the deployed tokenizer.
+pub const REQUEST_BODY_BYTES: &str = "symbiont_llm_request_body_bytes";
 /// Transient HTTP errors from the provider (429, 5xx, 529) that triggered an
 /// exponential-backoff retry.
 pub const LLM_TRANSIENT_RETRIES: &str = "symbiont_llm_transient_retries_total";
@@ -246,6 +260,11 @@ pub fn describe_metrics() {
         LLM_RUN_MESSAGES,
         Unit::Count,
         "Messages produced per agentic run"
+    );
+    describe_histogram!(
+        REQUEST_BODY_BYTES,
+        Unit::Bytes,
+        "Serialized request body size per request to the inference endpoint"
     );
     describe_counter!(
         LLM_TRANSIENT_RETRIES,
