@@ -155,7 +155,7 @@ cargo run -p fractal-studio-example --release
   The dispatch overhead is **~1 ns per call** (a single atomic pointer load + indirect call).
   The hot path is fully lock-free and multi-thread safe.
 - **Observability**:
-  Metrics for evolution attempts, failures, LLM usage, pipeline timings, revisions, and dylib sizes use the [`metrics`](https://crates.io/crates/metrics) facade. Enable the `prometheus` feature and call `observability::init_observability` to expose them.
+  Metrics for evolution attempts, failures, LLM usage, outbound request payload sizes, pipeline timings, revisions, and dylib sizes use the [`metrics`](https://crates.io/crates/metrics) facade. Enable the `prometheus` feature and call `observability::init_observability` to expose them.
 - **Plug-in inference**:
   Any Inference provider is supported via [rig](https://github.com/0xPlaygrounds/rig).
 - **Tool calling**:
