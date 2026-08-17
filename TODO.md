@@ -13,6 +13,10 @@
   means paying dependency compilation per lane. Only worth it once
   `symbiont_build_slot_wait_seconds` says so — see [CAVEATS.md](CAVEATS.md).
 - Track the context length of the prompt (system + user) and make it available to query.
+  `symbiont_llm_request_body_bytes` now measures the serialized payload of every outbound
+  request, which sizes the prompt against the endpoint's context window, but in bytes and
+  only as a metric. Exposing a token count (or the rendered payload itself) to the host
+  would need a tokenizer or a provider round-trip.
 - Provide a way to call `info`, `debug` and `trace` like logging functions in the code and have them feed into the context in a smart way.
   Maybe its possible to re-use `tracing` here, depending on if its safe to do across dylib boundaries.
   It would need to be its own buffer though.
