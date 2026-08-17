@@ -22,6 +22,7 @@ rig-core.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 
+bytes = "1"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 getset = "0.1.6"
 libloading = "0.9"

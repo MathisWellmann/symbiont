@@ -21,6 +21,7 @@ mod evolution_agent;
 mod evolve_failure;
 mod inference;
 mod init_tracing;
+mod metered_http;
 pub mod observability;
 mod parser;
 mod profile;
@@ -56,12 +57,16 @@ pub use inference::{
     init_agent_from_env,
 };
 pub use init_tracing::init_tracing;
+pub use metered_http::MeteredHttpClient;
 pub use profile::Profile;
 pub use revision::{
     Revision,
     RevisionFn,
 };
-use rig_core::providers::openrouter::CompletionModel;
+/// The completion model of the agents built by [`agent_builder`] and
+/// [`init_agent`]: rig's OpenAI-compatible model over the
+/// payload-measuring HTTP backend.
+type CompletionModel = rig_core::providers::openrouter::CompletionModel<MeteredHttpClient>;
 pub use runtime::Runtime;
 /// Evolvable return types must implement [`Default`]: when an evolved
 /// implementation panics, the in-dylib `catch_unwind` wrapper substitutes

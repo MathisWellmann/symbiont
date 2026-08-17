@@ -11,10 +11,14 @@ use std::env::var;
 
 use rig_core::{
     client::CompletionClient,
+    http_client::ReqwestClient,
     providers::openrouter,
 };
 
-use crate::Result;
+use crate::{
+    MeteredHttpClient,
+    Result,
+};
 
 /// Initialize a pre-configured [`crate::AgentBuilder`] for `model`.
 ///
@@ -92,6 +96,10 @@ pub async fn agent_builder(
     let client = openrouter::Client::builder()
         .api_key(api_key)
         .base_url(base_url)
+        // Replaces rig's default backend with the same `reqwest::Client`,
+        // wrapped so every outbound prompt payload is measured
+        // (`observability::REQUEST_BODY_BYTES`).
+        .http_client(MeteredHttpClient::new(ReqwestClient::default()))
         .build()?;
 
     let system_prompt = crate::system_prompt::system_prompt(opt_crate_name).await?;
