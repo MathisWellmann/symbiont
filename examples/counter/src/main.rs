@@ -36,7 +36,7 @@ async fn main() -> symbiont::Result<()> {
     info!("fn_sigs: {fn_sigs:?}");
 
     let model = std::env::var("MODEL").expect("the MODEL env var names the model slug");
-    let agent = symbiont::init_agent_from_env(None, &model).await?;
+    let agent = symbiont::init_agent_from_env(None, &model, false).await?;
 
     let base_prompt = format!(
         "Give a concise implementation for this function signature: ```{}```, \

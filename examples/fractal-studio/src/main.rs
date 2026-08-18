@@ -762,7 +762,7 @@ fn main() -> eframe::Result<()> {
     let model =
         std::env::var("MODEL").expect("the MODEL env var names the model slug to evolve with");
     let agent = tokio_rt
-        .block_on(symbiont::init_agent_from_env(None, &model))
+        .block_on(symbiont::init_agent_from_env(None, &model, false))
         .expect("can initialize the agent; check the API_KEY and BASE_URL env vars");
     let tokio_handle = tokio_rt.handle().clone();
 

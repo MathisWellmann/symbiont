@@ -102,7 +102,7 @@ async fn main() -> symbiont::Result<()> {
     // `default_max_turns` must be >= 1, otherwise rig aborts the run with
     // `MaxTurnsError` as soon as the model chains tool calls.
     let model = std::env::var("MODEL").expect("the MODEL env var names the model slug");
-    let agent = symbiont::agent_builder_from_env(None, &model)
+    let agent = symbiont::agent_builder_from_env(None, &model, false)
         .await?
         .tool(Probe)
         .default_max_turns(10)

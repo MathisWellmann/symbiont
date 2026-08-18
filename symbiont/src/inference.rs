@@ -65,6 +65,7 @@ use crate::{
 ///     "http://127.0.0.1:8321/v1",
 ///     "",
 ///     "qwen3.6",
+///     false,
 /// )
 /// .await?
 /// .tool(RunTests)
@@ -86,12 +87,18 @@ use crate::{
 /// - `base_url`: The inference endpoint for `/v1/chat/completions` based requests.
 /// - `api_key`: The API key for authenticating the requests, if any. Can be empty.
 /// - `model`: The model slug served at `base_url`.
+/// - `enable_thinking`: Whether the model may emit reasoning ("thinking") tokens
+///   before answering. Configures `chat_template_kwargs` (`enable_thinking` and `thinking`)
+///   for vLLM/llama-server Jinja templates, standard OpenAI/vLLM `reasoning_effort`,
+///   and OpenRouter `reasoning` settings.
+///   Keep this `false` for thinking models (e.g. Qwen3, DeepSeek) in latency-sensitive loops.
 ///
 pub async fn agent_builder(
     opt_crate_name: Option<&str>,
     base_url: &str,
     api_key: &str,
     model: &str,
+    enable_thinking: bool,
 ) -> Result<crate::AgentBuilder> {
     let client = openrouter::Client::builder()
         .api_key(api_key)
@@ -103,7 +110,36 @@ pub async fn agent_builder(
         .build()?;
 
     let system_prompt = crate::system_prompt::system_prompt(opt_crate_name).await?;
-    Ok(client.agent(model).preamble(&system_prompt))
+    let reasoning_params = if enable_thinking {
+        serde_json::json!({
+            "enable_thinking": true,
+            "chat_template_kwargs": {
+                "enable_thinking": true,
+                "thinking": true,
+            },
+            "reasoning": {
+                "effort": "medium",
+            },
+        })
+    } else {
+        serde_json::json!({
+            "enable_thinking": false,
+            "reasoning_effort": "none",
+            "chat_template_kwargs": {
+                "enable_thinking": false,
+                "thinking": false,
+            },
+            "reasoning": {
+                "effort": "none",
+                "max_tokens": 0,
+            },
+        })
+    };
+
+    Ok(client
+        .agent(model)
+        .preamble(&system_prompt)
+        .additional_params(reasoning_params))
 }
 
 /// [`agent_builder`] with the endpoint and credentials read from the
@@ -111,10 +147,11 @@ pub async fn agent_builder(
 pub async fn agent_builder_from_env(
     opt_crate_name: Option<&str>,
     model: &str,
+    enable_thinking: bool,
 ) -> Result<crate::AgentBuilder> {
     let base_url = var("BASE_URL").unwrap_or_default();
     let api_key = var("API_KEY").unwrap_or_default();
-    agent_builder(opt_crate_name, &base_url, &api_key, model).await
+    agent_builder(opt_crate_name, &base_url, &api_key, model, enable_thinking).await
 }
 
 /// Initialize the agent for `model`.
@@ -130,16 +167,21 @@ pub async fn agent_builder_from_env(
 /// - `base_url`: The inference endpoint for `/v1/chat/completions` based requests.
 /// - `api_key`: The API key for authenticating the requests, if any. Can be empty.
 /// - `model`: The model slug served at `base_url`.
+/// - `enable_thinking`: Whether the model may emit reasoning ("thinking") tokens
+///   before answering. See [`agent_builder`].
 ///
 pub async fn init_agent(
     opt_crate_name: Option<&str>,
     base_url: &str,
     api_key: &str,
     model: &str,
+    enable_thinking: bool,
 ) -> Result<crate::Agent> {
-    Ok(agent_builder(opt_crate_name, base_url, api_key, model)
-        .await?
-        .build())
+    Ok(
+        agent_builder(opt_crate_name, base_url, api_key, model, enable_thinking)
+            .await?
+            .build(),
+    )
 }
 
 /// [`init_agent`] with the endpoint and credentials read from the
@@ -147,8 +189,13 @@ pub async fn init_agent(
 pub async fn init_agent_from_env(
     opt_crate_name: Option<&str>,
     model: &str,
+    enable_thinking: bool,
 ) -> Result<crate::Agent> {
-    Ok(agent_builder_from_env(opt_crate_name, model).await?.build())
+    Ok(
+        agent_builder_from_env(opt_crate_name, model, enable_thinking)
+            .await?
+            .build(),
+    )
 }
 
 /* TODO: collect the token usage in the runtime and provide summary stats. This test is used for exploring this path.

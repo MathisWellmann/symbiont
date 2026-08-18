@@ -106,11 +106,11 @@ jobs:
       #     '
       - name: sort-example-smoke-test
         # Run the sort example which evolves a sorting algorithm across
-        # multiple data distributions. The bubble sort default is slow,
-        # so allow 180s for the full evolution loop.
+        # multiple data distributions. Five LLM rounds against the 27B model
+        # take ~3 minutes, so allow 300s for the full evolution loop.
         run: |
           nix develop --command bash -c '
-            timeout 180s cargo run -p sort-example
+            timeout 300s cargo run -p sort-example
           '
       - name: struct-support-example-smoke-test
         run: |
