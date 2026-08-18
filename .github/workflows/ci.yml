@@ -56,7 +56,7 @@ jobs:
       - name: taplo
         run: nix develop --command taplo fmt --check
       - name: cargo-doc
-        run: nix develop --command cargo doc
+        run: nix develop --command cargo doc --no-deps # Only document workspace crates, not all dependencies
   miri:
     # Target self-hosted runner by label
     runs-on: [nixos]
