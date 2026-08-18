@@ -199,15 +199,15 @@ cargo run -p fractal-studio-example --release
 
 ## Development setup
 
-The project uses [Nix](https://nixos.org/) for reproducible builds and [devenv](https://devenv.sh/) to manage a local inference server.
+The project uses [Nix](https://nixos.org/) for reproducible builds. Examples run against an external OpenAI-compatible inference endpoint; no local inference server is started.
 
 **Prerequisites**: Nix with flakes enabled.
 
 Setup your `.env` file like this for the next steps (or use your desired inference provider):
 ```sh
 export API_KEY=""
-export BASE_URL="http://127.0.0.1:8321/v1"
-export MODEL="google/gemma-4-E2B-it"
+export BASE_URL="http://127.0.0.1:8000/v1"
+export MODEL="Qwen/Qwen3.8-27B-FP8"
 ```
 
 Then execute the following:
@@ -215,10 +215,7 @@ Then execute the following:
 # Enter the development shell (provides Rust nightly, cargo tools, formatters)
 nix develop
 
-# Start a local llama-cpp server with gemma-4-E2B-it (auto-downloads on first run)
-devenv up
-
-# In another terminal, run the counter example
+# Run the counter example against the inference endpoint
 cargo run -p counter-example
 ```
 
