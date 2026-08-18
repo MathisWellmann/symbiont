@@ -159,7 +159,7 @@ async fn main() -> symbiont::Result<()> {
     info!("fn_sigs: {fn_sigs:?}");
 
     let model = std::env::var("MODEL").expect("the MODEL env var names the model slug");
-    let agent = symbiont::init_agent_from_env(None, &model).await?;
+    let agent = symbiont::init_agent_from_env(None, &model, false).await?;
     let samples = build_samples();
 
     // Convergence threshold: MSE < 1e-10 means the formula is exact

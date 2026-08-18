@@ -341,7 +341,7 @@ async fn main() -> symbiont::Result<()> {
     info!("fn_sigs: {fn_sigs:?}");
 
     let model = std::env::var("MODEL").expect("the MODEL env var names the model slug");
-    let agent = symbiont::init_agent_from_env(None, &model).await?;
+    let agent = symbiont::init_agent_from_env(None, &model, false).await?;
 
     // -- Round 0: evaluate the default (first-empty-cell) strategy -----------
     println!("\n=== Round 0: default implementation (first empty cell) ===");
