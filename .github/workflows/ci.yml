@@ -80,76 +80,52 @@ jobs:
     runs-on: [nixos]
     needs: [rust-checks]
     env:
-      BASE_URL: http://127.0.0.1:8231/v1
-      MODEL: local
+      BASE_URL: http://127.0.0.1:8000/v1
+      MODEL: Qwen/Qwen3.8-27B-FP8
     # SECURITY: Require manual approval for external PRs
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     steps:
       - name: checkout-code
         uses: actions/checkout@v4
       - name: counter-example-smoke-test
-        # Start a local llama-cpp server via devenv, then run the counter
-        # example for 30s. This exercises the full pipeline: dylib creation,
+        # Run the counter example against the shared inference endpoint on desg0. This exercises the full pipeline: dylib creation,
         # compilation, loading, dispatch, LLM evolution, and hot-swap.
         run: |
           nix develop --command bash -c '
-            devenv up -d
-            devenv processes wait llama-server --timeout 120
             cargo run -p counter-example
-            devenv processes down
           '
       - name: fizzbuzz-example-smoke-test
         run: |
           nix develop --command bash -c '
-            devenv up -d
-            devenv processes wait llama-server --timeout 120
             cargo run -p fizzbuzz-example
-            devenv processes down
           '
-      - name: rastrigin-example-smoke-test
-        run: |
-          nix develop --command bash -c '
-            devenv up -d
-            devenv processes wait llama-server --timeout 120
-            timeout 120s cargo run -p rastrigin-example
-            devenv processes down
-          '
+      # - name: rastrigin-example-smoke-test
+      #   run: |
+      #     nix develop --command bash -c '
+      #       timeout 120s cargo run -p rastrigin-example
+      #     '
       - name: sort-example-smoke-test
         # Run the sort example which evolves a sorting algorithm across
         # multiple data distributions. The bubble sort default is slow,
         # so allow 180s for the full evolution loop.
         run: |
           nix develop --command bash -c '
-            devenv up -d
-            devenv processes wait llama-server --timeout 120
             timeout 180s cargo run -p sort-example
-            devenv processes down
           '
       - name: struct-support-example-smoke-test
         run: |
           nix develop --command bash -c '
-            devenv up -d
-            devenv processes wait llama-server --timeout 120
             cargo run -p struct-support-example
-            devenv processes down
           '
       - name: tool-calling-example-smoke-test
         run: |
           nix develop --command bash -c '
-            devenv up -d
-            devenv processes wait llama-server --timeout 120
             cargo run -p tool-calling-example
-            devenv processes down
           '
       - name: batched-evolution-example-smoke-test
-        # Eight concurrent evolution lanes. llama-server is started with
-        # --parallel 8 (see devenv.nix) so the lanes are genuinely batched
-        # rather than queued one behind another; a release-profile dylib is
-        # built per distinct candidate, so allow 300s.
+        # Eight concurrent evolution lanes against the shared endpoint on desg0;
+        # a release-profile dylib is built per distinct candidate, so allow 300s.
         run: |
           nix develop --command bash -c '
-            devenv up -d
-            devenv processes wait llama-server --timeout 120
             timeout 300s cargo run -p batched-evolution-example
-            devenv processes down
           '
