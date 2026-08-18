@@ -59,10 +59,10 @@ async fn every_lane_registers_a_revision_without_activating_it() {
         prompts.len(),
         "one result per prompt, positionally aligned"
     );
-    let revisions =
-        Vec::from_iter(results.into_iter().map(|r| {
-            r.expect("every lane was given a compiling implementation and should succeed")
-        }));
+    let revisions = Vec::from_iter(results.into_iter().map(|r| {
+        r.expect("every lane was given a compiling implementation and should succeed")
+            .revision()
+    }));
     assert_eq!(agent.calls(), 3, "one agent run per lane, no retries");
 
     // Initial build plus one revision per lane, all distinct.

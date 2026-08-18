@@ -58,7 +58,7 @@ async fn colliding_lanes_share_one_revision() {
     let revisions = Vec::from_iter(
         results
             .into_iter()
-            .map(|r| r.expect("every lane produced compiling code")),
+            .map(|r| r.expect("every lane produced compiling code").revision()),
     );
 
     assert_eq!(agent.calls(), 4, "every lane still runs its own inference");

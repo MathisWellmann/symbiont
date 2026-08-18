@@ -61,7 +61,11 @@ async fn runtime() {
 
     let agent = MockAgent;
     let prompt = format!("Implement this function in rust: ```{}```", rt.fn_sigs()[0]);
-    let revision = rt.evolve(&agent, &prompt).await.expect("Can evolve");
+    let revision = rt
+        .evolve(&agent, &prompt)
+        .await
+        .expect("Can evolve")
+        .revision();
     assert_eq!(revision, Revision::new(1));
     assert_eq!(rt.active_revision(), revision);
     assert_eq!(rt.revision_count(), 2);

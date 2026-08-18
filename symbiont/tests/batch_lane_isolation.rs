@@ -72,7 +72,11 @@ async fn a_failing_lane_does_not_disturb_its_siblings() {
     let gamma = results[2]
         .as_ref()
         .expect("lane 2 was given compiling code and must succeed");
-    assert_ne!(alpha, gamma, "successful lanes get distinct revisions");
+    assert_ne!(
+        alpha.revision(),
+        gamma.revision(),
+        "successful lanes get distinct revisions"
+    );
 
     // The doomed lane fails in place, with the budget-exhaustion error.
     match results[1]

@@ -34,6 +34,8 @@ use symbiont::{
 pub(crate) enum Turn {
     /// Respond with this canned assistant text.
     Reply(String),
+    /// Respond with this canned assistant text and this token usage.
+    ReplyWithUsage(String, Usage),
     /// Fail the run with this error.
     Fail(PromptError),
 }
@@ -42,6 +44,11 @@ impl Turn {
     /// Convenience constructor for a canned reply.
     pub(crate) fn reply(text: &str) -> Self {
         Self::Reply(text.to_string())
+    }
+
+    /// Convenience constructor for a canned reply with explicit token usage.
+    pub(crate) fn reply_with_usage(text: &str, usage: Usage) -> Self {
+        Self::ReplyWithUsage(text.to_string(), usage)
     }
 }
 
@@ -103,17 +110,17 @@ impl EvolutionAgent for ScriptedAgent {
             .pop_front()
             .expect("ScriptedAgent ran out of scripted turns — unexpected extra retry");
 
-        match turn {
-            Turn::Reply(text) => {
-                let new_messages = vec![Message::user(prompt), Message::assistant(text.as_str())];
-                Ok(AgentRun {
-                    output: text,
-                    new_messages,
-                    usage: Usage::new(),
-                })
-            }
-            Turn::Fail(err) => Err(err),
-        }
+        let (text, usage) = match turn {
+            Turn::Reply(text) => (text, Usage::new()),
+            Turn::ReplyWithUsage(text, usage) => (text, usage),
+            Turn::Fail(err) => return Err(err),
+        };
+        let new_messages = vec![Message::user(prompt), Message::assistant(text.as_str())];
+        Ok(AgentRun {
+            output: text,
+            new_messages,
+            usage,
+        })
     }
 }
 

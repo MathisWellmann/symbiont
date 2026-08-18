@@ -43,7 +43,10 @@ use metrics::{
 use minstant::Instant;
 use owo_colors::OwoColorize;
 use prettyplease::unparse;
-use rig_core::message::Message;
+use rig_core::{
+    completion::Usage,
+    message::Message,
+};
 use tracing::{
     debug,
     info,
@@ -55,6 +58,7 @@ use crate::{
     EvolutionAgent,
     EvolvableDecl,
     EvolveFailure,
+    EvolveInfo,
     FullSource,
     Profile,
     compiler::compile_dylib,
@@ -312,11 +316,14 @@ impl Runtime {
     /// On success, returns the [`Revision`] the new implementation was
     /// registered under. The dispatch pointers are left alone: publishing is
     /// the caller's decision, because batch lanes register without activating.
+    /// The run's token usage is added to `usage` either way, so a lane's
+    /// total includes attempts that were later rejected.
     async fn evolve_no_backpressure<AgentT>(
         &self,
         agent: &AgentT,
         prompt: &str,
         history: &mut Vec<Message>,
+        usage: &mut Usage,
     ) -> Result<Revision>
     where
         AgentT: EvolutionAgent,
@@ -334,6 +341,9 @@ impl Runtime {
                 return Err(e.into());
             }
         };
+        // Counted even if a later step rejects the result: a rejected
+        // attempt is still a paid-for LLM run.
+        *usage += run.usage;
         counter!(LLM_RUNS, "outcome" => "ok").increment(1);
         counter!(LLM_TOKENS, "kind" => "input").increment(run.usage.input_tokens);
         counter!(LLM_TOKENS, "kind" => "output").increment(run.usage.output_tokens);
@@ -579,9 +589,10 @@ impl Runtime {
 
     /// Prompt the LLM, validate the response, compile, and hot-swap.
     ///
-    /// On success, returns the [`Revision`] the new implementation was
-    /// registered under. The revision stays loaded for the lifetime of the
-    /// process, so it can be pointed at again later.
+    /// On success, returns an [`EvolveInfo`] carrying the [`Revision`] the
+    /// new implementation was registered under, plus the token usage of the
+    /// LLM runs that produced it. The revision stays loaded for the lifetime
+    /// of the process, so it can be pointed at again later.
     ///
     /// If the agent produced source byte-identical to an already-registered
     /// revision, that revision is returned and activated instead of being
@@ -631,7 +642,7 @@ impl Runtime {
         &self,
         agent: &AgentT,
         base_prompt: &str,
-    ) -> impl Future<Output = Result<Revision>> + Send
+    ) -> impl Future<Output = Result<EvolveInfo>> + Send
     where
         AgentT: EvolutionAgent + Sync,
     {
@@ -707,13 +718,13 @@ impl Runtime {
     /// [`Runtime::activate_revision`]:
     ///
     /// ```rust,ignore
-    /// let revisions = runtime.evolve_batch(&agent, &prompts).await;
-    /// let best = revisions
+    /// let results = runtime.evolve_batch(&agent, &prompts).await;
+    /// let best = results
     ///     .iter()
     ///     .filter_map(|r| r.as_ref().ok())
-    ///     .max_by_key(|rev| score(solve_fn(**rev).expect("just registered").get()))
-    ///     .copied()
-    ///     .expect("at least one lane succeeded");
+    ///     .max_by_key(|info| score(solve_fn(info.revision).expect("just registered").get()))
+    ///     .expect("at least one lane succeeded")
+    ///     .revision;
     /// runtime.activate_revision(best)?;
     /// ```
     ///
@@ -735,7 +746,7 @@ impl Runtime {
         &'a self,
         agent: &'a AgentT,
         prompts: &'a [S],
-    ) -> impl Future<Output = Vec<Result<Revision>>> + Send + 'a
+    ) -> impl Future<Output = Vec<Result<EvolveInfo>>> + Send + 'a
     where
         AgentT: EvolutionAgent + Sync,
         S: AsRef<str> + Sync,
@@ -764,7 +775,7 @@ impl Runtime {
         agent: &'a AgentT,
         prompts: &'a [S],
         max_in_flight: usize,
-    ) -> impl Future<Output = Vec<Result<Revision>>> + Send + 'a
+    ) -> impl Future<Output = Vec<Result<EvolveInfo>>> + Send + 'a
     where
         AgentT: EvolutionAgent + Sync,
         S: AsRef<str> + Sync,
@@ -798,7 +809,7 @@ impl Runtime {
 
             // `buffered` polls up to `in_flight` lanes concurrently and yields
             // results in input order, so the ordering guarantee costs nothing.
-            let results: Vec<Result<Revision>> = stream::iter(lanes)
+            let results: Vec<Result<EvolveInfo>> = stream::iter(lanes)
                 .buffered(in_flight)
                 .collect::<Vec<_>>()
                 .await;
@@ -829,6 +840,10 @@ impl Runtime {
     /// batch clears once for the whole round rather than once per lane.
     ///
     /// `lane` only labels the [`EvolveFailure`] records this lane produces.
+    ///
+    /// On success, the returned [`EvolveInfo`] carries the lane's total
+    /// token usage across all of its attempts — a rejected attempt's tokens
+    /// are counted too.
     #[expect(
         clippy::manual_async_fn,
         reason = "Ensure the future is `Send` such that it works better with tokios multi-thread runtime"
@@ -843,7 +858,7 @@ impl Runtime {
         base_prompt: &str,
         lane: usize,
         publish: Publish,
-    ) -> impl Future<Output = Result<Revision>> + Send
+    ) -> impl Future<Output = Result<EvolveInfo>> + Send
     where
         AgentT: EvolutionAgent + Sync,
     {
@@ -853,6 +868,7 @@ impl Runtime {
             // Scoped to this call; see the doc comment above.
             let mut history: Vec<Message> = Vec::new();
             let mut attempts: usize = 0;
+            let mut usage = Usage::new();
             let mut transient_attempts: usize = 0;
             // Code of the most recent rejected attempt, used to detect an
             // agent that echoes the same broken code back verbatim.
@@ -861,7 +877,7 @@ impl Runtime {
             loop {
                 attempts += 1;
                 match self
-                    .evolve_no_backpressure(agent, &prompt, &mut history)
+                    .evolve_no_backpressure(agent, &prompt, &mut history, &mut usage)
                     .await
                 {
                     Ok(revision) => {
@@ -871,7 +887,7 @@ impl Runtime {
                         }
                         histogram!(EVOLVE_ATTEMPTS).record(attempts as f64);
                         histogram!(EVOLVE_DURATION).record(t_start.elapsed().as_secs_f64());
-                        return Ok(revision);
+                        return Ok(EvolveInfo::new(revision, usage));
                     }
                     Err(e) => {
                         counter!(
