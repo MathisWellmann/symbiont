@@ -29,6 +29,7 @@ mod profile;
 mod revision;
 mod runtime;
 mod system_prompt;
+mod thinking_level;
 mod unwind;
 mod utils;
 mod validation;
@@ -65,6 +66,7 @@ pub use revision::{
     Revision,
     RevisionFn,
 };
+pub use thinking_level::ThinkingLevel;
 /// The completion model of the agents built by [`agent_builder`] and
 /// [`init_agent`]: rig's OpenAI-compatible model over the
 /// payload-measuring HTTP backend.
