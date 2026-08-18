@@ -353,7 +353,7 @@ async fn main() -> symbiont::Result<()> {
     // -- Evaluate every candidate, activating none of them ----------------
     let outcomes = Vec::from_iter(results.into_iter().enumerate().map(
         |(lane, result)| match result {
-            Ok(revision) => evaluate(lane, revision),
+            Ok(info) => evaluate(lane, info.revision()),
             Err(e) => LaneOutcome::failed(lane, e.to_string()),
         },
     ));

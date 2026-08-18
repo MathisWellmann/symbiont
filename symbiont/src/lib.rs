@@ -19,6 +19,7 @@ mod dylib_dependency;
 mod error;
 mod evolution_agent;
 mod evolve_failure;
+mod evolve_info;
 mod inference;
 mod init_tracing;
 mod metered_http;
@@ -50,6 +51,7 @@ pub use evolution_agent::{
     EvolutionAgent,
 };
 pub use evolve_failure::EvolveFailure;
+pub use evolve_info::EvolveInfo;
 pub use inference::{
     agent_builder,
     agent_builder_from_env,

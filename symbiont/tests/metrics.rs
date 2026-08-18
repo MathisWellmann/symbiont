@@ -74,7 +74,8 @@ async fn evolution_emits_metrics() {
     let revision = rt
         .evolve(&agent, BASE_PROMPT)
         .await
-        .expect("evolution should succeed");
+        .expect("evolution should succeed")
+        .revision();
     assert_eq!(revision.as_u64(), 1);
 
     let mut counter = 0;

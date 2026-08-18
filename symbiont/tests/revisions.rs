@@ -58,7 +58,8 @@ async fn revisions_are_retained_and_activatable() {
     let rev_plus_5 = rt
         .evolve(&agent, "increment by 5")
         .await
-        .expect("Can evolve");
+        .expect("Can evolve")
+        .revision();
     assert_eq!(rev_plus_5, Revision::new(1));
     assert_eq!(rt.active_revision(), rev_plus_5);
     counter = 0;
@@ -68,7 +69,8 @@ async fn revisions_are_retained_and_activatable() {
     let rev_plus_7 = rt
         .evolve(&agent, "increment by 7")
         .await
-        .expect("Can evolve");
+        .expect("Can evolve")
+        .revision();
     assert_eq!(rev_plus_7, Revision::new(2));
     assert_eq!(rt.revision_count(), 3);
     counter = 0;
@@ -119,7 +121,8 @@ async fn revisions_are_retained_and_activatable() {
     let rev_plus_9 = rt
         .evolve(&agent, "increment by 9")
         .await
-        .expect("Can evolve");
+        .expect("Can evolve")
+        .revision();
     assert_eq!(rev_plus_9, Revision::new(3));
     assert_eq!(rt.active_revision(), rev_plus_9);
     assert_eq!(rt.revision_count(), 4);
@@ -192,7 +195,11 @@ async fn revisions_are_retained_and_activatable() {
 
     // Evolve a panicking implementation, then make a different revision
     // active: the handle call's panic must land in ITS revision's buffer.
-    let rev_panic = rt.evolve(&agent, "panic please").await.expect("Can evolve");
+    let rev_panic = rt
+        .evolve(&agent, "panic please")
+        .await
+        .expect("Can evolve")
+        .revision();
     rt.activate_revision(rev_plus_5).expect("Can activate");
     let panicking = rev_step_fn(rev_panic).expect("revision is retained");
     counter = 0;

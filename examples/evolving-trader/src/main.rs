@@ -702,7 +702,7 @@ async fn main() -> symbiont::Result<()> {
 
         let prompt = build_prompt(&task, &last_code, &result, top.first());
         let rev = match runtime.evolve(&agent, &prompt).await {
-            Ok(rev) => rev,
+            Ok(info) => info.revision(),
             Err(e) => {
                 warn!("Evolution failed: {e} — retrying next round.");
                 continue;
