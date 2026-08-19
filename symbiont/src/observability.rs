@@ -46,6 +46,10 @@
 //! | [`LLM_RUN_OUTPUT_TOKENS`]   | histogram | —                      |
 //! | [`LLM_RUN_MESSAGES`]        | histogram | —                      |
 //! | [`REQUEST_BODY_BYTES`]      | histogram | —                      |
+//! | [`INFERENCE_GATE_CAPACITY`] | gauge     | —                      |
+//! | [`INFERENCE_IN_FLIGHT`]     | gauge     | —                      |
+//! | [`INFERENCE_GATE_QUEUED`]   | gauge     | —                      |
+//! | [`INFERENCE_GATE_WAIT`]     | histogram | —                      |
 //! | [`LLM_TRANSIENT_RETRIES`]   | counter   | —                      |
 //! | [`LLM_RETRY_BACKOFF`]       | histogram | —                      |
 //! | [`REVISION_ACTIVE`]         | gauge     | —                      |
@@ -132,6 +136,31 @@ pub const LLM_RUN_MESSAGES: &str = "symbiont_llm_run_messages";
 /// [`LLM_RUN_INPUT_TOKENS`] over the same window to get the bytes-per-token
 /// ratio of the deployed tokenizer.
 pub const REQUEST_BODY_BYTES: &str = "symbiont_llm_request_body_bytes";
+/// Concurrent inference requests [`crate::InferenceGate`] is willing to admit,
+/// i.e. [`crate::Runtime::max_in_flight`]. Exported so that saturation can be
+/// read as [`INFERENCE_IN_FLIGHT`] over this, rather than against a limit the
+/// dashboard would have to hardcode. `u64::MAX` worth of capacity (the
+/// unlimited default) is reported as `0`, which keeps the ratio undefined
+/// instead of pinning it at zero for hosts that never set a limit.
+pub const INFERENCE_GATE_CAPACITY: &str = "symbiont_inference_gate_capacity";
+/// Inference requests currently resident at the endpoint, as admitted by
+/// [`crate::InferenceGate`]. This is the saturation signal: it should sit at
+/// [`crate::Runtime::max_in_flight`] for as long as there is work left. Every
+/// unit below that limit is a slot in the server's continuous batch that the
+/// harness is failing to fill, and decode throughput scales with that batch.
+pub const INFERENCE_IN_FLIGHT: &str = "symbiont_inference_in_flight";
+/// Inference requests waiting for a slot at [`crate::InferenceGate`].
+///
+/// Read together with [`INFERENCE_IN_FLIGHT`]. Zero queued while in-flight
+/// sits at the limit means the endpoint is the bottleneck, which is the
+/// desired state. Zero queued while in-flight is *below* the limit means not
+/// enough lanes are admitted to keep the server busy — the local stages
+/// (compile, load) are absorbing them.
+pub const INFERENCE_GATE_QUEUED: &str = "symbiont_inference_gate_queued";
+/// Seconds a request spent waiting for an [`crate::InferenceGate`] slot, with
+/// a zero recorded for every request admitted immediately. The share of
+/// non-zero samples is how hard the limit is actually binding.
+pub const INFERENCE_GATE_WAIT: &str = "symbiont_inference_gate_wait_seconds";
 /// Transient HTTP errors from the provider (429, 5xx, 529) that triggered an
 /// exponential-backoff retry.
 pub const LLM_TRANSIENT_RETRIES: &str = "symbiont_llm_transient_retries_total";
@@ -265,6 +294,26 @@ pub fn describe_metrics() {
         REQUEST_BODY_BYTES,
         Unit::Bytes,
         "Serialized request body size per request to the inference endpoint"
+    );
+    describe_gauge!(
+        INFERENCE_GATE_CAPACITY,
+        Unit::Count,
+        "Concurrent inference requests the gate admits (0 when unlimited)"
+    );
+    describe_gauge!(
+        INFERENCE_IN_FLIGHT,
+        Unit::Count,
+        "Inference requests currently resident at the endpoint"
+    );
+    describe_gauge!(
+        INFERENCE_GATE_QUEUED,
+        Unit::Count,
+        "Inference requests waiting for a concurrency slot"
+    );
+    describe_histogram!(
+        INFERENCE_GATE_WAIT,
+        Unit::Seconds,
+        "Seconds a request waited for an inference concurrency slot"
     );
     describe_counter!(
         LLM_TRANSIENT_RETRIES,

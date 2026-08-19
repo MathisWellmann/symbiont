@@ -31,6 +31,7 @@ use std::{
 
 use futures_util::stream::{
     self,
+    Stream,
     StreamExt,
 };
 use libloading::Library;
@@ -65,6 +66,10 @@ use crate::{
     error::{
         Error,
         Result,
+    },
+    inference_gate::{
+        InferenceGate,
+        Priority,
     },
     observability::{
         BUILD_SLOT_WAIT,
@@ -190,6 +195,16 @@ pub struct Runtime {
     /// `cargo build` await, and holding a `std` guard there would make
     /// `evolve`'s future `!Send`.
     build_slot: tokio::sync::Mutex<()>,
+    /// Caps how many inference requests are resident at the endpoint at once,
+    /// process-wide and across overlapping calls.
+    ///
+    /// Deliberately *not* a cap on lanes: a lane holds a slot only while it is
+    /// actually talking to the model, and none of it while it parses,
+    /// waits for [`Runtime::build_slot`], compiles or loads. That is what lets
+    /// [`Runtime::evolve_batch`] run every lane at once without overrunning
+    /// the endpoint, and what lets the lanes that are compiling be covered by
+    /// lanes that are generating. See [`InferenceGate`].
+    inference_gate: InferenceGate,
 }
 
 impl Runtime {
@@ -216,7 +231,7 @@ impl Runtime {
     /// # Arguments:
     /// - `decls` should be the generated `SYMBIONT_DECLS` constant from the `evolvable` macro.
     /// - `generated_prelude` should be the generated `SYMBIONT_PRELUDE` constant from the macro.
-    /// - `config` defines the compilation profile, dylib dependencies, and configured imports.
+    /// - `dylib_config` defines the compilation profile, dylib dependencies, and configured imports.
     ///
     /// # Panics
     ///
@@ -224,9 +239,9 @@ impl Runtime {
     pub async fn new(
         decls: &'static [EvolvableDecl],
         generated_prelude: &'static [&'static str],
-        config: impl Into<DylibConfig>,
+        dylib_config: impl Into<DylibConfig>,
     ) -> Result<&'static Runtime> {
-        let config = config.into();
+        let config = dylib_config.into();
         if decls.is_empty() {
             return Err(Error::NoEvolvableFunctions);
         }
@@ -292,6 +307,9 @@ impl Runtime {
             prelude,
             evolve_failures: RwLock::new(Vec::new()),
             build_slot: tokio::sync::Mutex::new(()),
+            // Unlimited until a caller asks for a limit, so a host that only
+            // ever calls `evolve` is unaffected.
+            inference_gate: InferenceGate::unlimited(),
         };
 
         RUNTIME
@@ -676,8 +694,16 @@ impl Runtime {
     /// evaluating if your fitness function is expensive, and watch
     /// [`crate::observability::REVISION_DEDUP_HITS`] to quantify the collapse.
     ///
-    /// Every lane defaults to running concurrently; use
-    /// [`Runtime::evolve_batch_limited`] to cap how many are in flight at once.
+    /// Every lane runs concurrently. That is not the same as every lane being
+    /// *sent* concurrently: use [`Runtime::evolve_batch_limited`] or
+    /// [`Runtime::set_max_in_flight`] to cap how many inference requests reach
+    /// the endpoint at a time, which is the quantity a server's batch width
+    /// and a provider's rate limit are actually expressed in. This method
+    /// respects a limit already configured on the runtime and never raises it.
+    ///
+    /// Results arrive as one `Vec` when the slowest lane is done. To act on
+    /// each candidate as it lands — and overlap the next round's generation
+    /// with this round's evaluation — use [`Runtime::evolve_batch_stream`].
     ///
     /// # Why this is faster than a loop
     ///
@@ -693,20 +719,9 @@ impl Runtime {
     ///   request — so with prefix caching enabled every lane after the first
     ///   skips that prefill.
     ///
-    /// Confirming the second effect is provider-dependent.
-    /// [`crate::observability::LLM_TOKENS`]`{kind="cached_input"}` reports it
-    /// only for backends that fill in the OpenAI-compatible
-    /// `usage.prompt_tokens_details.cached_tokens` field. vLLM does not, even
-    /// when its prefix cache is demonstrably working — there the figure lives
-    /// on its own `/metrics` endpoint as `vllm:prefix_cache_hits_total`.
-    ///
     /// Keep the varying part of each prompt at the *end*. Prefix reuse stops at
     /// the first differing token, so a per-lane preamble throws the second
     /// effect away.
-    ///
-    /// Note that a server must be configured to batch: vLLM and SGLang do it by
-    /// default, but `llama-server` runs one sequence at a time unless started
-    /// with `--parallel n`.
     ///
     /// # The active revision is not changed
     ///
@@ -751,30 +766,40 @@ impl Runtime {
         AgentT: EvolutionAgent + Sync,
         S: AsRef<str> + Sync,
     {
-        self.evolve_batch_limited(agent, prompts, prompts.len())
+        // Whatever limit the runtime is already configured with — `u16::MAX`
+        // unless a host set one, which `evolve_batch_limited` clamps down to
+        // the lane count. Passing `prompts.len()` unconditionally would let an
+        // unrelated batch silently raise a limit the host chose deliberately.
+        self.evolve_batch_limited(agent, prompts, self.max_in_flight())
     }
 
-    /// [`Runtime::evolve_batch`] with a ceiling on how many lanes are in flight
-    /// at once. The remaining lanes start as slots free up; results stay
-    /// positionally aligned with `prompts` either way.
-    ///
-    /// Cap this below `prompts.len()` when the endpoint is rate limited — eight
-    /// concurrent requests into a per-minute quota produce eight independent
-    /// 429 backoffs — or when the server's own batch width is smaller than the
-    /// batch, in which case the excess only queues server-side where you cannot
-    /// see it. For a local server, matching its `--max-num-seqs` is a good
-    /// default.
+    /// [`Runtime::evolve_batch`] with a ceiling on how many **inference
+    /// requests** may be resident at the endpoint at once. Results stay
+    /// positionally aligned with `prompts`.
     ///
     /// `max_in_flight` is clamped to `1..=prompts.len()`.
+    ///
+    /// # This limits requests, not lanes
+    ///
+    /// Every lane starts immediately, however large the batch and however
+    /// small the limit. A lane holds one of the `max_in_flight` slots only
+    /// while it is actually talking to the model, and gives it back before it
+    /// parses, queues for the build slot, compiles and loads — so the lanes
+    /// doing local work are covered by other lanes generating in their place.
+    ///
+    /// The limit is a property of the endpoint, not of one call: it is stored
+    /// on the runtime and shared by everything the process sends.
+    /// Setting it here is equivalent to [`Runtime::set_max_in_flight`].
     #[expect(
         clippy::manual_async_fn,
         reason = "Ensure the future is `Send` such that it works better with tokios multi-thread runtime"
     )]
+    #[deprecated = "change API into `evolve_batch` and drop the `max_in_flight` argument"]
     pub fn evolve_batch_limited<'a, AgentT, S>(
         &'a self,
         agent: &'a AgentT,
         prompts: &'a [S],
-        max_in_flight: usize,
+        max_in_flight: u16,
     ) -> impl Future<Output = Vec<Result<EvolveInfo>>> + Send + 'a
     where
         AgentT: EvolutionAgent + Sync,
@@ -791,33 +816,33 @@ impl Runtime {
                 Err(_) => return prompts.iter().map(|_| Err(Error::MutexPoison)).collect(),
             }
 
-            let in_flight = max_in_flight.clamp(1, prompts.len());
+            let prompts_clamped = u16::try_from(prompts.len()).unwrap_or(u16::MAX);
+            self.set_max_in_flight(max_in_flight.clamp(1, prompts_clamped));
             info!(
-                "Evolving a batch of {} prompts, at most {in_flight} in flight.",
-                prompts.len()
+                "Evolving a batch of {} prompts, at most {} inference requests in flight.",
+                prompts.len(),
+                self.inference_gate.capacity(),
             );
             let t_batch = Instant::now();
             histogram!(EVOLVE_BATCH_SIZE).record(prompts.len() as f64);
 
-            // Constructing a lane future does no work, so building them all up
-            // front is free — and it pins the lifetimes, which a lazy
-            // `.map()` closure returning `impl Future` cannot do.
-            let lanes =
-                Vec::from_iter(prompts.iter().enumerate().map(|(lane, prompt)| {
-                    self.evolve_lane(agent, prompt.as_ref(), lane, Publish::No)
-                }));
-
-            // `buffered` polls up to `in_flight` lanes concurrently and yields
-            // results in input order, so the ordering guarantee costs nothing.
-            let results: Vec<Result<EvolveInfo>> = stream::iter(lanes)
-                .buffered(in_flight)
-                .collect::<Vec<_>>()
-                .await;
-
-            for result in &results {
-                let outcome = if result.is_ok() { "ok" } else { "error" };
-                counter!(EVOLVE_BATCH_LANES, "outcome" => outcome).increment(1);
+            // Completion order in, input order out: the reordering buffer is
+            // the whole difference between this and
+            // [`Runtime::evolve_batch_stream`].
+            let mut slots: Vec<Option<Result<EvolveInfo>>> =
+                Vec::from_iter(prompts.iter().map(|_| None));
+            {
+                let mut lanes = std::pin::pin!(self.evolve_batch_stream(agent, prompts));
+                while let Some((lane, result)) = lanes.next().await {
+                    slots[lane] = Some(result);
+                }
             }
+            let results = Vec::<Result<EvolveInfo>>::from_iter(
+                slots
+                    .into_iter()
+                    .map(|slot| slot.expect("every lane yields exactly one result")),
+            );
+
             let elapsed = t_batch.elapsed();
             histogram!(EVOLVE_BATCH_DURATION).record(elapsed.as_secs_f64());
             info!(
@@ -829,6 +854,94 @@ impl Runtime {
 
             results
         }
+    }
+
+    /// [`Runtime::evolve_batch`] yielding each lane the moment it finishes,
+    /// tagged with its index into `prompts`, instead of collecting the whole
+    /// batch first.
+    ///
+    /// Use this when the caller has something to do with a winner before the
+    /// batch is over — evaluate it, score it, and submit the next round's
+    /// prompts. A `Vec` return is a barrier by construction: the batch ends
+    /// when its slowest lane ends, so with a collected batch the endpoint
+    /// spends the tail of every round running one repair loop at concurrency
+    /// one. Overlapping rounds is the only thing that fills that tail, and it
+    /// requires results to be observable early.
+    ///
+    /// Because the limit lives on the runtime rather than on the call
+    /// ([`Runtime::set_max_in_flight`]), overlapping rounds share one budget:
+    /// submitting round `n + 1` while round `n` still has stragglers does not
+    /// overrun the endpoint, it just stops the endpoint from going idle.
+    ///
+    /// ```rust,ignore
+    /// runtime.set_max_in_flight(16);
+    /// let mut lanes = std::pin::pin!(runtime.evolve_batch_stream(&agent, &prompts));
+    /// while let Some((lane, result)) = lanes.next().await {
+    ///     if let Ok(info) = result {
+    ///         // Scored while the remaining lanes are still generating.
+    ///         record(lane, score(solve_fn(info.revision)?.get()));
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// # Failures
+    ///
+    /// Unlike [`Runtime::evolve_batch_limited`] this does **not** clear the
+    /// failure buffer: a round that cleared it would discard the records of an
+    /// overlapping round that is still running, which is the case this method
+    /// exists for. Drain it yourself with
+    /// [`Runtime::take_evolve_failures`] — grouping by [`EvolveFailure::lane`]
+    /// is only unambiguous within one round, so drain between rounds if you
+    /// need to attribute them.
+    pub fn evolve_batch_stream<'a, AgentT, S>(
+        &'a self,
+        agent: &'a AgentT,
+        prompts: &'a [S],
+    ) -> impl Stream<Item = (usize, Result<EvolveInfo>)> + Send + 'a
+    where
+        AgentT: EvolutionAgent + Sync,
+        S: AsRef<str> + Sync,
+    {
+        // Constructing a lane future does no work, so building them all up
+        // front is free — and it pins the lifetimes.
+        let lanes = Vec::from_iter(prompts.iter().enumerate().map(|(lane, prompt)| {
+            let evolve = self.evolve_lane(agent, prompt.as_ref(), lane, Publish::No);
+            async move {
+                let result = evolve.await;
+                let outcome = if result.is_ok() { "ok" } else { "error" };
+                counter!(EVOLVE_BATCH_LANES, "outcome" => outcome).increment(1);
+                (lane, result)
+            }
+        }));
+
+        // Every lane at once. A lane that is not generating holds nothing the
+        // endpoint can see, so oversubscribing them relative to
+        // [`Runtime::max_in_flight`] is exactly what keeps the endpoint full;
+        // the gate does the shaping.
+        let admitted = lanes.len().max(1);
+        stream::iter(lanes).buffer_unordered(admitted)
+    }
+
+    /// Cap max number of inference requests this process sends to the inference endpoint at once.
+    /// Applies to everything the runtime sends from now on,
+    /// including calls already in flight.
+    ///
+    /// Lowering it never cancels a request already sent; the surplus drains.
+    /// Values below 1 are treated as 1.
+    ///
+    /// See [`Runtime::evolve_batch_limited`] for how to choose the number.
+    pub fn set_max_in_flight(&self, max_in_flight: u16) {
+        self.inference_gate.set_capacity(max_in_flight);
+    }
+
+    /// The current inference concurrency limit, as set by
+    /// [`Runtime::set_max_in_flight`].
+    ///
+    /// [`u16::MAX`] until one of them is called: an unconfigured runtime
+    /// admits whatever it is asked to send.
+    #[must_use]
+    pub fn max_in_flight(&self) -> u16 {
+        self.inference_gate.capacity()
     }
 
     /// One independent evolution: the self-healing retry ladder around
@@ -876,8 +989,22 @@ impl Runtime {
 
             loop {
                 attempts += 1;
+                // The gate is entered inside `evolve_no_backpressure` and
+                // left again before the compile stage, so a lane queued on
+                // `build_slot` is not also occupying a slot at the endpoint.
+                //
+                // Priority rises with the attempt number. A lane deep in its
+                // repair ladder is the one that decides when the batch ends,
+                // and its request is a prefix-extension of the request before
+                // it — so serving it ahead of freshly admitted lanes is both
+                // the shortest path to finishing and the cheapest prefill in
+                // the batch.
                 match self
-                    .evolve_no_backpressure(agent, &prompt, &mut history, &mut usage)
+                    .inference_gate
+                    .scope(
+                        Priority::attempt(attempts),
+                        self.evolve_no_backpressure(agent, &prompt, &mut history, &mut usage),
+                    )
                     .await
                 {
                     Ok(revision) => {
