@@ -136,20 +136,20 @@ pub const LLM_RUN_MESSAGES: &str = "symbiont_llm_run_messages";
 /// [`LLM_RUN_INPUT_TOKENS`] over the same window to get the bytes-per-token
 /// ratio of the deployed tokenizer.
 pub const REQUEST_BODY_BYTES: &str = "symbiont_llm_request_body_bytes";
-/// Concurrent inference requests [`crate::InferenceGate`] is willing to admit,
-/// i.e. [`crate::Runtime::max_in_flight`]. Exported so that saturation can be
-/// read as [`INFERENCE_IN_FLIGHT`] over this, rather than against a limit the
-/// dashboard would have to hardcode. `u64::MAX` worth of capacity (the
-/// unlimited default) is reported as `0`, which keeps the ratio undefined
-/// instead of pinning it at zero for hosts that never set a limit.
+/// Concurrent inference requests the gate is willing to admit, i.e.
+/// [`crate::Runtime::max_in_flight`]. Exported so that saturation can be read
+/// as [`INFERENCE_IN_FLIGHT`] over this, rather than against a limit the
+/// dashboard would have to hardcode. The unlimited default, [`u16::MAX`], is
+/// reported as `0`, which keeps the ratio undefined instead of pinning it at
+/// zero for hosts that never set a limit.
 pub const INFERENCE_GATE_CAPACITY: &str = "symbiont_inference_gate_capacity";
-/// Inference requests currently resident at the endpoint, as admitted by
-/// [`crate::InferenceGate`]. This is the saturation signal: it should sit at
+/// Inference requests currently resident at the endpoint, as admitted by the
+/// gate. This is the saturation signal: it should sit at
 /// [`crate::Runtime::max_in_flight`] for as long as there is work left. Every
 /// unit below that limit is a slot in the server's continuous batch that the
 /// harness is failing to fill, and decode throughput scales with that batch.
 pub const INFERENCE_IN_FLIGHT: &str = "symbiont_inference_in_flight";
-/// Inference requests waiting for a slot at [`crate::InferenceGate`].
+/// Inference requests waiting for a slot at the gate.
 ///
 /// Read together with [`INFERENCE_IN_FLIGHT`]. Zero queued while in-flight
 /// sits at the limit means the endpoint is the bottleneck, which is the
@@ -157,7 +157,7 @@ pub const INFERENCE_IN_FLIGHT: &str = "symbiont_inference_in_flight";
 /// enough lanes are admitted to keep the server busy — the local stages
 /// (compile, load) are absorbing them.
 pub const INFERENCE_GATE_QUEUED: &str = "symbiont_inference_gate_queued";
-/// Seconds a request spent waiting for an [`crate::InferenceGate`] slot, with
+/// Seconds a request spent waiting for a gate slot, with
 /// a zero recorded for every request admitted immediately. The share of
 /// non-zero samples is how hard the limit is actually binding.
 pub const INFERENCE_GATE_WAIT: &str = "symbiont_inference_gate_wait_seconds";

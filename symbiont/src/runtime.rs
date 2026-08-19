@@ -695,11 +695,9 @@ impl Runtime {
     /// [`crate::observability::REVISION_DEDUP_HITS`] to quantify the collapse.
     ///
     /// Every lane runs concurrently. That is not the same as every lane being
-    /// *sent* concurrently: use [`Runtime::evolve_batch_limited`] or
-    /// [`Runtime::set_max_in_flight`] to cap how many inference requests reach
-    /// the endpoint at a time, which is the quantity a server's batch width
-    /// and a provider's rate limit are actually expressed in. This method
-    /// respects a limit already configured on the runtime and never raises it.
+    /// *sent* concurrently: [`Runtime::set_max_in_flight`] caps how many
+    /// inference requests reach the endpoint at a time, which is the quantity a
+    /// server's batch width and a provider's rate limit are expressed in.
     ///
     /// Results arrive as one `Vec` when the slowest lane is done. To act on
     /// each candidate as it lands — and overlap the next round's generation
@@ -733,6 +731,7 @@ impl Runtime {
     /// [`Runtime::activate_revision`]:
     ///
     /// ```rust,ignore
+    /// runtime.set_max_in_flight(16);
     /// let results = runtime.evolve_batch(&agent, &prompts).await;
     /// let best = results
     ///     .iter()
@@ -742,6 +741,16 @@ impl Runtime {
     ///     .revision;
     /// runtime.activate_revision(best)?;
     /// ```
+    ///
+    /// # The limit caps requests, not lanes
+    ///
+    /// Every lane starts immediately, however large the batch and however small
+    /// [`Runtime::max_in_flight`]. A lane holds a slot only while it is talking
+    /// to the model, and gives it back before it parses, queues for the build
+    /// slot, compiles and loads — so lanes doing local work are covered by other
+    /// lanes generating in their place. The limit belongs to the endpoint, not
+    /// to one call: it lives on the runtime and is shared by everything the
+    /// process sends.
     ///
     /// # Contract
     ///
@@ -757,49 +766,14 @@ impl Runtime {
     /// The failure buffer is cleared once for the whole batch, then filled by
     /// all lanes in completion order. Group the drained records by
     /// [`EvolveFailure::lane`] to see what each prompt variant struggled with.
-    pub fn evolve_batch<'a, AgentT, S>(
-        &'a self,
-        agent: &'a AgentT,
-        prompts: &'a [S],
-    ) -> impl Future<Output = Vec<Result<EvolveInfo>>> + Send + 'a
-    where
-        AgentT: EvolutionAgent + Sync,
-        S: AsRef<str> + Sync,
-    {
-        // Whatever limit the runtime is already configured with — `u16::MAX`
-        // unless a host set one, which `evolve_batch_limited` clamps down to
-        // the lane count. Passing `prompts.len()` unconditionally would let an
-        // unrelated batch silently raise a limit the host chose deliberately.
-        self.evolve_batch_limited(agent, prompts, self.max_in_flight())
-    }
-
-    /// [`Runtime::evolve_batch`] with a ceiling on how many **inference
-    /// requests** may be resident at the endpoint at once. Results stay
-    /// positionally aligned with `prompts`.
-    ///
-    /// `max_in_flight` is clamped to `1..=prompts.len()`.
-    ///
-    /// # This limits requests, not lanes
-    ///
-    /// Every lane starts immediately, however large the batch and however
-    /// small the limit. A lane holds one of the `max_in_flight` slots only
-    /// while it is actually talking to the model, and gives it back before it
-    /// parses, queues for the build slot, compiles and loads — so the lanes
-    /// doing local work are covered by other lanes generating in their place.
-    ///
-    /// The limit is a property of the endpoint, not of one call: it is stored
-    /// on the runtime and shared by everything the process sends.
-    /// Setting it here is equivalent to [`Runtime::set_max_in_flight`].
     #[expect(
         clippy::manual_async_fn,
         reason = "Ensure the future is `Send` such that it works better with tokios multi-thread runtime"
     )]
-    #[deprecated = "change API into `evolve_batch` and drop the `max_in_flight` argument"]
-    pub fn evolve_batch_limited<'a, AgentT, S>(
+    pub fn evolve_batch<'a, AgentT, S>(
         &'a self,
         agent: &'a AgentT,
         prompts: &'a [S],
-        max_in_flight: u16,
     ) -> impl Future<Output = Vec<Result<EvolveInfo>>> + Send + 'a
     where
         AgentT: EvolutionAgent + Sync,
@@ -816,8 +790,6 @@ impl Runtime {
                 Err(_) => return prompts.iter().map(|_| Err(Error::MutexPoison)).collect(),
             }
 
-            let prompts_clamped = u16::try_from(prompts.len()).unwrap_or(u16::MAX);
-            self.set_max_in_flight(max_in_flight.clamp(1, prompts_clamped));
             info!(
                 "Evolving a batch of {} prompts, at most {} inference requests in flight.",
                 prompts.len(),
@@ -886,7 +858,7 @@ impl Runtime {
     ///
     /// # Failures
     ///
-    /// Unlike [`Runtime::evolve_batch_limited`] this does **not** clear the
+    /// Unlike [`Runtime::evolve_batch`] this does **not** clear the
     /// failure buffer: a round that cleared it would discard the records of an
     /// overlapping round that is still running, which is the case this method
     /// exists for. Drain it yourself with
@@ -929,7 +901,7 @@ impl Runtime {
     /// Lowering it never cancels a request already sent; the surplus drains.
     /// Values below 1 are treated as 1.
     ///
-    /// See [`Runtime::evolve_batch_limited`] for how to choose the number.
+    /// See [`Runtime::evolve_batch`] for what the limit does and does not bound.
     pub fn set_max_in_flight(&self, max_in_flight: u16) {
         self.inference_gate.set_capacity(max_in_flight);
     }

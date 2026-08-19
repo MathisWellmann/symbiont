@@ -41,11 +41,11 @@ tokio::task_local! {
 
 /// The scheduling priority of one inference request: higher is served first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Priority(u32);
+pub(crate) struct Priority(u32);
 
 impl Priority {
     /// The priority of a lane's first attempt, and the lowest one.
-    pub const FIRST_ATTEMPT: Self = Self(1);
+    pub(crate) const FIRST_ATTEMPT: Self = Self(1);
 
     /// The priority of the attempt of a lane, counting from 1.
     ///
@@ -214,12 +214,14 @@ impl InferenceGate {
 
     /// Requests currently resident at the endpoint.
     #[must_use]
+    #[cfg(test)]
     pub(crate) fn in_flight(&self) -> u16 {
         self.state().in_flight
     }
 
     /// Number of requests waiting for a slot.
     #[must_use]
+    #[cfg(test)]
     pub(crate) fn queued(&self) -> usize {
         self.state().waiters.len()
     }
