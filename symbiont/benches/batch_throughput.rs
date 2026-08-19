@@ -3,10 +3,9 @@
 //! inference server.
 //!
 //! Runs the same batch of [`LANES`] candidates at several in-flight limits and
-//! reports what each level cost. At limit 1 the lanes are fully serialized —
-//! the loop this API replaces. At the top limit they are all in flight, which
-//! is what lets the server's continuous batcher merge them into shared forward
-//! passes.
+//! reports what each level cost. At limit 1 the lanes are fully serialized.
+//! At the top limit they are all in flight,
+//! which is what lets the server's continuous batcher merge them into shared forward passes.
 //!
 //! # Running it
 //!
@@ -99,34 +98,19 @@ use symbiont::{
     observability,
 };
 
-/// In-flight limits to sweep. 1 is the serial baseline this API replaces.
-///
-/// The top of this range is where saturation shows up, so it is worth going
-/// past the point where the curve stops improving rather than stopping at the
-/// first flat step. Note the server has to be configured to match: vLLM
-/// admits at most `--max-num-seqs` sequences at a time and queues the rest,
-/// and a limit above that measures the queue rather than the batcher.
-const LEVELS: &[usize] = &[1, 2, 4, 8, 16, 32];
+/// In-flight limits to sweep.
+const LEVELS: &[u16] = &[1, 2, 4, 8, 16, 32];
 /// Lanes per batch. Constant across levels so every level does the same amount
 /// of inference work and only the overlap differs — which also means it must
 /// be at least the highest limit, or that limit is silently clamped and two
 /// rows of the table measure the same thing.
-const LANES: usize = 32;
+const LANES: u16 = 32;
 /// How long to wait for a TCP connection to the inference endpoint.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 /// Output cap per lane.
-///
-/// Not a detail — without it the sweep measures the wrong thing. Left
-/// unbounded, a chat-completions request may generate until it runs out of
-/// context, and a single lane that starts rambling takes minutes while its
-/// siblings finish in seconds. Because a level's wall clock is its *slowest*
-/// lane, one such lane swamps the level and the comparison between levels
-/// becomes noise. A few hundred tokens is ample for these implementations;
-/// this leaves generous headroom while still bounding the tail.
 const MAX_OUTPUT_TOKENS: u64 = 1536;
 
-// A task with enough substance that the model emits a few hundred tokens —
-// decode is what batching accelerates, so a one-liner would measure nothing.
+// A task with enough substance that the model emits a few hundred tokens.
 symbiont::evolvable! {
     fn bench_count_primes(n: u32) -> u32 {
         let mut count = 0;
@@ -200,8 +184,8 @@ const STRATEGIES: &[&str] = &[
 /// ride on revisions an earlier level registered — though only partly: dedup
 /// keys on generated source, which the tag never reaches, so lanes that emit
 /// identical code across levels still share a revision and skip its build.
-fn prompts_for(signature: &str, level: usize) -> Vec<String> {
-    Vec::from_iter(STRATEGIES.iter().take(LANES).map(|strategy| {
+fn prompts_for(signature: &str, level: u16) -> Vec<String> {
+    Vec::from_iter(STRATEGIES.iter().take(usize::from(LANES)).map(|strategy| {
         format!(
             "Implement this function, which returns how many prime numbers are \
              strictly less than `n`:\n\
@@ -218,7 +202,7 @@ fn prompts_for(signature: &str, level: usize) -> Vec<String> {
 
 /// What one level of the sweep cost.
 struct LevelResult {
-    limit: usize,
+    limit: u16,
     wall: Duration,
     /// Distinct revisions this level added. Below `ok_lanes` when lanes
     /// converged on identical source and deduplicated.
@@ -526,7 +510,7 @@ async fn run_level<A>(
     runtime: &'static Runtime,
     agent: &A,
     signature: &str,
-    limit: usize,
+    limit: u16,
     base_url: &str,
     snapshotter: &Snapshotter,
 ) -> LevelResult
@@ -597,7 +581,7 @@ async fn main() -> symbiont::Result<()> {
         "every level must be <= LANES ({LANES}), else it is silently clamped"
     );
     assert!(
-        STRATEGIES.len() >= LANES,
+        STRATEGIES.len() >= usize::from(LANES),
         "need at least one distinct strategy per lane ({LANES}), have {}",
         STRATEGIES.len()
     );

@@ -21,6 +21,7 @@ mod evolution_agent;
 mod evolve_failure;
 mod evolve_info;
 mod inference;
+mod inference_gate;
 mod init_tracing;
 mod metered_http;
 pub mod observability;
