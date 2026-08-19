@@ -221,7 +221,7 @@ struct LevelResult {
 
 impl LevelResult {
     fn per_candidate(&self) -> Duration {
-        self.wall / u32::try_from(LANES).expect("lane count fits in u32")
+        self.wall / u32::from(LANES)
     }
 
     /// Generated tokens per second of wall clock.
@@ -524,7 +524,8 @@ where
     let revisions_before = runtime.revision_count();
     let prompts = prompts_for(signature, limit);
     let started = Instant::now();
-    let results = runtime.evolve_batch_limited(agent, &prompts, limit).await;
+    runtime.set_max_in_flight(limit);
+    let results = runtime.evolve_batch(agent, &prompts).await;
     let wall = started.elapsed();
     let built = runtime.revision_count() - revisions_before;
 
@@ -573,12 +574,11 @@ where
 // benchmark at these widths, not as a fix.
 #[tokio::main]
 async fn main() -> symbiont::Result<()> {
-    // `evolve_batch_limited` clamps its limit to the lane count, so a level
-    // above `LANES` would quietly duplicate the `LANES` row instead of
-    // measuring anything new.
+    // A level above `LANES` admits every lane at once, duplicating the `LANES`
+    // row instead of measuring anything new.
     assert!(
         LEVELS.iter().all(|&level| level <= LANES),
-        "every level must be <= LANES ({LANES}), else it is silently clamped"
+        "every level must be <= LANES ({LANES}), else it duplicates the LANES row"
     );
     assert!(
         STRATEGIES.len() >= usize::from(LANES),

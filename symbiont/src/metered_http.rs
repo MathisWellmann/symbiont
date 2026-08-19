@@ -88,11 +88,11 @@ use crate::{
 ///
 /// # What is admitted
 ///
-/// If the calling task runs inside an [`crate::InferenceGate::scope`] — which
-/// is what [`crate::Runtime`] puts every evolution attempt in — the request
-/// first waits for one of the gate's slots and holds it until the response
-/// body has been read. Outside such a scope nothing is gated and this is a
-/// pure measurement decorator.
+/// If the calling task runs inside an inference-gate scope — which is what
+/// [`crate::Runtime`] puts every evolution attempt in — the request first waits
+/// for one of the gate's slots and holds it until the response body has been
+/// read. Outside such a scope nothing is gated and this is a pure measurement
+/// decorator.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct MeteredHttpClient<H = ReqwestClient> {
     inner: H,
@@ -238,9 +238,9 @@ mod tests {
     use rig_core::http_client::NoBody;
 
     use super::*;
-    use crate::{
+    use crate::inference_gate::{
+        InferenceGate,
         Priority,
-        inference_gate::InferenceGate,
     };
 
     /// An [`HttpClientExt`] that answers every request with `200 OK` and an
