@@ -1322,6 +1322,8 @@ mod tests {
             links: HashMap::new(),
             attrs: Vec::new(),
             deprecation: None,
+            stability: None,
+            const_stability: None,
             inner,
         }
     }
@@ -1365,6 +1367,7 @@ mod tests {
                 abi: rustdoc_types::Abi::Rust,
             },
             has_body: false,
+            default_unstable: None,
         })
     }
 
@@ -1390,6 +1393,7 @@ mod tests {
                 abi: rustdoc_types::Abi::Rust,
             },
             has_body: true,
+            default_unstable: None,
         })
     }
 
@@ -1532,11 +1536,13 @@ mod tests {
             generics: empty_generics(),
             bounds: Vec::new(),
             type_: Some(resolved_path("QuoteCurrency", Vec::new())),
+            default_unstable: None,
         };
         let assoc_output2 = ItemEnum::AssocType {
             generics: empty_generics(),
             bounds: Vec::new(),
             type_: Some(resolved_path("BaseCurrency", Vec::new())),
+            default_unstable: None,
         };
 
         let index = prelude_crate_with(
@@ -1788,6 +1794,7 @@ mod tests {
                                 }),
                             ],
                         )),
+                        default_unstable: None,
                     },
                 ),
                 item(
@@ -1796,6 +1803,7 @@ mod tests {
                     ItemEnum::AssocConst {
                         type_: Type::Primitive("u8".to_string()),
                         value: Some("D".to_string()),
+                        default_unstable: None,
                     },
                 ),
             ],
