@@ -117,4 +117,31 @@ async fn context_size_overflow_restarts_from_the_base_prompt() {
         1,
         "no retry can help an oversized base prompt"
     );
+
+    // -- Repeated overflows are capped -------------------------------------
+
+    // A lane that overflows again after restarting from the base prompt
+    // must not restart without limit: each restart is a consumed attempt,
+    // and the restart budget bounds the total. The script alternates
+    // parse-error turns (which grow the history) and overflows (which
+    // discard it) until the restart budget is exhausted. The rejected code
+    // differs each time so the verbatim-repeat reset stays out of the way.
+    let agent = ScriptedAgent::new([
+        Turn::reply("```rust\nthis is not rust one\n```"),
+        Turn::Fail(context_size_error(VLLM_BODY)),
+        Turn::reply("```rust\nthis is not rust two\n```"),
+        Turn::Fail(context_size_error(VLLM_BODY)),
+        Turn::reply("```rust\nthis is not rust three\n```"),
+        Turn::Fail(context_size_error(VLLM_BODY)),
+        Turn::reply("```rust\nthis is not rust four\n```"),
+        Turn::Fail(context_size_error(VLLM_BODY)),
+    ]);
+    let err = rt
+        .evolve(&agent, BASE_PROMPT)
+        .await
+        .expect_err("repeated context overflows must give up, not restart forever");
+    assert!(
+        matches!(err, symbiont::Error::MaxRetriesExceeded { attempts: 8, .. }),
+        "got: {err}"
+    );
 }
