@@ -203,7 +203,7 @@ rc_mutex = "warn"
 ref_option_ref = "warn"
 
 [workspace.dependencies]
-rig-core = "0.39"
+rig-core = "0.40"
 romu = "0.8"
 tokio = { version = "1.0", features = ["full"] }
 tracing = "0.1"

@@ -12,10 +12,7 @@
 //! code block. Watch the `Tool call: probe(..)` log lines to see the agent
 //! experimenting before it commits to an implementation.
 
-use rig_core::{
-    completion::ToolDefinition,
-    tool::Tool,
-};
+use rig_core::tool::Tool;
 use symbiont::Runtime;
 use tracing::{
     info,
@@ -55,24 +52,24 @@ impl Tool for Probe {
     type Args = ProbeArgs;
     type Output = i64;
 
-    async fn definition(&self, _prompt: String) -> ToolDefinition {
-        ToolDefinition {
-            name: Self::NAME.to_string(),
-            description: "Evaluate the hidden reference function at any integer input `n` and \
-                          return its output. Call this with a few different inputs to discover \
-                          the underlying rule before implementing `transform`."
-                .to_string(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "n": {
-                        "type": "integer",
-                        "description": "The input to evaluate the hidden function at."
-                    }
-                },
-                "required": ["n"]
-            }),
-        }
+    fn description(&self) -> String {
+        "Evaluate the hidden reference function at any integer input `n` and \
+          return its output. Call this with a few different inputs to discover \
+          the underlying rule before implementing `transform`."
+            .to_string()
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "n": {
+                    "type": "integer",
+                    "description": "The input to evaluate the hidden function at."
+                }
+            },
+            "required": ["n"]
+        })
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
