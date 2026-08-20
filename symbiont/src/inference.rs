@@ -7,7 +7,10 @@
 //! variants are thin conveniences for binaries that follow the
 //! `BASE_URL`/`API_KEY` env-var convention.
 
-use std::env::var;
+use std::{
+    env::var,
+    time::Duration,
+};
 
 use rig_agent::client::AgentClientExt;
 use rig_core::{
@@ -20,6 +23,19 @@ use crate::{
     Result,
     ThinkingLevel,
 };
+
+/// Total time budget for one completion request, from send until the
+/// response body is fully read.
+///
+/// A hung endpoint (accepted connection, no response) must not stall an
+/// evolution lane forever. Past the deadline the request fails with a
+/// connection-level error, which
+/// [`Runtime::MAX_TRANSIENT_RETRIES`](crate::Runtime::MAX_TRANSIENT_RETRIES)
+/// classifies as transient: it is retried with backoff and does *not* count
+/// against the lane's self-healing attempt budget. A permanently hung
+/// endpoint therefore costs at most this timeout times the transient retry
+/// budget before the lane gives up.
+pub const INFERENCE_REQUEST_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
 /// Initialize a pre-configured [`crate::AgentBuilder`] for `model`.
 ///
@@ -103,7 +119,12 @@ pub async fn agent_builder(
         // Replaces rig's default backend with the same `reqwest::Client`,
         // wrapped so every outbound prompt payload is measured
         // (`observability::REQUEST_BODY_BYTES`).
-        .http_client(MeteredHttpClient::new(ReqwestClient::default()))
+        .http_client(MeteredHttpClient::new(
+            ReqwestClient::builder()
+                .timeout(INFERENCE_REQUEST_TIMEOUT)
+                .build()
+                .map_err(std::io::Error::other)?,
+        ))
         .build()?;
 
     let system_prompt = crate::system_prompt::system_prompt(opt_crate_name).await?;

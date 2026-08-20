@@ -213,11 +213,20 @@ impl Runtime {
     /// agent from hanging the runtime indefinitely.
     pub const MAX_EVOLVE_ATTEMPTS: usize = 10;
 
-    /// Maximum number of retries for transient HTTP errors (429, 5xx, 529).
+    /// Maximum number of retries for transient HTTP errors (429, 5xx, 529)
+    /// and connection-level failures, including requests that hit
+    /// [`INFERENCE_REQUEST_TIMEOUT`](crate::INFERENCE_REQUEST_TIMEOUT).
     ///
     /// These are retried with exponential backoff and do not count against
     /// [`Self::MAX_EVOLVE_ATTEMPTS`].
     pub const MAX_TRANSIENT_RETRIES: usize = 6;
+
+    /// Maximum number of times a lane may discard its accumulated chat
+    /// history and restart from the base prompt after a context-overflow
+    /// error. Unlike transient retries, each restart counts against
+    /// [`Self::MAX_EVOLVE_ATTEMPTS`]: resending is a consumed attempt, not a
+    /// free one, so a lane that keeps overflowing cannot retry without limit.
+    pub const MAX_CONTEXT_RESETS: usize = 3;
 
     /// Initialize the symbiont runtime.
     ///
@@ -632,9 +641,17 @@ impl Runtime {
     /// into `base_prompt` themselves.
     ///
     /// Transient HTTP errors from the LLM provider (HTTP 429, 5xx, 529
-    /// "overloaded") are retried separately with exponential backoff up to
+    /// "overloaded") and connection-level failures (timeouts, resets, DNS)
+    /// are retried separately with exponential backoff up to
     /// [`Self::MAX_TRANSIENT_RETRIES`] times, and do not count against the
     /// self-healing attempt budget.
+    ///
+    /// A request that exceeds the model's context window cannot succeed by
+    /// resending, so the chat history is discarded and the next request
+    /// restarts from `base_prompt`. Such restarts are capped at
+    /// [`Self::MAX_CONTEXT_RESETS`] and each one consumes an attempt. If a
+    /// request overflows with an already-empty history, `base_prompt` itself
+    /// is too large and the error is returned unwrapped.
     ///
     /// If the agent answers a correction with the exact same rejected code
     /// as the previous attempt (weak models echo their own broken answer
@@ -953,6 +970,7 @@ impl Runtime {
             // Scoped to this call; see the doc comment above.
             let mut history: Vec<Message> = Vec::new();
             let mut attempts: usize = 0;
+            let mut context_resets: usize = 0;
             let mut usage = Usage::new();
             let mut transient_attempts: usize = 0;
             // Code of the most recent rejected attempt, used to detect an
@@ -1029,18 +1047,34 @@ impl Runtime {
                                 histogram!(EVOLVE_DURATION).record(t_start.elapsed().as_secs_f64());
                                 return Err(e);
                             }
+                            if context_resets >= Self::MAX_CONTEXT_RESETS {
+                                warn!(
+                                    "Context-overflow restart budget exhausted \
+                                     ({context_resets}/{}); giving up. Last error: {e}",
+                                    Self::MAX_CONTEXT_RESETS
+                                );
+                                histogram!(EVOLVE_ATTEMPTS).record(attempts as f64);
+                                histogram!(EVOLVE_DURATION).record(t_start.elapsed().as_secs_f64());
+                                return Err(MaxRetriesExceeded {
+                                    attempts,
+                                    last_error: Box::new(e),
+                                });
+                            }
+                            context_resets += 1;
                             warn!(
-                                "Request exceeded the model's context window; discarding {} \
-                                 history messages and restarting from the base prompt",
+                                "Request exceeded the model's context window (restart \
+                                 {context_resets}/{}); discarding {} history messages and \
+                                 restarting from the base prompt",
+                                Self::MAX_CONTEXT_RESETS,
                                 history.len()
                             );
                             counter!(EVOLVE_CONTEXT_RESETS).increment(1);
                             history.clear();
                             prompt.clear();
                             prompt.push_str(base_prompt);
-                            // Not the LLM's fault: don't count against the
-                            // self-healing budget.
-                            attempts -= 1;
+                            // The restart consumes this attempt: unlike
+                            // transient retries, an overflowing request is
+                            // not the LLM's fault but it must not be free.
                             continue;
                         }
 

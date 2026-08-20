@@ -55,6 +55,7 @@ pub use evolution_agent::{
 pub use evolve_failure::EvolveFailure;
 pub use evolve_info::EvolveInfo;
 pub use inference::{
+    INFERENCE_REQUEST_TIMEOUT,
     agent_builder,
     agent_builder_from_env,
     init_agent,
