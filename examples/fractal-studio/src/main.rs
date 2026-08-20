@@ -668,7 +668,7 @@ impl FractalApp {
         egui::Panel::right("controls")
             .resizable(true)
             .default_size(460.0)
-            .show_inside(ui, |ui| {
+            .show(ui, |ui| {
                 ui.add_space(8.0);
                 ui.heading("Symbiont Fractal Studio");
                 ui.label(
@@ -701,7 +701,7 @@ impl FractalApp {
     fn canvas(&self, ui: &mut egui::Ui) {
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(egui::Color32::BLACK))
-            .show_inside(ui, |ui| {
+            .show(ui, |ui| {
                 let avail = ui.available_size();
                 let points_to_pixels = ui.ctx().pixels_per_point();
                 self.canvas_size
