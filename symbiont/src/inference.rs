@@ -29,10 +29,7 @@ use crate::{
 /// calling `.build()`:
 ///
 /// ```no_run
-/// use rig_core::{
-///     completion::ToolDefinition,
-///     tool::Tool,
-/// };
+/// use rig_core::tool::Tool;
 /// use symbiont::ThinkingLevel;
 ///
 /// #[derive(Debug, thiserror::Error)]
@@ -48,12 +45,12 @@ use crate::{
 ///     type Args = ();
 ///     type Output = String;
 ///
-///     async fn definition(&self, _prompt: String) -> ToolDefinition {
-///         ToolDefinition {
-///             name: Self::NAME.to_string(),
-///             description: "Run the host crate's test suite and return its output".to_string(),
-///             parameters: serde_json::json!({ "type": "object", "properties": {} }),
-///         }
+///     fn description(&self) -> String {
+///         "Run the host crate's test suite and return its output".to_string()
+///     }
+///
+///     fn parameters(&self) -> serde_json::Value {
+///         serde_json::json!({ "type": "object", "properties": {} })
 ///     }
 ///
 ///     async fn call(&self, (): Self::Args) -> Result<Self::Output, Self::Error> {

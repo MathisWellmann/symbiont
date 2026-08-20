@@ -13,7 +13,6 @@
 use rig_core::{
     agent::{
         Agent,
-        PromptHook,
         PromptRequest,
     },
     completion::{
@@ -52,10 +51,9 @@ pub trait EvolutionAgent {
     ) -> impl Future<Output = Result<AgentRun, PromptError>> + Send;
 }
 
-impl<M, P> EvolutionAgent for Agent<M, P>
+impl<M> EvolutionAgent for Agent<M>
 where
     M: CompletionModel + 'static,
-    P: PromptHook<M> + 'static,
 {
     fn run(
         &self,
@@ -66,7 +64,7 @@ where
         // does not borrow `self`. Rig runs the tool-calling loop inside
         // `send()`, bounded by the agent's `default_max_turns`.
         let request = PromptRequest::from_agent(self, prompt)
-            .with_history(history)
+            .history(history)
             .extended_details();
         async move {
             let response = request.await?;
