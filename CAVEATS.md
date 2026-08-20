@@ -141,11 +141,19 @@ The host binary and the dynamically loaded dylib have separate
 panic runtimes. A panic originating inside the dylib cannot be
 caught by `std::panic::catch_unwind` in the host — the host sees
 it as a "foreign exception" and aborts. The harness handles this
-by wrapping every evolvable function body in `catch_unwind`
+by wrapping every *exported* function body in `catch_unwind`
 *inside the dylib* and exposing the panic message through an
 exported symbol (`__symbiont_take_panic`). Use
 `Runtime::take_panic` to retrieve panic messages after each
 call.
+
+Only the exported entry points are wrapped — the agent's private
+helpers are not. A panic in a helper unwinds normally within the
+dylib until the entry point catches it, so nothing escapes, while
+recursive helpers avoid a `catch_unwind` frame (and hook install)
+per call, which costs speed and stack depth in exactly the hot
+code this harness optimizes. It also means helpers may return
+types that do not implement `Default`.
 
 When an implementation panics, the wrapped call returns
 `Default::default()` as a safe placeholder value — check

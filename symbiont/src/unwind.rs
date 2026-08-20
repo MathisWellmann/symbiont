@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
-/// Wrap each function body in `catch_unwind` so panics are caught inside the
-/// dylib and never unwind across the `dlopen` boundary.
+use crate::utils::is_no_mangle;
+
+/// Wrap the body of every **exported** function in `catch_unwind` so panics
+/// are caught inside the dylib and never unwind across the `dlopen` boundary.
 ///
 /// For a function like:
 /// ```ignore
@@ -39,9 +41,35 @@
 ///
 /// The Mutex is only touched when a panic actually fires. On the happy
 /// path `catch_unwind` is zero-cost (DWARF-based landing pads).
+///
+/// # Only the entry points
+///
+/// Exported functions — the ones validation marked `#[unsafe(no_mangle)]`,
+/// i.e. exactly those the host can call — are the only place a panic can
+/// escape into the host, so they are the only place that needs a wrapper.
+/// Wrapping the agent's private helpers too would be actively harmful:
+///
+/// - Every call, including each level of a recursive helper, would set up a
+///   `catch_unwind` frame and re-install the panic hook. That is call
+///   overhead and stack footprint in exactly the hot, deeply recursive code
+///   this harness exists to optimize; the enlarged frames have overflowed
+///   the shared stack before.
+/// - A panicking helper would return `Default::default()` to its *caller*,
+///   which would then keep computing with a placeholder value. Letting the
+///   unwind travel to the exported entry point aborts the whole call
+///   instead, which is what the host's `take_panic` contract describes.
+/// - Helpers would have to return `Default` types. The `evolvable!` macro
+///   enforces that for declared signatures, but a helper returning, say,
+///   `Ordering` or `&f64` is perfectly reasonable and would have failed to
+///   compile.
+///
+/// Panics from helpers are still caught: they unwind within the dylib's own
+/// panic runtime up to the exported function's wrapper.
 pub(crate) fn wrap_bodies_in_catch_unwind(file: &mut syn::File) {
     for item in &mut file.items {
-        if let syn::Item::Fn(item_fn) = item {
+        if let syn::Item::Fn(item_fn) = item
+            && is_no_mangle(item_fn)
+        {
             let original_body = &item_fn.block;
             let wrapped: syn::Block = syn::parse_quote!({
                 __symbiont_install_panic_hook();
@@ -87,7 +115,8 @@ mod tests {
     fn test_wrap_bodies_in_catch_unwind() {
         let mut file: syn::File = syn::parse_str(
             "
-            fn step(counter: &mut usize) {
+            #[unsafe(no_mangle)]
+            pub fn step(counter: &mut usize) {
                 panic!()
             }
             ",
@@ -96,7 +125,8 @@ mod tests {
         wrap_bodies_in_catch_unwind(&mut file);
         assert_eq!(
             &prettyplease::unparse(&file),
-            r#"fn step(counter: &mut usize) {
+            r#"#[unsafe(no_mangle)]
+pub fn step(counter: &mut usize) {
     __symbiont_install_panic_hook();
     match ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| { panic!() })) {
         Ok(__symbiont_val) => __symbiont_val,
@@ -115,6 +145,17 @@ mod tests {
 }
 "#
         );
+    }
+
+    /// Private helpers are left alone: their panics unwind into the exported
+    /// caller's wrapper, and a per-call `catch_unwind` frame would only cost
+    /// stack and speed in recursive hot code.
+    #[test]
+    fn helpers_are_not_wrapped() {
+        let src = "fn helper(a: &[f64]) -> ::core::cmp::Ordering {\n    unimplemented!()\n}\n";
+        let mut file: syn::File = syn::parse_str(src).expect("Can parse");
+        wrap_bodies_in_catch_unwind(&mut file);
+        assert_eq!(&prettyplease::unparse(&file), src);
     }
 
     /// The exact preamble source that ships inside every generated dylib,
