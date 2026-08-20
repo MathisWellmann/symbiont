@@ -9,8 +9,8 @@
 
 use std::env::var;
 
+use rig_agent::client::AgentClientExt;
 use rig_core::{
-    client::CompletionClient,
     http_client::ReqwestClient,
     providers::openrouter,
 };
@@ -29,7 +29,7 @@ use crate::{
 /// calling `.build()`:
 ///
 /// ```no_run
-/// use rig_core::tool::Tool;
+/// use rig_core::tool::PortableTool;
 /// use symbiont::ThinkingLevel;
 ///
 /// #[derive(Debug, thiserror::Error)]
@@ -38,7 +38,7 @@ use crate::{
 ///
 /// struct RunTests;
 ///
-/// impl Tool for RunTests {
+/// impl PortableTool for RunTests {
 ///     const NAME: &'static str = "run_tests";
 ///
 ///     type Error = RunTestsError;
@@ -171,7 +171,7 @@ pub async fn init_agent_from_env(
 /* TODO: collect the token usage in the runtime and provide summary stats. This test is used for exploring this path.
 #[cfg(test)]
 mod tests {
-    use rig_core::completion::Prompt;
+    use rig_agent::completion::Prompt;
 
     use super::*;
 

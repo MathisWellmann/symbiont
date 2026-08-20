@@ -4,11 +4,9 @@
     reason = "Integration tests don't use them all"
 )]
 
+use rig_agent::completion::PromptError;
 use rig_core::{
-    completion::{
-        PromptError,
-        Usage,
-    },
+    completion::Usage,
     message::Message,
 };
 use symbiont::{

@@ -15,10 +15,8 @@ use common::{
     ScriptedAgent,
     Turn,
 };
-use rig_core::{
-    completion::PromptError,
-    message::Message,
-};
+use rig_agent::completion::PromptError;
+use rig_core::message::Message;
 use symbiont::{
     Profile,
     Runtime,

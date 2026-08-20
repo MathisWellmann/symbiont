@@ -14,7 +14,7 @@ pub enum Error {
     Syn(#[from] syn::Error),
 
     #[error(transparent)]
-    RigPrompt(#[from] rig_core::completion::PromptError),
+    RigPrompt(#[from] rig_agent::completion::PromptError),
 
     #[error(transparent)]
     RigHttp(#[from] rig_core::http_client::Error),

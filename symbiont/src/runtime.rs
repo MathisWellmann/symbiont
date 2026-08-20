@@ -1132,7 +1132,7 @@ impl Runtime {
                         CouldNotParseRust { code, err } => write!(prompt,
                             "Your generated code ```{code}``` is not valid Rust. Parse error: ```{err}```. Fix the syntax error and respond with the full corrected code.",
                         ).expect("Can write to prompt"),
-                        RigPrompt(rig_core::completion::PromptError::MaxTurnsError { .. }) => prompt.push_str(
+                        RigPrompt(rig_agent::completion::PromptError::MaxTurnsError { .. }) => prompt.push_str(
                             "You exhausted the tool-call turn budget before producing code. Respond with the final Rust code block now.",
                         ),
                         WriteLib(_) => todo!(),

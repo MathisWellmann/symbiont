@@ -12,7 +12,7 @@
 //! code block. Watch the `Tool call: probe(..)` log lines to see the agent
 //! experimenting before it commits to an implementation.
 
-use rig_core::tool::Tool;
+use rig_core::tool::PortableTool;
 use symbiont::Runtime;
 use tracing::{
     info,
@@ -45,7 +45,7 @@ struct ProbeArgs {
 /// A tool granting the agent black-box access to [`hidden_rule`].
 struct Probe;
 
-impl Tool for Probe {
+impl PortableTool for Probe {
     const NAME: &'static str = "probe";
 
     type Error = std::convert::Infallible;

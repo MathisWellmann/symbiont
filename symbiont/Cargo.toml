@@ -18,6 +18,7 @@ workspace = true
 [dependencies]
 symbiont-macros = { version = "0.26.0", path = "../symbiont-macros" }
 
+rig-agent.workspace = true
 rig-core.workspace = true
 tokio.workspace = true
 tracing.workspace = true

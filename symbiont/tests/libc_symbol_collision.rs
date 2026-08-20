@@ -16,11 +16,9 @@
 //!
 //! This test evolves exactly that shape of code and calls it.
 
+use rig_agent::completion::PromptError;
 use rig_core::{
-    completion::{
-        PromptError,
-        Usage,
-    },
+    completion::Usage,
     message::Message,
 };
 use symbiont::{
