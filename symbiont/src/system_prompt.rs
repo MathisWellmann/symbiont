@@ -104,6 +104,9 @@ self-contained.
 Avoid:
 - panics
 - infinite loops
+- unbounded recursion (the call stack is shared with the host process and
+  overflowing it aborts the host — prefer iterative solutions, or bound the
+  recursion depth so it stays small for large inputs)
 - out-of-bounds indexing
 - leaking allocations across the dynamic-library boundary
 - spawning threads
