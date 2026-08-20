@@ -107,10 +107,12 @@ jobs:
       - name: sort-example-smoke-test
         # Run the sort example which evolves a sorting algorithm across
         # multiple data distributions. Five LLM rounds against the 27B model
-        # take ~3 minutes, so allow 300s for the full evolution loop.
+        # take ~3 minutes with reasoning off; the example now runs at high
+        # thinking effort, which lengthens every round, so allow 600s for the
+        # full evolution loop.
         run: |
           nix develop --command bash -c '
-            timeout 300s cargo run -p sort-example
+            timeout 600s cargo run -p sort-example
           '
       - name: struct-support-example-smoke-test
         run: |
