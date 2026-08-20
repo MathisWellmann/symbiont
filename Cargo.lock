@@ -1280,6 +1280,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "convert_case"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "affbf0190ed2caf063e3def54ff444b449371d55c58e513a95ab98eca50adb49"
+dependencies = [
+ "unicode-segmentation",
+]
+
+[[package]]
 name = "core-foundation"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1597,7 +1606,7 @@ version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "799a97264921d8623a957f6c3b9011f3b5492f557bbb7a5a19b7fa6d06ba8dcb"
 dependencies = [
- "convert_case",
+ "convert_case 0.10.0",
  "proc-macro2",
  "quote",
  "rustc_version 0.4.1",
@@ -2453,6 +2462,10 @@ name = "futures-timer"
 version = "3.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "af43fadb8a98512d547e37b4e92e0ced13e205c061b87b4623eff01d918d6968"
+dependencies = [
+ "gloo-timers",
+ "send_wrapper",
+]
 
 [[package]]
 name = "futures-util"
@@ -2590,6 +2603,18 @@ name = "glob"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
+
+[[package]]
+name = "gloo-timers"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "482ce8a491a501da4cd806bd190275363d674f2845005c6ddbd5d3e1dd54495d"
+dependencies = [
+ "futures-channel",
+ "futures-core",
+ "js-sys",
+ "wasm-bindgen",
+]
 
 [[package]]
 name = "glow"
@@ -5305,9 +5330,9 @@ dependencies = [
 
 [[package]]
 name = "rig-core"
-version = "0.38.1"
+version = "0.39.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d9bae0f2b910cbd4ca2d53513f18aba3b6f6cb6cb0bf295e390d5396f56359d"
+checksum = "80a4bc7a93b329c4e1a66d5fd211d79990e7331e3c701f057c29f135f548686d"
 dependencies = [
  "as-any",
  "async-stream",
@@ -5319,6 +5344,7 @@ dependencies = [
  "futures-timer",
  "glob",
  "http",
+ "indexmap",
  "mime",
  "mime_guess",
  "nanoid",
@@ -5339,11 +5365,11 @@ dependencies = [
 
 [[package]]
 name = "rig-derive"
-version = "0.38.1"
+version = "0.39.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9551846a623524ffddfab42cac15f03d0547b6d5f81a66549341126205e4b721"
+checksum = "5531bfa887b371eab658a92de7db35003370bbeee208ff5e68bbb81a5ae92d3d"
 dependencies = [
- "convert_case",
+ "convert_case 0.11.0",
  "deluxe",
  "indoc",
  "proc-macro-crate 3.5.0",
@@ -5699,6 +5725,12 @@ checksum = "9900206b54a3527fdc7b8a938bffd94a568bac4f4aa8113b209df75a09c0dec2"
 dependencies = [
  "pest",
 ]
+
+[[package]]
+name = "send_wrapper"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cd0b0ec5f1c1ca621c432a25813d8d60c88abe6d3e08a3eb9cf37d97a0fe3d73"
 
 [[package]]
 name = "serde"
