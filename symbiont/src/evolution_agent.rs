@@ -18,10 +18,7 @@ use rig_agent::{
     completion::PromptError,
 };
 use rig_core::{
-    completion::{
-        CompletionModel,
-        Usage,
-    },
+    completion::Usage,
     message::Message,
 };
 
@@ -53,10 +50,7 @@ pub trait EvolutionAgent {
     ) -> impl Future<Output = Result<AgentRun, PromptError>> + Send;
 }
 
-impl<M> EvolutionAgent for Agent<M>
-where
-    M: CompletionModel + 'static,
-{
+impl EvolutionAgent for Agent {
     fn run(
         &self,
         prompt: &str,

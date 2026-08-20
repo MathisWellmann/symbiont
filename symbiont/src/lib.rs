@@ -67,11 +67,6 @@ pub use revision::{
     Revision,
     RevisionFn,
 };
-pub use thinking_level::ThinkingLevel;
-/// The completion model of the agents built by [`agent_builder`] and
-/// [`init_agent`]: rig's OpenAI-compatible model over the
-/// payload-measuring HTTP backend.
-type CompletionModel = rig_core::providers::openrouter::CompletionModel<MeteredHttpClient>;
 pub use runtime::Runtime;
 /// Evolvable return types must implement [`Default`]: when an evolved
 /// implementation panics, the in-dylib `catch_unwind` wrapper substitutes
@@ -86,9 +81,10 @@ pub use runtime::Runtime;
 /// }
 /// ```
 pub use symbiont_macros::evolvable;
+pub use thinking_level::ThinkingLevel;
 
 /// type alias for the return type of `init_agent`
-pub type Agent = rig_agent::Agent<CompletionModel>;
+pub type Agent = rig_agent::Agent;
 
 /// Type alias for the pre-configured agent builder.
 ///
@@ -97,7 +93,7 @@ pub type Agent = rig_agent::Agent<CompletionModel>;
 /// Note that registering the first tool transitions the builder's typestate
 /// (to `AgentBuilder<_, WithBuilderTools>`); the resulting [`Agent`] is
 /// unchanged and works with [`Runtime::evolve`] either way.
-pub type AgentBuilder = rig_agent::AgentBuilder<CompletionModel>;
+pub type AgentBuilder = rig_agent::AgentBuilder;
 
 /// Internal module for macro-generated dispatch code.
 ///
