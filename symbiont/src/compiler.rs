@@ -68,9 +68,27 @@ pub(crate) async fn compile_dylib(
         manifest_path.display()
     );
     let manifest_str = manifest_path.to_string_lossy();
-    let mut args = vec!["build", "--manifest-path", &manifest_str];
+    // `cargo rustc` instead of `cargo build`: the extra flags after `--` apply
+    // to the dylib itself, not to its dependencies.
+    let mut args = vec!["rustc", "--manifest-path", &manifest_str];
     if profile == Profile::Release {
         args.push("--release");
+    }
+    if cfg!(target_os = "linux") {
+        // Bind the dylib's calls to its own exported functions at link time.
+        //
+        // An exported (`#[unsafe(no_mangle)]`) symbol in an ELF dylib has
+        // default visibility and is therefore preemptible: the compiler emits
+        // the dylib's *own* calls to it through the GOT, and the loader
+        // resolves those against the global scope — the host executable and
+        // everything loaded with it, libc included — before the dylib itself.
+        // A generated function whose name collides with a libc symbol (e.g.
+        // `qsort`) then hijacks the call with mismatched arguments and
+        // segfaults the host. `-Bsymbolic-functions` pre-binds intra-dylib
+        // calls to the local definitions and removes that whole failure mode.
+        // Only Rust symbols undefined in the artifact (libc, a shared std)
+        // still resolve dynamically.
+        args.extend_from_slice(&["--", "-Clink-arg=-Wl,-Bsymbolic-functions"]);
     }
 
     let output = Command::new("cargo")
