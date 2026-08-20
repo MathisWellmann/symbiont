@@ -14,6 +14,6 @@ symbiont = { path = "../../symbiont" }
 tokio.workspace = true
 tracing.workspace = true
 
-eframe = "0.34"
-egui_extras = { version = "0.34", features = ["syntect"] }
+eframe = "0.35"
+egui_extras = { version = "0.35", features = ["syntect"] }
 rayon = "1"
