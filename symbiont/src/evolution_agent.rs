@@ -6,18 +6,20 @@
 //! implementation is responsible for any tool-calling turns and returns only
 //! the final text alongside the new messages and token usage.
 //!
-//! A blanket implementation is provided for [`rig_core::agent::Agent`], which
+//! A blanket implementation is provided for [`rig_agent::Agent`], which
 //! delegates to rig's `PromptRequest` so rig owns the tool-calling loop
 //! (multi-turn depth, tool dispatch, invalid-tool-call retries, hooks).
 
-use rig_core::{
+use rig_agent::{
     agent::{
         Agent,
         PromptRequest,
     },
+    completion::PromptError,
+};
+use rig_core::{
     completion::{
         CompletionModel,
-        PromptError,
         Usage,
     },
     message::Message,

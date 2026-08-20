@@ -18,11 +18,9 @@ use std::{
     sync::Mutex,
 };
 
+use rig_agent::completion::PromptError;
 use rig_core::{
-    completion::{
-        PromptError,
-        Usage,
-    },
+    completion::Usage,
     message::Message,
 };
 use symbiont::{

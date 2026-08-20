@@ -257,7 +257,7 @@ const CONTEXT_SIZE_MARKERS: [&str; 5] = [
 /// The provider HTTP error inside `err`, if that is what it wraps.
 fn http_error_of(err: &Error) -> Option<&rig_core::http_client::Error> {
     match err {
-        Error::RigPrompt(rig_core::completion::PromptError::CompletionError(
+        Error::RigPrompt(rig_agent::completion::PromptError::CompletionError(
             rig_core::completion::CompletionError::HttpError(http_err),
         )) => Some(http_err),
         Error::RigHttp(http_err) => Some(http_err),
@@ -405,7 +405,7 @@ mod tests {
     fn context_size_error_seen_through_the_rig_prompt_wrapper() {
         // The shape the runtime actually receives: rig wraps the provider
         // error in `PromptError::CompletionError`.
-        let err = Error::RigPrompt(rig_core::completion::PromptError::CompletionError(
+        let err = Error::RigPrompt(rig_agent::completion::PromptError::CompletionError(
             rig_core::completion::CompletionError::HttpError(
                 rig_core::http_client::Error::InvalidStatusCodeWithMessage(
                     http::StatusCode::BAD_REQUEST,

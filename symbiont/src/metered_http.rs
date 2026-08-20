@@ -55,10 +55,10 @@ use crate::{
 ///
 /// ```no_run
 /// use rig_core::{
-///     client::CompletionClient,
 ///     providers::openrouter,
 ///     http_client::ReqwestClient,
 /// };
+/// use rig_agent::client::AgentClientExt;
 /// use symbiont::MeteredHttpClient;
 ///
 /// # fn example() -> symbiont::Result<()> {

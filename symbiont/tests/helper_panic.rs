@@ -9,11 +9,9 @@
 //! the aborted call yields the `Default` placeholder, and that helpers may
 //! return types that do not implement `Default`.
 
+use rig_agent::completion::PromptError;
 use rig_core::{
-    completion::{
-        PromptError,
-        Usage,
-    },
+    completion::Usage,
     message::Message,
 };
 use symbiont::{

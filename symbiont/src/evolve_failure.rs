@@ -65,7 +65,7 @@ impl EvolveFailure {
     pub fn from_error(error: &Error, attempt: usize) -> Option<Self> {
         let (generated_code, diagnostics) = match error {
             Error::NoRustCode => (String::new(), error.to_string()),
-            Error::RigPrompt(rig_core::completion::PromptError::MaxTurnsError { .. }) => {
+            Error::RigPrompt(rig_agent::completion::PromptError::MaxTurnsError { .. }) => {
                 (String::new(), error.to_string())
             }
             Error::CouldNotParseRust { code, err } => (code.clone(), err.clone()),

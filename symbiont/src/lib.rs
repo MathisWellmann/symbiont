@@ -88,16 +88,16 @@ pub use runtime::Runtime;
 pub use symbiont_macros::evolvable;
 
 /// type alias for the return type of `init_agent`
-pub type Agent = rig_core::agent::Agent<CompletionModel>;
+pub type Agent = rig_agent::Agent<CompletionModel>;
 
 /// Type alias for the pre-configured agent builder.
 ///
 /// Register your own tools on it with rig's builder API before calling
 /// `.build()`, e.g. `.tool(MyTool).default_max_turns(5).build()`.
 /// Note that registering the first tool transitions the builder's typestate
-/// (to `AgentBuilder<_, _, WithBuilderTools>`); the resulting [`Agent`] is
+/// (to `AgentBuilder<_, WithBuilderTools>`); the resulting [`Agent`] is
 /// unchanged and works with [`Runtime::evolve`] either way.
-pub type AgentBuilder = rig_core::agent::AgentBuilder<CompletionModel>;
+pub type AgentBuilder = rig_agent::AgentBuilder<CompletionModel>;
 
 /// Internal module for macro-generated dispatch code.
 ///

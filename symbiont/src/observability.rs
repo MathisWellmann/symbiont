@@ -363,7 +363,7 @@ pub(crate) fn failure_kind_of(e: &crate::Error) -> &'static str {
         ForbiddenConstruct { .. } => failure_kind::FORBIDDEN,
         CompilationFailed { .. } => failure_kind::COMPILE,
         NoRustCode => failure_kind::NO_RUST_CODE,
-        RigPrompt(rig_core::completion::PromptError::MaxTurnsError { .. }) => {
+        RigPrompt(rig_agent::completion::PromptError::MaxTurnsError { .. }) => {
             failure_kind::MAX_TURNS
         }
         RigPrompt(_) => failure_kind::LLM,
