@@ -161,6 +161,26 @@ with `RevisionFn::take_panic`. A buffer holds only the most
 recent message, so concurrent panicking calls into the same
 revision overwrite each other.
 
+## Symbol exports and libc collisions
+
+Only the *declared* evolvable functions are exported from the
+dylib (`pub` + `#[unsafe(no_mangle)]`). Helper functions the agent
+invents keep their mangled Rust names — validation strips a
+`#[unsafe(no_mangle)]` the model added on its own.
+
+That is not cosmetic. An exported symbol in an ELF dylib has
+default visibility and is therefore *preemptible*: the compiler
+routes even the dylib's own calls to it through the GOT, and the
+loader resolves those against the global scope — the host
+executable and everything loaded with it, libc included — before
+the dylib itself. A helper named like a libc function (`qsort`,
+`random`, `div`, `remove`, …) would then hijack the call to libc's
+version, which reinterprets the arguments and typically segfaults
+the host process. Generated dylibs are additionally linked with
+`-Wl,-Bsymbolic-functions` on Linux, which pre-binds intra-dylib
+calls to local definitions and closes the same hole for declared
+function names.
+
 ## Undefined behaviour and Miri
 
 The generated code itself is barred from introducing new unsafety:

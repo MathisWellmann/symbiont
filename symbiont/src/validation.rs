@@ -25,14 +25,27 @@ use crate::{
 /// Validate that a parsed AST enforces typed generation:
 /// - No `unsafe` code and no forbidden constructs (see
 ///   [`enforce_code_policy`])
-/// - All functions are `pub`
-/// - All functions have `#[unsafe(no_mangle)]`)
+/// - Every **declared** function is `pub` and carries `#[unsafe(no_mangle)]`
+/// - Every other (helper) function stays unexported: `#[unsafe(no_mangle)]`
+///   is stripped if the model added one anyway
 /// - All function signatures match the expected signatures from lib.rs.
 ///
 /// Signatures are compared by function name, argument **types**, and return
 /// type. Argument names are ignored: they carry no meaning at the dylib ABI
 /// boundary (symbol lookup is by function name only), so renaming an unused
 /// parameter (e.g. to `_market_state`) is not a mismatch.
+///
+/// # Why helpers must not be exported
+///
+/// `#[unsafe(no_mangle)]` in a `dylib` publishes the symbol with default ELF
+/// visibility, which makes it *preemptible*: the compiler routes even the
+/// dylib's own calls to it through the GOT, and the dynamic loader resolves
+/// those against the global scope (the host executable and everything it
+/// pulled in, libc included) **before** the dylib itself. A generated helper
+/// named like a libc function — `qsort`, `random`, `div`, `remove`, … —
+/// therefore silently hijacks the call to libc's version with completely
+/// different arguments, which segfaults the host. Unexported helpers keep
+/// their mangled, crate-hashed names, cannot collide, and can be inlined.
 ///
 /// Returns `Err` with a descriptive message if any check fails.
 pub(crate) fn validate_generated_ast(
@@ -46,22 +59,38 @@ pub(crate) fn validate_generated_ast(
         return Ok(());
     }
 
+    let declared: Vec<&str> = expected_sigs
+        .iter()
+        .filter_map(|sig| expected_fn_name(sig))
+        .collect();
+
     let mut found_sigs: Vec<(String, String)> = Vec::with_capacity(4);
 
     for item in &mut file.items {
         if let syn::Item::Fn(item_fn) = item {
             let name = item_fn.sig.ident.to_string();
 
-            // Add `pub` visibility if missing
-            if !is_pub(item_fn) {
-                debug!("Function `{name}` missing `pub` visibility, adding it");
-                item_fn.vis = Visibility::Public(syn::token::Pub::default());
-            }
-            // Add #[unsafe(no_mangle)] if missing
-            if !is_no_mangle(item_fn) {
-                debug!("Function `{name}` missing #[unsafe(no_mangle)], adding it");
-                let attr: syn::Attribute = syn::parse_quote!(#[unsafe(no_mangle)]);
-                item_fn.attrs.insert(0, attr);
+            if declared.contains(&name.as_str()) {
+                // Add `pub` visibility if missing
+                if !is_pub(item_fn) {
+                    debug!("Function `{name}` missing `pub` visibility, adding it");
+                    item_fn.vis = Visibility::Public(syn::token::Pub::default());
+                }
+                // Add #[unsafe(no_mangle)] if missing
+                if !is_no_mangle(item_fn) {
+                    debug!("Function `{name}` missing #[unsafe(no_mangle)], adding it");
+                    let attr: syn::Attribute = syn::parse_quote!(#[unsafe(no_mangle)]);
+                    item_fn.attrs.insert(0, attr);
+                }
+            } else if is_no_mangle(item_fn) {
+                // Helper the model exported on its own: unexport it, or its
+                // name may be preempted by a libc symbol at load time.
+                debug!("Helper `{name}` carries #[unsafe(no_mangle)], removing it");
+                item_fn.attrs.retain(|attr| {
+                    !(attr.path().is_ident("unsafe")
+                        && matches!(&attr.meta, syn::Meta::List(list)
+                            if list.tokens.to_string() == "no_mangle"))
+                });
             }
 
             let sig = format_signature(&item_fn.sig)
@@ -658,6 +687,46 @@ fn step(counter: &mut usize) {
     }
 
     #[test]
+    fn helpers_are_not_exported() {
+        // A helper named like a libc function must not become an exported,
+        // preemptible symbol: the dylib's own call to it would otherwise be
+        // resolved to libc's `qsort` and crash the host.
+        let input = "```rust
+fn step(counter: &mut usize) {
+    qsort(counter);
+}
+
+#[unsafe(no_mangle)]
+pub fn qsort(counter: &mut usize) {
+    *counter += 1;
+}
+```";
+        let mut file = parse_rust_code(input).expect("can parse");
+        let expected = vec!["fn step(counter: &mut usize)".to_string()];
+        validate_generated_ast(&mut file, &expected, &denied()).expect("validation passed");
+
+        let fns: Vec<&syn::ItemFn> = file
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                syn::Item::Fn(f) => Some(f),
+                _ => None,
+            })
+            .collect();
+        let declared = fns
+            .iter()
+            .find(|f| f.sig.ident == "step")
+            .expect("declared fn is present");
+        let helper = fns
+            .iter()
+            .find(|f| f.sig.ident == "qsort")
+            .expect("helper fn is present");
+        assert!(is_no_mangle(declared), "declared fn must be exported");
+        assert!(is_pub(declared), "declared fn must be pub");
+        assert!(!is_no_mangle(helper), "helper must not be exported");
+    }
+
+    #[test]
     fn test_validate_signature_mismatch() {
         let input = "```rust
 #[unsafe(no_mangle)]
@@ -676,10 +745,9 @@ pub fn add(a: i32, b: i32) -> i32 {
                 expected,
                 got,
             } => {
-                assert_eq!(
-                    &code,
-                    "#[unsafe(no_mangle)]\npub fn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n"
-                );
+                // `add` is not a declared function, so its export attribute
+                // was stripped before the mismatch was reported.
+                assert_eq!(&code, "pub fn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n");
                 assert_eq!(expected, "fn step(counter: &mut usize)");
                 assert_eq!(got, "function `step` not found");
             }
