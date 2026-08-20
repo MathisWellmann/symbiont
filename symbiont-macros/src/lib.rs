@@ -173,6 +173,7 @@ pub fn evolvable(input: TokenStream) -> TokenStream {
     } else {
         let file = syn::File {
             shebang: None,
+            frontmatter: None,
             attrs: Vec::new(),
             items: prelude_items.clone(),
         };

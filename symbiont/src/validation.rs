@@ -372,7 +372,7 @@ impl<'ast> Visit<'ast> for PolicyScan<'_> {
 
     // Covers free functions, impl methods, trait methods, and foreign fns.
     fn visit_signature(&mut self, node: &'ast Signature) {
-        if node.unsafety.is_some() {
+        if matches!(node.safety, syn::Safety::Unsafe(_)) {
             self.record_unsafe("an `unsafe fn`", node);
         }
         visit::visit_signature(self, node);
@@ -566,7 +566,7 @@ fn format_signature(sig: &Signature) -> Option<String> {
     out.push_str(&sig.ident.to_string());
 
     if sig.asyncness.is_some()
-        || sig.unsafety.is_some()
+        || matches!(sig.safety, syn::Safety::Unsafe(_))
         || sig.abi.is_some()
         || sig.variadic.is_some()
         || !sig.generics.params.is_empty()
