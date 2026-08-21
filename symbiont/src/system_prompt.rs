@@ -142,7 +142,35 @@ available to the evolved code. If empty, only `std` is available.
 
 ";
 
-pub(crate) async fn system_prompt(opt_crate_name: Option<&str>) -> Result<String> {
+/// Build the system prompt (the agent preamble) symbiont sends with every
+/// inference request.
+///
+/// This is the exact string [`crate::agent_builder`] installs as the agent's
+/// preamble, so a host can reproduce what the agent was told without keeping a
+/// copy of its own. That matters because
+/// [`EvolutionTrace`](crate::EvolutionTrace) deliberately omits the preamble:
+/// it is identical for every attempt of a lane and every lane of a batch, and
+/// embedding the generated host-API documentation makes it the largest single
+/// string in the process. Storing it once beside the traces is strictly
+/// cheaper than storing it per lane.
+///
+/// The result matches what an agent received only if the caller passes the
+/// same `opt_crate_name` and did not override the preamble on its own builder.
+///
+/// With `Some(crate_name)` this shells out to `rustdoc` to render the host API
+/// surface, which is not cheap. Call it once and cache the result.
+///
+/// # Arguments
+///
+/// - `opt_crate_name`: If `Some`, documentation for that crate is built and
+///   appended, informing the agent which host APIs the evolved code may call.
+///   Usually `Some(env!("CARGO_PKG_NAME"))`.
+///
+/// # Errors
+///
+/// Returns an error if the host crate's documentation could not be generated
+/// or parsed.
+pub async fn system_prompt(opt_crate_name: Option<&str>) -> Result<String> {
     let mut prompt = BASE_PROMPT.to_string();
     if let Some(crate_name) = opt_crate_name {
         write_prelude_doc_string(&mut prompt, crate_name).await?;
