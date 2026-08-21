@@ -354,16 +354,16 @@ impl Runtime {
     /// The run's token usage is added to `usage` either way, so a lane's
     /// total includes attempts that were later rejected.
     ///
-    /// `history` is the lane's whole transcript; only `history[history_base..]`
-    /// is sent to the agent. A context or repeat reset advances `history_base`
-    /// instead of truncating, so the transcript keeps everything that was ever
-    /// exchanged while the request shrinks.
+    /// `history` is the whole transcript of the lane. Only
+    /// `history[history_base..]` goes to the agent. A context or repeat reset
+    /// advances `history_base` instead of truncating. The request therefore
+    /// gets smaller, but the transcript keeps everything the lane exchanged.
     ///
-    /// `run_out` and `stages` are trace bookkeeping, written as the attempt
-    /// progresses rather than returned, so the caller keeps whatever was
-    /// recorded before a failure. `run_out` stays `None` exactly when the
-    /// agent run itself failed, which is what distinguishes an attempt that
-    /// never reached the model from one the pipeline later rejected.
+    /// `run_out` and `stages` hold the trace records. This method writes them
+    /// as the attempt progresses instead of returning them, so the caller
+    /// keeps what it recorded before a failure. `run_out` stays `None` only
+    /// when the agent run itself failed. That is how the caller separates an
+    /// attempt that never got to the model from one the pipeline rejected.
     #[expect(
         clippy::too_many_arguments,
         reason = "One attempt's inputs, its two accumulators and its two trace out-params; bundling them would only move the same fields behind a single-use struct"
@@ -430,8 +430,8 @@ impl Runtime {
         // across an await would make this future `!Send`.
         let clean_ast_str = {
             let t1 = Instant::now();
-            // Recorded before `?` propagates, so a rejected candidate still
-            // reports how long its parse and validation took.
+            // Recorded before `?` propagates. A rejected candidate must still
+            // report the time its parse and validation took.
             let mut ast = parse_rust_code(&llm_response).inspect_err(|_| {
                 stages.parse_validate = Some(t1.elapsed());
             })?;
@@ -496,9 +496,9 @@ impl Runtime {
     /// reuses it instead of being built again — see
     /// [`Runtime::registered_with_source`].
     ///
-    /// `record` receives what the build stage did, for the trace. It is
-    /// written before any early return, so a candidate rejected by the
-    /// compiler still reports the time its compile took.
+    /// `record` receives the result of the build stage for the trace. This
+    /// method writes it before every early return. A candidate that the
+    /// compiler rejects therefore still reports the time its compile took.
     async fn build_and_register(
         &self,
         clean_ast_str: String,
@@ -530,8 +530,8 @@ impl Runtime {
 
         let t_compile = Instant::now();
         // A compile failure is the common self-healing case, and its duration
-        // is the most useful number in the whole attempt, so it is recorded
-        // before the error propagates.
+        // is the most useful number of the whole attempt. Record it before the
+        // error propagates.
         compile_dylib(&self.crate_dir, self.profile, &clean_ast_str)
             .await
             .inspect_err(|_| {
@@ -1043,10 +1043,10 @@ impl Runtime {
             let mut prompt = base_prompt.to_string();
             // Scoped to this call; see the doc comment above.
             let mut history: Vec<Message> = Vec::new();
-            // Everything before this index has been retired by a context or
-            // repeat reset: still part of the trace's transcript, no longer
-            // part of the request. Resets advance it instead of truncating,
-            // so the trace keeps what the lane actually exchanged.
+            // A context or repeat reset retires everything before this index.
+            // Those messages stay in the transcript of the trace, but leave
+            // the request. A reset advances this index instead of truncating,
+            // so the trace keeps what the lane exchanged.
             let mut history_base: usize = 0;
             let mut attempts: usize = 0;
             let mut context_resets: usize = 0;
@@ -1057,8 +1057,8 @@ impl Runtime {
             let mut last_failed_code: Option<String> = None;
             let mut trace = EvolutionTrace::new(lane, base_prompt.to_string());
 
-            // Finish the lane: move the transcript into the trace and stamp
-            // the outcome. Called on every exit path.
+            // Finish the lane. Move the transcript into the trace and set the
+            // outcome. Every exit path calls this.
             macro_rules! finish {
                 ($outcome:expr) => {{
                     trace.history = std::mem::take(&mut history);
@@ -1076,7 +1076,7 @@ impl Runtime {
                 let mut stages = StageTimings::default();
                 let attempt_prompt = prompt.clone();
 
-                // Build this attempt's `RunTrace` from whatever the pipeline
+                // Build the `RunTrace` of this attempt from what the pipeline
                 // got far enough to produce.
                 macro_rules! run_trace {
                     () => {
@@ -1116,9 +1116,9 @@ impl Runtime {
                 {
                     Ok(revision) => {
                         if publish == Publish::Yes {
-                            // The revision built and registered; only making
-                            // it the active one can still fail, and the trace
-                            // is complete by then and worth keeping.
+                            // The revision built and registered. Only the step
+                            // that makes it active can still fail. The trace is
+                            // complete at this point and worth keeping.
                             if let Err(e) = self.publish_revision(revision, "evolve") {
                                 let reason = e.to_string();
                                 trace.push_attempt(
@@ -1411,9 +1411,9 @@ impl Runtime {
                             continue;
                         }
 
-                        // The nudge the ladder is about to build *is* the
-                        // diagnostics fed back to the agent, so the ladder
-                        // event is recorded after the match writes it.
+                        // The nudge that the ladder builds below is the same
+                        // text as the diagnostics that go to the agent. Record
+                        // the ladder event after the match writes that nudge.
                         let kind = failure_kind_of(&e).to_string();
 
                         use Error::*;
@@ -1631,10 +1631,10 @@ impl Runtime {
     }
 }
 
-/// The first line of an error's display form.
+/// The first line of the display form of an error.
 ///
-/// Reset nudges quote only this: the full diagnostics repeat the rejected
-/// code, which is exactly the echo source a reset is removing.
+/// A reset nudge quotes only this line. The full diagnostics repeat the
+/// rejected code, which is the same text that the reset removes.
 fn first_line_of(e: &Error) -> String {
     let text = e.to_string();
     text.lines().next().unwrap_or_default().to_string()

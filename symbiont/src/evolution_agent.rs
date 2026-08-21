@@ -33,22 +33,30 @@ pub struct AgentRun {
     pub new_messages: Vec<Message>,
     /// Aggregated token usage across all turns of the run.
     pub usage: Usage,
-    /// One entry per HTTP completion request the run made, including any
-    /// rig-internal retry of an invalid tool call. [`Self::usage`] stays the
-    /// aggregate; these are the per-request breakdown, each with its own
-    /// token usage, provider ids and finish reason.
+    /// One entry per HTTP completion request that the run made. This includes
+    /// any retry of an invalid tool call that rig makes internally.
+    /// [`Self::usage`] stays the aggregate. These entries are the breakdown
+    /// per request, each with its own token usage, provider ids and finish
+    /// reason.
+    ///
+    /// The blanket implementation for [`Agent`] clears the `raw` field of each
+    /// entry, which holds the verbatim response body of the provider. The
+    /// assistant text in that body is already in [`Self::new_messages`] and
+    /// [`Self::output`]. To keep it stores the largest string of the run a
+    /// third time and gives no more information. An implementor that needs the
+    /// wire payload can fill the field.
     pub completion_calls: Vec<CompletionCall>,
 }
 
-/// The minimal contract the [`crate::Runtime`] requires from an agent:
+/// The minimal contract that the [`crate::Runtime`] requires from an agent:
 /// one complete agentic run per call.
 ///
-/// Implementations handle any tool-calling turns internally; the runtime only
-/// consumes the final text, the new messages for its chat history, and the
+/// An implementation handles any tool-calling turns internally. The runtime
+/// reads only the final text, the new messages for its chat history, and the
 /// token usage.
 pub trait EvolutionAgent {
-    /// Run the agent once with the given `prompt` and prior chat `history`,
-    /// driving any tool-calling turns to completion.
+    /// Run the agent once with `prompt` and the earlier chat `history`. The
+    /// implementation drives any tool-calling turns to completion.
     fn run(
         &self,
         prompt: &str,
@@ -56,13 +64,13 @@ pub trait EvolutionAgent {
     ) -> impl Future<Output = Result<AgentRun, PromptError>> + Send;
 }
 
-/// Clear a completion call's `raw` wire body.
+/// Clear the `raw` wire body of a completion call.
 ///
-/// The provider's verbatim response duplicates text the run already carries in
-/// `new_messages` and `output`, so keeping it would store the largest string
-/// of the run a third time. Everything else on the call — token usage, the
-/// provider ids, and the finish reason — is not recoverable from the
-/// transcript and is kept.
+/// The verbatim response of the provider repeats text that the run already
+/// carries in `new_messages` and `output`. To keep it stores the largest
+/// string of the run a third time. The other fields of the call stay: the
+/// token usage, the provider ids and the finish reason are not recoverable
+/// from the transcript.
 fn drop_raw(call: CompletionCall) -> CompletionCall {
     CompletionCall {
         raw: serde_json::Value::Null,
@@ -104,8 +112,8 @@ mod tests {
 
     use super::*;
 
-    /// The wire body is dropped; every field that is not recoverable from the
-    /// transcript survives.
+    /// The function removes the wire body. Every field that the transcript
+    /// cannot give stays.
     #[test]
     fn drop_raw_keeps_everything_but_the_wire_body() {
         let call = CompletionCall::new(3, Usage::new())
