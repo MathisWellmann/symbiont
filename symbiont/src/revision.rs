@@ -33,7 +33,7 @@ use crate::{
 /// stay loaded for the lifetime of the process, so any of them can be pointed
 /// at again later.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Revision(u64);
 
 impl Revision {

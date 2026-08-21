@@ -20,6 +20,7 @@ symbiont-macros = { version = "0.27.1", path = "../symbiont-macros" }
 
 rig-agent.workspace = true
 rig-core.workspace = true
+serde.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 
@@ -39,8 +40,6 @@ syn = { version = "3", features = ["full", "visit"] }
 thiserror = "2"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-serde = { version = "1", optional = true }
-
 [dev-dependencies]
 criterion = { version = "0.8", features = ["html_reports"] }
 http = "1"
@@ -52,7 +51,6 @@ default = []
 # Prometheus exporter for long-running host binaries; pull this in and call
 # `symbiont::observability::init_observability()` at startup.
 prometheus = ["dep:metrics-exporter-prometheus"]
-serde = ["dep:serde"]
 
 [dependencies.metrics-exporter-prometheus]
 default-features = false

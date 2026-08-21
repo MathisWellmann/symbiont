@@ -16,7 +16,7 @@ use crate::revision::Revision;
 /// including self-healing retries whose output was rejected: those runs
 /// consumed tokens too, so they are part of the call's real cost.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Getters, CopyGetters)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct EvolveInfo {
     /// The revision the new implementation was registered under.
     #[getset(get_copy = "pub")]
