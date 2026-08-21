@@ -67,10 +67,7 @@ pub trait EvolutionAgent {
 /// Clear the `raw` wire body of a completion call.
 ///
 /// The verbatim response of the provider repeats text that the run already
-/// carries in `new_messages` and `output`. To keep it stores the largest
-/// string of the run a third time. The other fields of the call stay: the
-/// token usage, the provider ids and the finish reason are not recoverable
-/// from the transcript.
+/// carries in `new_messages` and `output`.
 fn drop_raw(call: CompletionCall) -> CompletionCall {
     CompletionCall {
         raw: serde_json::Value::Null,

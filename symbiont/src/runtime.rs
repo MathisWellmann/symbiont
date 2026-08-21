@@ -392,7 +392,7 @@ impl Runtime {
             Ok(run) => run,
             Err(e) => {
                 counter!(LLM_RUNS, "outcome" => "error").increment(1);
-                stages.llm = Some(t0.elapsed());
+                stages.set_llm(Some(t0.elapsed()));
                 return Err(e.into());
             }
         };
@@ -416,7 +416,7 @@ impl Runtime {
         history.extend(run.new_messages.iter().cloned());
         let llm_response = run.output.clone();
         let llm_time = t0.elapsed().as_millis();
-        stages.llm = Some(t0.elapsed());
+        stages.set_llm(Some(t0.elapsed()));
         *run_out = Some(run);
         histogram!(
             PIPELINE_STAGE_DURATION,
@@ -433,16 +433,17 @@ impl Runtime {
             // Recorded before `?` propagates. A rejected candidate must still
             // report the time its parse and validation took.
             let mut ast = parse_rust_code(&llm_response).inspect_err(|_| {
-                stages.parse_validate = Some(t1.elapsed());
+                stages.set_parse_validate(Some(t1.elapsed()));
             })?;
 
             // Validate signatures match declarations
             validate_generated_ast(&mut ast, &self.fn_sigs, &self.denied_paths).inspect_err(
                 |_| {
-                    stages.parse_validate = Some(t1.elapsed());
+                    stages.set_parse_validate(Some(t1.elapsed()));
                 },
             )?;
-            stages.parse_validate = Some(t1.elapsed());
+            stages.set_parse_validate(Some(t1.elapsed()));
+
             histogram!(
                 PIPELINE_STAGE_DURATION,
                 "stage" => stage::PARSE_VALIDATE
@@ -472,7 +473,7 @@ impl Runtime {
         // Compile, load and retain the new revision. Whether it also becomes
         // the active one is up to the caller.
         let revision = self
-            .build_and_register(clean_ast_str, &mut stages.build)
+            .build_and_register(clean_ast_str, stages.build_mut())
             .await?;
 
         info!("Built revision {revision}. LLM generation: {llm_time}ms.");
@@ -1061,9 +1062,9 @@ impl Runtime {
             // outcome. Every exit path calls this.
             macro_rules! finish {
                 ($outcome:expr) => {{
-                    trace.history = std::mem::take(&mut history);
-                    trace.outcome = $outcome;
-                    trace.duration = t_start.elapsed();
+                    trace.set_history(std::mem::take(&mut history));
+                    trace.set_outcome($outcome);
+                    trace.set_duration(t_start.elapsed());
                     trace
                 }};
             }
@@ -1080,11 +1081,13 @@ impl Runtime {
                 // got far enough to produce.
                 macro_rules! run_trace {
                     () => {
-                        run_out.take().map(|run| RunTrace {
-                            produced: produced_start..history.len(),
-                            response: run.output,
-                            usage: run.usage,
-                            completion_calls: run.completion_calls,
+                        run_out.take().map(|run| {
+                            RunTrace::builder()
+                                .produced(produced_start..history.len())
+                                .response(run.output)
+                                .usage(run.usage)
+                                .completion_calls(run.completion_calls)
+                                .build()
                         })
                     };
                 }

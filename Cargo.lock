@@ -6066,6 +6066,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tracing-test",
+ "typed-builder",
 ]
 
 [[package]]
