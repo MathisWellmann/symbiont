@@ -56,6 +56,20 @@ pub trait EvolutionAgent {
     ) -> impl Future<Output = Result<AgentRun, PromptError>> + Send;
 }
 
+/// Clear a completion call's `raw` wire body.
+///
+/// The provider's verbatim response duplicates text the run already carries in
+/// `new_messages` and `output`, so keeping it would store the largest string
+/// of the run a third time. Everything else on the call — token usage, the
+/// provider ids, and the finish reason — is not recoverable from the
+/// transcript and is kept.
+fn drop_raw(call: CompletionCall) -> CompletionCall {
+    CompletionCall {
+        raw: serde_json::Value::Null,
+        ..call
+    }
+}
+
 impl EvolutionAgent for Agent {
     fn run(
         &self,
@@ -77,13 +91,35 @@ impl EvolutionAgent for Agent {
                 completion_calls: response
                     .completion_calls
                     .into_iter()
-                    .map(|call| CompletionCall {
-                        // Redundant with the transcript; see `AgentRun`.
-                        raw: serde_json::Value::Null,
-                        ..call
-                    })
+                    .map(drop_raw)
                     .collect(),
             })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rig_core::completion::Usage;
+
+    use super::*;
+
+    /// The wire body is dropped; every field that is not recoverable from the
+    /// transcript survives.
+    #[test]
+    fn drop_raw_keeps_everything_but_the_wire_body() {
+        let call = CompletionCall::new(3, Usage::new())
+            .with_raw(serde_json::json!({ "choices": [{ "message": "…" }] }));
+        assert!(!call.raw.is_null(), "precondition: the call carries a body");
+
+        let stripped = drop_raw(call.clone());
+
+        assert!(stripped.raw.is_null(), "the wire body is dropped");
+        assert_eq!(stripped.call_index, call.call_index);
+        assert_eq!(stripped.usage, call.usage);
+        assert_eq!(stripped.finish_reason, call.finish_reason);
+        assert_eq!(stripped.message_id, call.message_id);
+        assert_eq!(stripped.response_id, call.response_id);
+        assert_eq!(stripped.provider_request_id, call.provider_request_id);
     }
 }
