@@ -24,6 +24,12 @@ use std::{
     time::Duration,
 };
 
+use getset::{
+    CopyGetters,
+    Getters,
+    MutGetters,
+    Setters,
+};
 use rig_agent::agent::CompletionCall;
 use rig_core::{
     completion::Usage,
@@ -33,17 +39,26 @@ use rig_core::{
         UserContent,
     },
 };
+use serde::{
+    Deserialize,
+    Serialize,
+};
+use typed_builder::TypedBuilder;
 
 use crate::revision::Revision;
 
 /// The full agent trajectory of one lane (or of a single-prompt
 /// [`crate::Runtime::evolve`]).
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Getters, CopyGetters, Setters)]
 pub struct EvolutionTrace {
     /// Lane index. It is `0` for single-prompt [`crate::Runtime::evolve`].
-    pub lane: usize,
+    #[getset(get_copy = "pub")]
+    lane: usize,
+
     /// The prompt the lane started with, before any corrective nudge.
-    pub base_prompt: String,
+    #[getset(get = "pub")]
+    base_prompt: String,
+
     /// The lane's complete ordered transcript: every user turn (the base
     /// prompt and each nudge), every assistant turn, every tool call and
     /// result.
@@ -52,22 +67,31 @@ pub struct EvolutionTrace {
     /// [`RunTrace::produced`]. A context or repeat reset stops sending the
     /// earlier messages to the model, but does not remove them from here. The
     /// transcript keeps everything the lane exchanged.
-    pub history: Vec<Message>,
+    #[getset(get = "pub", set = "pub(crate)")]
+    history: Vec<Message>,
+
     /// One entry per lane iteration, in order. An iteration whose inference
     /// call failed outright is present too, with [`AttemptTrace::run`] set to
     /// `None`.
-    pub attempts: Vec<AttemptTrace>,
+    #[getset(get = "pub")]
+    attempts: Vec<AttemptTrace>,
+
     /// How the lane ended.
-    pub outcome: TraceOutcome,
+    #[getset(get = "pub", set = "pub(crate)")]
+    outcome: TraceOutcome,
+
     /// Wall time of the whole lane.
-    pub duration: Duration,
+    #[getset(get_copy = "pub", set = "pub(crate)")]
+    duration: Duration,
 }
 
 /// One iteration of a lane's self-healing ladder.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Getters, CopyGetters)]
 pub struct AttemptTrace {
     /// Position in the lane timeline. Dense: always `0..attempts.len()`.
-    pub seq: usize,
+    #[getset(get_copy = "pub")]
+    seq: usize,
+
     /// The lane's self-healing attempt counter at this iteration. It uses the
     /// same numbering as [`crate::EvolveFailure::attempt`] and the `attempt`
     /// metric label.
@@ -75,27 +99,38 @@ pub struct AttemptTrace {
     /// **Not unique across entries.** A transient HTTP retry does not consume
     /// the attempt budget by design. Two entries in sequence can thus carry
     /// the same value. Index by [`Self::seq`]. Report this field.
-    pub attempt: usize,
+    #[getset(get_copy = "pub")]
+    attempt: usize,
+
     /// This iteration's user-prompt text: the base prompt, or the corrective
     /// nudge built from the previous failure.
-    pub prompt: String,
+    #[getset(get = "pub")]
+    prompt: String,
+
     /// The agent run, when there was one.
     ///
     /// It is `None` when [`crate::EvolutionAgent::run`] returned an error: a
     /// transient HTTP failure, or a context-size overflow. Such an iteration
     /// has no messages, no usage and no completion calls.
-    pub run: Option<RunTrace>,
+    #[getset(get = "pub")]
+    run: Option<RunTrace>,
+
     /// How far this iteration got through the pipeline, and how long each
     /// stage took.
-    pub stages: StageTimings,
+    #[getset(get = "pub")]
+    stages: StageTimings,
+
     /// What the harness did in response to this iteration.
-    pub ladder: LadderEvent,
+    #[getset(get = "pub")]
+    ladder: LadderEvent,
+
     /// Wall time of this iteration.
-    pub duration: Duration,
+    #[getset(get_copy = "pub")]
+    duration: Duration,
 }
 
 /// The parts of an iteration that exist only once the agent run succeeded.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Getters, TypedBuilder)]
 pub struct RunTrace {
     /// Range into [`EvolutionTrace::history`] of the messages this run
     /// produced: its own user-prompt turn plus every assistant turn and tool
@@ -103,15 +138,22 @@ pub struct RunTrace {
     ///
     /// The request this run *sent* was `history[..produced.start + 1]` plus
     /// the system prompt.
-    pub produced: Range<usize>,
+    #[getset(get = "pub")]
+    produced: Range<usize>,
+
     /// The run's final assistant text.
-    pub response: String,
+    #[getset(get = "pub")]
+    response: String,
+
     /// Aggregate token usage for this run.
-    pub usage: Usage,
+    #[getset(get = "pub")]
+    usage: Usage,
+
     /// One entry per HTTP completion request. The blanket
     /// [`crate::EvolutionAgent`] implementation clears the `raw` wire body of
     /// each entry. It keeps `usage`, `finish_reason` and the provider ids.
-    pub completion_calls: Vec<CompletionCall>,
+    #[getset(get = "pub")]
+    completion_calls: Vec<CompletionCall>,
 }
 
 /// Per-attempt mirror of the
@@ -121,14 +163,21 @@ pub struct RunTrace {
 /// A field is `None` when the attempt failed before it got to that stage.
 /// These timings make a statement such as "attempt 3 compiled for 90 seconds,
 /// then failed" recoverable from one trace. The metrics give only aggregates.
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Getters, Setters, MutGetters,
+)]
 pub struct StageTimings {
     /// Time spent in the agent run: inference and any tool-calling turns.
-    pub llm: Option<Duration>,
+    #[getset(get = "pub", set = "pub(crate)")]
+    llm: Option<Duration>,
+
     /// Time spent to parse the Rust code block and validate the signatures.
-    pub parse_validate: Option<Duration>,
+    #[getset(get = "pub", set = "pub(crate)")]
+    parse_validate: Option<Duration>,
+
     /// The build stage. It runs after the parse and validate stage passes.
-    pub build: Option<BuildRecord>,
+    #[getset(get = "pub", set = "pub(crate)", get_mut = "pub(crate)")]
+    build: Option<BuildRecord>,
 }
 
 /// What the build stage did with a validated candidate.

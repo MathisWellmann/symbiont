@@ -57,34 +57,38 @@ async fn trace_records_the_whole_lane() {
         .expect("evolution should succeed after one self-healing retry");
     let trace = info.trace();
 
-    assert_eq!(trace.lane, 0, "single-prompt evolve is lane 0");
-    assert_eq!(trace.base_prompt, BASE_PROMPT);
-    assert_eq!(trace.attempts.len(), 2, "one rejection plus one success");
+    assert_eq!(trace.lane(), 0, "single-prompt evolve is lane 0");
+    assert_eq!(trace.base_prompt(), BASE_PROMPT);
+    assert_eq!(trace.attempts().len(), 2, "one rejection plus one success");
 
     // `seq` indexes the timeline. `attempt` is the self-healing counter. The
     // two agree here, because neither attempt was a transient retry.
-    let seqs: Vec<usize> = trace.attempts.iter().map(|a| a.seq).collect();
-    let attempts: Vec<usize> = trace.attempts.iter().map(|a| a.attempt).collect();
+    let seqs: Vec<usize> = trace.attempts().iter().map(|a| a.seq()).collect();
+    let attempts: Vec<usize> = trace.attempts().iter().map(|a| a.attempt()).collect();
     assert_eq!(seqs, vec![0, 1]);
     assert_eq!(attempts, vec![1, 2]);
 
     // The runtime rejected the first attempt before any code existed. That
     // attempt got to the model, but never to the build stage.
-    let first = &trace.attempts[0];
-    assert_eq!(first.prompt, BASE_PROMPT, "attempt 1 sends the base prompt");
-    let first_run = first.run.as_ref().expect("attempt 1 reached the model");
-    assert!(!first_run.response.is_empty());
+    let first = &trace.attempts()[0];
     assert_eq!(
-        first_run.completion_calls.len(),
+        first.prompt(),
+        BASE_PROMPT,
+        "attempt 1 sends the base prompt"
+    );
+    let first_run = first.run().as_ref().expect("attempt 1 reached the model");
+    assert!(!first_run.response().is_empty());
+    assert_eq!(
+        first_run.completion_calls().len(),
         1,
         "one HTTP request per scripted turn"
     );
-    assert!(first.stages.llm.is_some(), "the model was called");
+    assert!(first.stages().llm().is_some(), "the model was called");
     assert!(
-        first.stages.build.is_none(),
+        first.stages().build().is_none(),
         "a response without a code block never reaches the build stage"
     );
-    match &first.ladder {
+    match first.ladder() {
         LadderEvent::SelfHeal { kind, diagnostics } => {
             assert_eq!(kind, "no_rust_code");
             assert!(
@@ -96,22 +100,23 @@ async fn trace_records_the_whole_lane() {
     }
 
     // The second attempt built and registered.
-    let second = &trace.attempts[1];
+    let second = &trace.attempts()[1];
     assert_ne!(
-        second.prompt, BASE_PROMPT,
+        second.prompt(),
+        BASE_PROMPT,
         "attempt 2 sends the corrective nudge, not the base prompt"
     );
-    assert!(second.run.is_some());
-    assert!(second.stages.parse_validate.is_some());
+    assert!(second.run().is_some());
+    assert!(second.stages().parse_validate().is_some());
     assert!(
-        matches!(second.stages.build, Some(BuildRecord::Built { .. })),
+        matches!(second.stages().build(), Some(BuildRecord::Built { .. })),
         "a fresh candidate is compiled, got: {:?}",
-        second.stages.build
+        second.stages().build()
     );
-    assert!(matches!(second.ladder, LadderEvent::Registered { .. }));
+    assert!(matches!(second.ladder(), LadderEvent::Registered { .. }));
 
     // The outcome agrees with the returned revision.
-    match &trace.outcome {
+    match trace.outcome() {
         TraceOutcome::Registered { revision } => assert_eq!(*revision, info.revision()),
         other => panic!("expected a registered outcome, got: {other:?}"),
     }
@@ -135,28 +140,29 @@ async fn trace_records_the_whole_lane() {
 /// This layout is the reason one copy of the transcript is sufficient.
 fn assert_transcript_is_tiled(trace: &symbiont::EvolutionTrace) {
     assert!(
-        !trace.history.is_empty(),
+        !trace.history().is_empty(),
         "the lane exchanged messages, so the transcript is not empty"
     );
     let mut expected_start = 0;
-    for attempt in &trace.attempts {
+    for attempt in trace.attempts() {
         let run = attempt
-            .run
+            .run()
             .as_ref()
             .expect("both attempts reached the model");
         assert_eq!(
-            run.produced.start, expected_start,
+            run.produced().start,
+            expected_start,
             "attempt {} must continue where the previous one ended",
-            attempt.seq,
+            attempt.seq(),
         );
         assert!(
-            trace.history.get(run.produced.clone()).is_some(),
+            trace.history().get(run.produced().clone()).is_some(),
             "attempt {} range {:?} escapes a transcript of {}",
-            attempt.seq,
-            run.produced,
-            trace.history.len(),
+            attempt.seq(),
+            run.produced(),
+            trace.history().len(),
         );
-        expected_start = run.produced.end;
+        expected_start = run.produced().end;
     }
 }
 
@@ -183,6 +189,6 @@ fn assert_renderings(trace: &symbiont::EvolutionTrace) {
     let json = trace.to_json_pretty();
     let back: symbiont::EvolutionTrace =
         serde_json::from_str(&json).expect("a persisted trace deserializes");
-    assert_eq!(back.attempts.len(), trace.attempts.len());
-    assert_eq!(back.history.len(), trace.history.len());
+    assert_eq!(back.attempts().len(), trace.attempts().len());
+    assert_eq!(back.history().len(), trace.history().len());
 }
