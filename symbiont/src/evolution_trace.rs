@@ -1,22 +1,22 @@
 // SPDX-License-Identifier: MPL-2.0
 //! The [`EvolutionTrace`]: the full agent trajectory of one evolution lane.
 //!
-//! Where [`crate::EvolveFailure`] records the individual rejections that fed
-//! backpressure to the agent, a trace records the *whole* lane: every prompt
-//! and nudge, every assistant turn and tool exchange, every recovery decision
-//! the harness took, the per-request token breakdown, the per-stage timings,
-//! and the final outcome. It is what a host persists to reconstruct, offline,
-//! why a lane ended the way it did.
+//! [`crate::EvolveFailure`] records only the rejections that fed backpressure
+//! to the agent. A trace records the whole lane. It holds every prompt and
+//! nudge, every assistant turn and tool exchange, and every recovery decision.
+//! It also holds the per-request token breakdown, the per-stage timings and
+//! the final outcome. A host persists a trace to find offline why a lane ended
+//! the way it did.
 //!
 //! The transcript is stored **once** per lane. Each attempt records the range
-//! of [`EvolutionTrace::history`] it produced rather than its own copy, so
-//! memory stays linear in the transcript instead of quadratic in the attempt
-//! count.
+//! of [`EvolutionTrace::history`] that it produced instead of its own copy.
+//! As a result, memory stays linear in the transcript, not quadratic in the
+//! attempt count.
 //!
-//! The system prompt is deliberately absent: it is byte-identical across every
-//! attempt of a lane and every lane of a batch, and it embeds the generated
-//! host-API documentation. Call [`crate::system_prompt`] once and store it
-//! beside the traces.
+//! The system prompt is absent by design. It is the same for every attempt of
+//! a lane and every lane of a batch, and it embeds the generated host-API
+//! documentation. Call [`crate::system_prompt`] once and store it beside the
+//! traces.
 
 use std::{
     fmt::Write as _,
@@ -40,7 +40,7 @@ use crate::revision::Revision;
 /// [`crate::Runtime::evolve`]).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct EvolutionTrace {
-    /// Lane index; `0` for single-prompt [`crate::Runtime::evolve`].
+    /// Lane index. It is `0` for single-prompt [`crate::Runtime::evolve`].
     pub lane: usize,
     /// The prompt the lane started with, before any corrective nudge.
     pub base_prompt: String,
@@ -48,10 +48,10 @@ pub struct EvolutionTrace {
     /// prompt and each nudge), every assistant turn, every tool call and
     /// result.
     ///
-    /// Owned once. [`AttemptTrace`]s index into it via
-    /// [`RunTrace::produced`]. A context or repeat reset clears the lane's
-    /// working history but not this: the transcript keeps everything that was
-    /// ever exchanged, which is the point of a trace.
+    /// Owned once. Each [`AttemptTrace`] indexes into it through
+    /// [`RunTrace::produced`]. A context or repeat reset stops sending the
+    /// earlier messages to the model, but does not remove them from here. The
+    /// transcript keeps everything the lane exchanged.
     pub history: Vec<Message>,
     /// One entry per lane iteration, in order. An iteration whose inference
     /// call failed outright is present too, with [`AttemptTrace::run`] set to
@@ -68,22 +68,22 @@ pub struct EvolutionTrace {
 pub struct AttemptTrace {
     /// Position in the lane timeline. Dense: always `0..attempts.len()`.
     pub seq: usize,
-    /// The lane's self-healing attempt counter at this iteration; the same
-    /// numbering as [`crate::EvolveFailure::attempt`] and the `attempt` metric
-    /// label.
+    /// The lane's self-healing attempt counter at this iteration. It uses the
+    /// same numbering as [`crate::EvolveFailure::attempt`] and the `attempt`
+    /// metric label.
     ///
-    /// **Not unique across entries.** A transient HTTP retry deliberately does
-    /// not consume the attempt budget, so consecutive entries can carry the
-    /// same value. Index by [`Self::seq`]; report this.
+    /// **Not unique across entries.** A transient HTTP retry does not consume
+    /// the attempt budget by design. Two entries in sequence can thus carry
+    /// the same value. Index by [`Self::seq`]. Report this field.
     pub attempt: usize,
     /// This iteration's user-prompt text: the base prompt, or the corrective
     /// nudge built from the previous failure.
     pub prompt: String,
     /// The agent run, when there was one.
     ///
-    /// `None` when [`crate::EvolutionAgent::run`] itself returned an error — a
-    /// transient HTTP failure or a context-size overflow — in which case no
-    /// messages, no usage and no completion calls exist for this iteration.
+    /// It is `None` when [`crate::EvolutionAgent::run`] returned an error: a
+    /// transient HTTP failure, or a context-size overflow. Such an iteration
+    /// has no messages, no usage and no completion calls.
     pub run: Option<RunTrace>,
     /// How far this iteration got through the pipeline, and how long each
     /// stage took.
@@ -108,9 +108,9 @@ pub struct RunTrace {
     pub response: String,
     /// Aggregate token usage for this run.
     pub usage: Usage,
-    /// One entry per HTTP completion request. Each entry's `raw` wire body is
-    /// cleared by the blanket [`crate::EvolutionAgent`] implementation;
-    /// `usage`, `finish_reason` and the provider ids are kept.
+    /// One entry per HTTP completion request. The blanket
+    /// [`crate::EvolutionAgent`] implementation clears the `raw` wire body of
+    /// each entry. It keeps `usage`, `finish_reason` and the provider ids.
     pub completion_calls: Vec<CompletionCall>,
 }
 
@@ -118,16 +118,16 @@ pub struct RunTrace {
 /// [`PIPELINE_STAGE_DURATION`](crate::observability::PIPELINE_STAGE_DURATION)
 /// histogram.
 ///
-/// A field is `None` when the attempt failed before reaching that stage, which
-/// is what makes "attempt 3 spent ninety seconds compiling, then failed"
-/// recoverable from the trace rather than only from aggregate metrics.
+/// A field is `None` when the attempt failed before it got to that stage.
+/// These timings make a statement such as "attempt 3 compiled for 90 seconds,
+/// then failed" recoverable from one trace. The metrics give only aggregates.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StageTimings {
-    /// Time spent in the agent run: inference plus any tool-calling turns.
+    /// Time spent in the agent run: inference and any tool-calling turns.
     pub llm: Option<Duration>,
-    /// Time spent parsing the Rust code block and validating signatures.
+    /// Time spent to parse the Rust code block and validate the signatures.
     pub parse_validate: Option<Duration>,
-    /// The build stage, once parsing and validation passed.
+    /// The build stage. It runs after the parse and validate stage passes.
     pub build: Option<BuildRecord>,
 }
 
@@ -135,82 +135,84 @@ pub struct StageTimings {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum BuildRecord {
-    /// The candidate was compiled into a dylib and loaded.
+    /// The runtime compiled the candidate into a dylib and loaded it.
     Built {
-        /// Time queued on the single build slot before the work began.
+        /// Time in the queue for the single build slot, before the work began.
         slot_wait: Duration,
         /// Time spent in `cargo`.
         compile: Duration,
-        /// Time spent copying, `dlopen`ing and resolving symbols.
+        /// Time spent to copy the dylib, load it, and resolve its symbols.
         load: Duration,
     },
-    /// The candidate was byte-identical to an already-registered revision, so
-    /// no build was spent and the existing revision was reused. There is no
-    /// compile or load duration to report.
+    /// The candidate was byte-identical to a registered revision. The runtime
+    /// reused that revision and spent no build. There is no compile duration
+    /// and no load duration to report.
     Deduped {
-        /// Time queued on the build slot before the check ran.
+        /// Time in the queue for the build slot, before the check ran.
         slot_wait: Duration,
-        /// The revision that was reused.
+        /// The revision that the runtime reused.
         revision: Revision,
     },
 }
 
-/// One step of the harness's reaction ladder. Every [`AttemptTrace`] has
-/// exactly one, so the sequence of these *is* the lane's recovery path:
-/// `SelfHeal → SelfHeal → Terminal` versus
-/// `TransientRetry → SelfHeal → Registered`.
-// Tagged `event` rather than `kind`: `SelfHeal` carries its own `kind` field,
-// mirroring `EvolveFailure::kind`, and serde forbids a variant field that
-// collides with the internal tag.
+/// One step of the harness's reaction ladder.
+///
+/// Every [`AttemptTrace`] carries exactly one. The sequence of these events
+/// gives the recovery path of the lane, such as `SelfHeal → SelfHeal →
+/// Terminal`, or `TransientRetry → SelfHeal → Registered`.
+// Tagged `event` and not `kind`: `SelfHeal` carries its own `kind` field, which
+// mirrors `EvolveFailure::kind`. Serde forbids a variant field that collides
+// with the internal tag.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum LadderEvent {
-    /// This attempt produced a valid implementation, which was registered.
-    /// The lane ends here.
+    /// The attempt produced a valid implementation and the runtime registered
+    /// it. The lane ends here.
     Registered {
-        /// The revision the implementation was registered under.
+        /// The revision that the runtime registered the implementation under.
         revision: Revision,
     },
-    /// The failure was fed back to the agent as a corrective nudge.
+    /// The harness fed the failure back to the agent as a corrective nudge.
     SelfHeal {
-        /// Failure kind; the same labels as [`crate::EvolveFailure::kind`]:
-        /// `no_rust_code`, `parse`, `max_turns`, `signature`, `unsafe`,
-        /// `forbidden` or `compile`.
+        /// Failure kind. It uses the same labels as
+        /// [`crate::EvolveFailure::kind`]: `no_rust_code`, `parse`,
+        /// `max_turns`, `signature`, `unsafe`, `forbidden` or `compile`.
         ///
-        /// A `String` rather than the `&'static str` the producing side has,
-        /// so that a persisted trace can be deserialized without borrowing
-        /// from the input.
+        /// A `String`, and not the `&'static str` that the producing side
+        /// holds. A persisted trace must deserialize without a borrow from the
+        /// input.
         kind: String,
-        /// The diagnostics quoted back to the agent.
+        /// The diagnostics that the harness quoted back to the agent.
         diagnostics: String,
     },
-    /// A transient inference error. The same prompt is retried after
-    /// `backoff`, and the attempt budget is not consumed.
+    /// A transient inference error. The lane retries the same prompt after
+    /// `backoff`. This does not consume the attempt budget.
     TransientRetry {
-        /// How long the lane slept before retrying.
+        /// The time the lane waited before it retried.
         backoff: Duration,
-        /// The error that triggered the retry.
+        /// The error that caused the retry.
         cause: String,
     },
-    /// The request exceeded the model's context window. The lane's working
-    /// history was discarded and it restarted from the base prompt.
+    /// The request exceeded the model's context window. The lane restarted
+    /// from the base prompt.
     ContextReset {
-        /// How many chat messages were dropped from the working history.
-        /// They remain in [`EvolutionTrace::history`].
+        /// The count of chat messages that the lane stopped sending. They stay
+        /// in [`EvolutionTrace::history`].
         messages_dropped: usize,
-        /// The one-line error summary carried into the restart prompt.
+        /// The one-line error summary that the restart prompt carries.
         brief: String,
     },
-    /// The agent echoed its previously rejected code verbatim. The lane's
-    /// working history was discarded likewise, with a do-not-repeat
-    /// instruction that does not quote the rejected code.
+    /// The agent repeated its rejected code word for word. The lane restarted
+    /// from the base prompt with a do-not-repeat instruction. That instruction
+    /// does not quote the rejected code.
     RepeatReset {
-        /// How many chat messages were dropped from the working history.
+        /// The count of chat messages that the lane stopped sending. They stay
+        /// in [`EvolutionTrace::history`].
         messages_dropped: usize,
-        /// The one-line error summary carried into the restart prompt.
+        /// The one-line error summary that the restart prompt carries.
         brief: String,
     },
-    /// This attempt's failure ended the lane.
+    /// The failure of this attempt ended the lane.
     Terminal {
         /// The final error.
         reason: String,
@@ -221,9 +223,9 @@ pub enum LadderEvent {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TraceOutcome {
-    /// A revision was registered.
+    /// The runtime registered a revision.
     Registered {
-        /// The revision the lane produced.
+        /// The revision that the lane produced.
         revision: Revision,
     },
     /// The lane gave up.
@@ -234,7 +236,7 @@ pub enum TraceOutcome {
 }
 
 impl EvolutionTrace {
-    /// Start a trace for `lane`, beginning from `base_prompt`.
+    /// Start a trace for `lane`, which begins from `base_prompt`.
     pub(crate) fn new(lane: usize, base_prompt: String) -> Self {
         Self {
             lane,
@@ -242,16 +244,16 @@ impl EvolutionTrace {
             history: Vec::new(),
             attempts: Vec::new(),
             outcome: TraceOutcome::Failed {
-                // Replaced when the lane ends; a lane that panics mid-flight
-                // never yields its trace at all.
+                // The lane replaces this when it ends. A lane that panics in
+                // flight never gives up its trace at all.
                 reason: "lane did not finish".to_string(),
             },
             duration: Duration::ZERO,
         }
     }
 
-    /// A trace for a failure that happened outside any lane, so there is no
-    /// trajectory to report.
+    /// A trace for a failure that occurred outside any lane. Such a failure
+    /// has no trajectory to report.
     pub(crate) fn empty() -> Self {
         Self {
             outcome: TraceOutcome::Failed {
@@ -261,7 +263,7 @@ impl EvolutionTrace {
         }
     }
 
-    /// Append an attempt, assigning its [`AttemptTrace::seq`].
+    /// Append an attempt and assign its [`AttemptTrace::seq`].
     pub(crate) fn push_attempt(
         &mut self,
         attempt: usize,
@@ -282,7 +284,7 @@ impl EvolutionTrace {
         });
     }
 
-    /// Total token usage across every attempt that reached the model.
+    /// The total token usage of every attempt that got to the model.
     #[must_use]
     pub fn usage(&self) -> Usage {
         self.attempts
@@ -294,7 +296,7 @@ impl EvolutionTrace {
             })
     }
 
-    /// The number of HTTP completion requests the lane made.
+    /// The count of HTTP completion requests that the lane made.
     #[must_use]
     pub fn completion_calls(&self) -> usize {
         self.attempts
@@ -304,11 +306,11 @@ impl EvolutionTrace {
             .sum()
     }
 
-    /// A human-readable transcript: one block per attempt, with the prompt,
-    /// the tool exchanges, the response, the ladder decision, the token usage
-    /// and the stage timings.
+    /// A transcript for a human reader. It gives one block per attempt with
+    /// the prompt, the tool exchanges, the response, the ladder decision, the
+    /// token usage and the stage timings.
     ///
-    /// For machine consumption use [`Self::to_json_pretty`] or
+    /// For a machine reader, use [`Self::to_json_pretty`] or
     /// [`Self::write_jsonl`].
     #[must_use]
     pub fn render(&self) -> String {
@@ -366,16 +368,16 @@ impl EvolutionTrace {
 
     /// Write the trace as JSON Lines.
     ///
-    /// The first line is a `trace` header carrying the lane metadata, the full
-    /// transcript and the outcome; each following line is one `attempt` object
-    /// referencing the transcript by index range. Appending several traces to
-    /// one file therefore stays valid JSONL, in the shape session logs of
-    /// other agent harnesses use.
+    /// The first line is a `trace` header. It carries the lane metadata, the
+    /// full transcript and the outcome. Each line after it is one `attempt`
+    /// object that points into the transcript by index range. You can append
+    /// more traces to the same file and the file stays valid JSONL. Session
+    /// logs of other agent harnesses use this shape.
     ///
     /// # Errors
     ///
-    /// Propagates write failures from `w`, and serialization failures (which
-    /// indicate a bug, since every field is plain data).
+    /// Returns the write errors of `w`. Also returns serialization errors,
+    /// which indicate a bug, because every field is plain data.
     pub fn write_jsonl<W: std::io::Write>(&self, mut w: W) -> Result<(), std::io::Error> {
         let header = serde_json::json!({
             "type": "trace",
@@ -398,7 +400,7 @@ impl EvolutionTrace {
         Ok(())
     }
 
-    /// The whole trace as one pretty-printed JSON document.
+    /// The whole trace as one JSON document, in the indented form.
     #[must_use]
     pub fn to_json_pretty(&self) -> String {
         serde_json::to_string_pretty(self)
@@ -406,7 +408,7 @@ impl EvolutionTrace {
     }
 }
 
-/// Render the tool calls and tool results carried by one transcript message.
+/// Show the tool calls and tool results that one transcript message carries.
 fn render_tool_activity(out: &mut String, message: &Message) {
     match message {
         Message::Assistant { content, .. } => {
@@ -428,12 +430,12 @@ fn render_tool_activity(out: &mut String, message: &Message) {
             }
         }
         // The preamble travels as the agent's own configuration, not as a
-        // transcript turn; see the module docs on why it is not traced.
+        // transcript turn. The module docs give the reason it is not traced.
         Message::System { .. } => {}
     }
 }
 
-/// Render the stage breakdown of one attempt.
+/// Show the stage breakdown of one attempt.
 fn render_stages(out: &mut String, stages: &StageTimings) {
     let mut parts: Vec<String> = Vec::new();
     if let Some(llm) = stages.llm {
@@ -465,14 +467,13 @@ fn render_stages(out: &mut String, stages: &StageTimings) {
     }
 }
 
-/// One-line summary of a ladder decision.
+/// A one-line summary of a ladder decision.
 fn render_ladder(ladder: &LadderEvent) -> String {
     match ladder {
         LadderEvent::Registered { revision } => format!("registered revision {revision}"),
         LadderEvent::SelfHeal { kind, diagnostics } => {
             format!("self-heal ({kind}): {}", first_line(diagnostics))
         }
-
         LadderEvent::TransientRetry { backoff, cause } => {
             format!("transient retry in {backoff:?}: {}", first_line(cause))
         }
@@ -539,8 +540,8 @@ mod tests {
         usage
     }
 
-    /// A lane's usage is the sum over the attempts that reached the model;
-    /// attempts whose inference call failed contribute nothing.
+    /// The usage of a lane is the sum of the attempts that got to the model.
+    /// An attempt whose inference call failed adds nothing.
     #[test]
     fn usage_sums_over_runs_only() {
         let trace = trace_with(
@@ -559,8 +560,8 @@ mod tests {
         assert_eq!(trace.completion_calls(), 3);
     }
 
-    /// `push_attempt` assigns a dense `seq` even when `attempt` repeats, which
-    /// it does across a transient retry.
+    /// `push_attempt` assigns a dense `seq` even when `attempt` repeats. The
+    /// `attempt` counter repeats across a transient retry.
     #[test]
     fn seq_is_dense_while_attempt_may_repeat() {
         let mut trace = EvolutionTrace::new(2, "base".to_string());
@@ -584,8 +585,8 @@ mod tests {
         assert_eq!(attempts, vec![1, 1, 2]);
     }
 
-    /// The trace round-trips through serde, so a persisted trace can be read
-    /// back for offline analysis.
+    /// The trace goes through serde and comes back unchanged. A host can thus
+    /// read a persisted trace back for offline analysis.
     #[test]
     fn serde_round_trip() {
         let mut trace = trace_with(
@@ -623,8 +624,8 @@ mod tests {
         ));
     }
 
-    /// JSONL is one header line plus one line per attempt, each tagged so a
-    /// concatenated multi-lane file stays interpretable.
+    /// JSONL gives one header line and one line per attempt. Each line carries
+    /// a tag, so a file that holds more than one lane stays readable.
     #[test]
     fn jsonl_is_header_plus_one_line_per_attempt() {
         let trace = trace_with(
@@ -654,8 +655,8 @@ mod tests {
         assert_eq!(second["type"], "attempt");
     }
 
-    /// `render` reports an attempt that never reached the model rather than
-    /// silently showing an empty block.
+    /// `render` reports an attempt that never got to the model. It does not
+    /// show an empty block for it.
     #[test]
     fn render_marks_attempts_without_a_run() {
         let trace = trace_with(

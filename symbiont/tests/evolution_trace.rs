@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
-//! Integration test: a successful evolution that needed one self-healing
-//! retry carries a trace of the whole lane — both attempts, the ladder
-//! decision between them, the transcript they produced, and the stage timings
-//! that show how far each got.
+//! Integration test for the evolution trace.
+//!
+//! An evolution that needs one self-healing retry must carry a trace of the
+//! whole lane. The trace holds both attempts, the ladder decision between
+//! them, the transcript they produced, and the stage timings that show how far
+//! each attempt got.
 //!
 //! One test per binary: [`symbiont::Runtime`] is a process-wide singleton.
 #![expect(
@@ -59,15 +61,15 @@ async fn trace_records_the_whole_lane() {
     assert_eq!(trace.base_prompt, BASE_PROMPT);
     assert_eq!(trace.attempts.len(), 2, "one rejection plus one success");
 
-    // `seq` indexes the timeline; `attempt` is the self-healing counter. Here
-    // they agree, because neither attempt was a transient retry.
+    // `seq` indexes the timeline. `attempt` is the self-healing counter. The
+    // two agree here, because neither attempt was a transient retry.
     let seqs: Vec<usize> = trace.attempts.iter().map(|a| a.seq).collect();
     let attempts: Vec<usize> = trace.attempts.iter().map(|a| a.attempt).collect();
     assert_eq!(seqs, vec![0, 1]);
     assert_eq!(attempts, vec![1, 2]);
 
-    // The first attempt was rejected before any code existed, so it reached
-    // the model but never the build stage.
+    // The runtime rejected the first attempt before any code existed. That
+    // attempt got to the model, but never to the build stage.
     let first = &trace.attempts[0];
     assert_eq!(first.prompt, BASE_PROMPT, "attempt 1 sends the base prompt");
     let first_run = first.run.as_ref().expect("attempt 1 reached the model");
@@ -116,8 +118,8 @@ async fn trace_records_the_whole_lane() {
 
     assert_transcript_is_tiled(trace);
 
-    // The lane's usage is the sum over its attempts, including the rejected
-    // one: a rejected attempt is still a paid-for run.
+    // The usage of the lane is the sum of its attempts, and it includes the
+    // rejected one. A rejected attempt is still a run that costs tokens.
     assert_eq!(
         trace.usage().total_tokens,
         info.usage().total_tokens,
@@ -128,9 +130,9 @@ async fn trace_records_the_whole_lane() {
     assert_renderings(trace);
 }
 
-/// The transcript is owned once and each attempt's `produced` range indexes
-/// into it, with consecutive ranges adjacent. That tiling is what makes
-/// storing the transcript once sufficient.
+/// The trace owns the transcript one time. The `produced` range of each
+/// attempt indexes into it, and the ranges of two attempts in sequence touch.
+/// This layout is the reason one copy of the transcript is sufficient.
 fn assert_transcript_is_tiled(trace: &symbiont::EvolutionTrace) {
     assert!(
         !trace.history.is_empty(),
@@ -158,7 +160,7 @@ fn assert_transcript_is_tiled(trace: &symbiont::EvolutionTrace) {
     }
 }
 
-/// The three renderings, exercised on a real trace rather than a hand-built
+/// The three output formats, run against a real trace and not a hand-built
 /// one.
 fn assert_renderings(trace: &symbiont::EvolutionTrace) {
     let rendered = trace.render();
@@ -174,10 +176,10 @@ fn assert_renderings(trace: &symbiont::EvolutionTrace) {
         "one header line plus one line per attempt"
     );
 
-    // A persisted trace round-trips, which is the point of deriving
-    // `Deserialize`. (That the provider's wire body is dropped on the way in
-    // is covered by the unit test on `drop_raw`; a scripted agent has no wire
-    // body to begin with.)
+    // A persisted trace goes out and comes back unchanged, which is the
+    // purpose of the `Deserialize` derive. The unit test on `drop_raw` covers
+    // the removal of the wire body of the provider. A scripted agent has no
+    // wire body, so this test cannot cover it.
     let json = trace.to_json_pretty();
     let back: symbiont::EvolutionTrace =
         serde_json::from_str(&json).expect("a persisted trace deserializes");
