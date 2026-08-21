@@ -5,6 +5,10 @@ use getset::{
     CopyGetters,
     Getters,
 };
+use serde::{
+    Deserialize,
+    Serialize,
+};
 
 use crate::{
     error::Error,
@@ -26,8 +30,7 @@ use crate::{
 /// order. Group them by [`EvolveFailure::lane`] to reconstruct what each
 /// prompt variant struggled with — that per-variant view is the point of
 /// running a batch in the first place.
-#[derive(Debug, Clone, Getters, CopyGetters)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Getters, CopyGetters, Serialize, Deserialize)]
 pub struct EvolveFailure {
     /// 1-based attempt index within a single `evolve` call, or within a
     /// single lane of an `evolve_batch` call.

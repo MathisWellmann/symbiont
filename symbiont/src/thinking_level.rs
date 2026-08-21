@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 //! Thinking and reasoning configuration for LLM agents.
 
+use serde::{
+    Deserialize,
+    Serialize,
+};
 use serde_json::Value;
 
 /// Thinking/reasoning effort level for LLM agents.
@@ -12,8 +16,7 @@ use serde_json::Value;
 /// - **OpenRouter**: `reasoning.effort` (`"none"`, `"low"`, `"medium"`, `"high"`, `"max"`).
 /// - **Google Gemini**: `thinking_level` (`"MINIMAL"`, `"LOW"`, `"MEDIUM"`, `"HIGH"`) or `thinking_budget`.
 /// - **Anthropic**: `thinking` (`disabled`, `adaptive`, or token budget).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum ThinkingLevel {
     /// Disable reasoning entirely for lowest latency.
     #[default]
