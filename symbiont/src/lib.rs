@@ -52,6 +52,9 @@ pub use evolution_agent::{
     AgentRun,
     EvolutionAgent,
 };
+// Reachable through `AgentRun::completion_calls`, so hosts need it nameable
+// without depending on `rig-agent` directly.
+pub use rig_agent::agent::CompletionCall;
 pub use evolve_failure::EvolveFailure;
 pub use evolve_info::EvolveInfo;
 pub use inference::{

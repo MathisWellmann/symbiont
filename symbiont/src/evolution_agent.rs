@@ -13,6 +13,7 @@
 use rig_agent::{
     agent::{
         Agent,
+        CompletionCall,
         PromptRequest,
     },
     completion::PromptError,
@@ -32,6 +33,11 @@ pub struct AgentRun {
     pub new_messages: Vec<Message>,
     /// Aggregated token usage across all turns of the run.
     pub usage: Usage,
+    /// One entry per HTTP completion request the run made, including any
+    /// rig-internal retry of an invalid tool call. [`Self::usage`] stays the
+    /// aggregate; these are the per-request breakdown, each with its own
+    /// token usage, provider ids and finish reason.
+    pub completion_calls: Vec<CompletionCall>,
 }
 
 /// The minimal contract the [`crate::Runtime`] requires from an agent:
@@ -68,6 +74,15 @@ impl EvolutionAgent for Agent {
                 output: response.output,
                 new_messages: response.messages.unwrap_or_default(),
                 usage: response.usage,
+                completion_calls: response
+                    .completion_calls
+                    .into_iter()
+                    .map(|call| CompletionCall {
+                        // Redundant with the transcript; see `AgentRun`.
+                        raw: serde_json::Value::Null,
+                        ..call
+                    })
+                    .collect(),
             })
         }
     }
