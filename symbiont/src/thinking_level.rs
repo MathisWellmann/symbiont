@@ -13,6 +13,7 @@ use serde_json::Value;
 /// - **Google Gemini**: `thinking_level` (`"MINIMAL"`, `"LOW"`, `"MEDIUM"`, `"HIGH"`) or `thinking_budget`.
 /// - **Anthropic**: `thinking` (`disabled`, `adaptive`, or token budget).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ThinkingLevel {
     /// Disable reasoning entirely for lowest latency.
     #[default]
