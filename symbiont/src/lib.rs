@@ -69,6 +69,7 @@ pub use revision::{
     RevisionFn,
 };
 pub use runtime::Runtime;
+pub use system_prompt::system_prompt;
 /// Evolvable return types must implement [`Default`]: when an evolved
 /// implementation panics, the in-dylib `catch_unwind` wrapper substitutes
 /// `Default::default()` as a safe placeholder return value. The bound is
