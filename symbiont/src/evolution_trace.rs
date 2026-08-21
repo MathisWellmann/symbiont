@@ -81,8 +81,8 @@ pub struct AttemptTrace {
     pub prompt: String,
     /// The agent run, when there was one.
     ///
-    /// `None` when [`crate::EvolutionAgent::run`] itself returned an error \u2014 a
-    /// transient HTTP failure or a context-size overflow \u2014 in which case no
+    /// `None` when [`crate::EvolutionAgent::run`] itself returned an error — a
+    /// transient HTTP failure or a context-size overflow — in which case no
     /// messages, no usage and no completion calls exist for this iteration.
     pub run: Option<RunTrace>,
     /// How far this iteration got through the pipeline, and how long each
@@ -247,6 +247,17 @@ impl EvolutionTrace {
                 reason: "lane did not finish".to_string(),
             },
             duration: Duration::ZERO,
+        }
+    }
+
+    /// A trace for a failure that happened outside any lane, so there is no
+    /// trajectory to report.
+    pub(crate) fn empty() -> Self {
+        Self {
+            outcome: TraceOutcome::Failed {
+                reason: "failed before the lane started".to_string(),
+            },
+            ..Self::new(0, String::new())
         }
     }
 
@@ -634,14 +645,13 @@ mod tests {
                 serde_json::from_str(line).expect("each line is its own JSON document");
             assert_eq!(value["lane"], 0);
         }
-        assert_eq!(
-            serde_json::from_str::<serde_json::Value>(lines[0]).unwrap()["type"],
-            "trace"
-        );
-        assert_eq!(
-            serde_json::from_str::<serde_json::Value>(lines[2]).unwrap()["seq"],
-            1
-        );
+        let header: serde_json::Value =
+            serde_json::from_str(lines[0]).expect("the header line is JSON");
+        assert_eq!(header["type"], "trace");
+        let second: serde_json::Value =
+            serde_json::from_str(lines[2]).expect("the second attempt line is JSON");
+        assert_eq!(second["seq"], 1);
+        assert_eq!(second["type"], "attempt");
     }
 
     /// `render` reports an attempt that never reached the model rather than

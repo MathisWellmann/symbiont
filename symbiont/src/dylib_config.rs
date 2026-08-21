@@ -5,9 +5,9 @@ use getset::{
     Getters,
 };
 use serde::{
-    Serialize,
     Deserialize,
-}
+    Serialize,
+};
 
 use crate::dylib_dependency::{
     DylibDependency,

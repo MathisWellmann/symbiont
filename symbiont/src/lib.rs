@@ -19,6 +19,7 @@ mod dylib_dependency;
 mod error;
 mod evolution_agent;
 mod evolution_trace;
+mod evolve_error;
 mod evolve_failure;
 mod evolve_info;
 mod inference;
@@ -62,6 +63,7 @@ pub use evolution_trace::{
     StageTimings,
     TraceOutcome,
 };
+pub use evolve_error::EvolveError;
 pub use evolve_failure::EvolveFailure;
 pub use evolve_info::EvolveInfo;
 pub use inference::{

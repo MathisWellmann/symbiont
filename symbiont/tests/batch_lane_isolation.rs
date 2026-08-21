@@ -82,6 +82,7 @@ async fn a_failing_lane_does_not_disturb_its_siblings() {
     match results[1]
         .as_ref()
         .expect_err("lane 1 never produced Rust and must fail")
+        .error()
     {
         Error::MaxRetriesExceeded { attempts, .. } => assert_eq!(
             *attempts,

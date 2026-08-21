@@ -141,7 +141,10 @@ async fn context_size_overflow_restarts_from_the_base_prompt() {
         .await
         .expect_err("repeated context overflows must give up, not restart forever");
     assert!(
-        matches!(err, symbiont::Error::MaxRetriesExceeded { attempts: 8, .. }),
+        matches!(
+            err.error(),
+            symbiont::Error::MaxRetriesExceeded { attempts: 8, .. }
+        ),
         "got: {err}"
     );
 }

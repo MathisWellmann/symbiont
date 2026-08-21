@@ -55,13 +55,21 @@ use tracing::{
 };
 
 use crate::{
+    AgentRun,
+    BuildRecord,
     DylibConfig,
     EvolutionAgent,
+    EvolutionTrace,
     EvolvableDecl,
+    EvolveError,
     EvolveFailure,
     EvolveInfo,
     FullSource,
+    LadderEvent,
     Profile,
+    RunTrace,
+    StageTimings,
+    TraceOutcome,
     compiler::compile_dylib,
     error::{
         Error,
@@ -345,26 +353,46 @@ impl Runtime {
     /// the caller's decision, because batch lanes register without activating.
     /// The run's token usage is added to `usage` either way, so a lane's
     /// total includes attempts that were later rejected.
+    ///
+    /// `history` is the lane's whole transcript; only `history[history_base..]`
+    /// is sent to the agent. A context or repeat reset advances `history_base`
+    /// instead of truncating, so the transcript keeps everything that was ever
+    /// exchanged while the request shrinks.
+    ///
+    /// `run_out` and `stages` are trace bookkeeping, written as the attempt
+    /// progresses rather than returned, so the caller keeps whatever was
+    /// recorded before a failure. `run_out` stays `None` exactly when the
+    /// agent run itself failed, which is what distinguishes an attempt that
+    /// never reached the model from one the pipeline later rejected.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "One attempt's inputs, its two accumulators and its two trace out-params; bundling them would only move the same fields behind a single-use struct"
+    )]
     async fn evolve_no_backpressure<AgentT>(
         &self,
         agent: &AgentT,
         prompt: &str,
         history: &mut Vec<Message>,
+        history_base: usize,
         usage: &mut Usage,
+        run_out: &mut Option<AgentRun>,
+        stages: &mut StageTimings,
     ) -> Result<Revision>
     where
         AgentT: EvolutionAgent,
     {
         info!("prompt: {}", prompt.green());
         let t0 = Instant::now();
-        debug!("chat history: {history:?}");
+        let visible = history.get(history_base..).unwrap_or_default().to_vec();
+        debug!("chat history: {visible:?}");
 
         // The agent implementation drives any tool-calling turns to
         // completion internally and returns only the final text.
-        let run = match agent.run(prompt, history.clone()).await {
+        let run = match agent.run(prompt, visible).await {
             Ok(run) => run,
             Err(e) => {
                 counter!(LLM_RUNS, "outcome" => "error").increment(1);
+                stages.llm = Some(t0.elapsed());
                 return Err(e.into());
             }
         };
@@ -385,9 +413,11 @@ impl Runtime {
 
         // `new_messages` contains the prompt, assistant turns and any
         // tool exchanges of this run, so extending is sufficient.
-        history.extend(run.new_messages);
-        let llm_response = run.output;
+        history.extend(run.new_messages.iter().cloned());
+        let llm_response = run.output.clone();
         let llm_time = t0.elapsed().as_millis();
+        stages.llm = Some(t0.elapsed());
+        *run_out = Some(run);
         histogram!(
             PIPELINE_STAGE_DURATION,
             "stage" => stage::LLM
@@ -400,10 +430,19 @@ impl Runtime {
         // across an await would make this future `!Send`.
         let clean_ast_str = {
             let t1 = Instant::now();
-            let mut ast = parse_rust_code(&llm_response)?;
+            // Recorded before `?` propagates, so a rejected candidate still
+            // reports how long its parse and validation took.
+            let mut ast = parse_rust_code(&llm_response).inspect_err(|_| {
+                stages.parse_validate = Some(t1.elapsed());
+            })?;
 
             // Validate signatures match declarations
-            validate_generated_ast(&mut ast, &self.fn_sigs, &self.denied_paths)?;
+            validate_generated_ast(&mut ast, &self.fn_sigs, &self.denied_paths).inspect_err(
+                |_| {
+                    stages.parse_validate = Some(t1.elapsed());
+                },
+            )?;
+            stages.parse_validate = Some(t1.elapsed());
             histogram!(
                 PIPELINE_STAGE_DURATION,
                 "stage" => stage::PARSE_VALIDATE
@@ -432,7 +471,9 @@ impl Runtime {
 
         // Compile, load and retain the new revision. Whether it also becomes
         // the active one is up to the caller.
-        let revision = self.build_and_register(clean_ast_str).await?;
+        let revision = self
+            .build_and_register(clean_ast_str, &mut stages.build)
+            .await?;
 
         info!("Built revision {revision}. LLM generation: {llm_time}ms.");
 
@@ -454,7 +495,15 @@ impl Runtime {
     /// A candidate that is byte-identical to an already-registered revision
     /// reuses it instead of being built again — see
     /// [`Runtime::registered_with_source`].
-    async fn build_and_register(&self, clean_ast_str: String) -> Result<Revision> {
+    ///
+    /// `record` receives what the build stage did, for the trace. It is
+    /// written before any early return, so a candidate rejected by the
+    /// compiler still reports the time its compile took.
+    async fn build_and_register(
+        &self,
+        clean_ast_str: String,
+        record: &mut Option<BuildRecord>,
+    ) -> Result<Revision> {
         let t_wait = Instant::now();
         let _build_permit = self.build_slot.lock().await;
         let waited = t_wait.elapsed();
@@ -469,6 +518,10 @@ impl Runtime {
             info!(
                 "Candidate is byte-identical to revision {existing}; reusing it instead of spending a build."
             );
+            *record = Some(BuildRecord::Deduped {
+                slot_wait: waited,
+                revision: existing,
+            });
             return Ok(existing);
         }
 
@@ -476,7 +529,18 @@ impl Runtime {
         debug!("clean_ast_str: {clean_ast_str}");
 
         let t_compile = Instant::now();
-        compile_dylib(&self.crate_dir, self.profile, &clean_ast_str).await?;
+        // A compile failure is the common self-healing case, and its duration
+        // is the most useful number in the whole attempt, so it is recorded
+        // before the error propagates.
+        compile_dylib(&self.crate_dir, self.profile, &clean_ast_str)
+            .await
+            .inspect_err(|_| {
+                *record = Some(BuildRecord::Built {
+                    slot_wait: waited,
+                    compile: t_compile.elapsed(),
+                    load: Duration::ZERO,
+                });
+            })?;
         let compile_time = t_compile.elapsed();
         histogram!(
             PIPELINE_STAGE_DURATION,
@@ -527,6 +591,11 @@ impl Runtime {
             "stage" => stage::LOAD
         )
         .record(t_load.elapsed().as_secs_f64());
+        *record = Some(BuildRecord::Built {
+            slot_wait: waited,
+            compile: compile_time,
+            load: t_load.elapsed(),
+        });
 
         info!(
             "Registered revision {id}. Timings: build slot wait: {}ms, compilation: {}ms, load: {}ms.",
@@ -677,7 +746,7 @@ impl Runtime {
         &self,
         agent: &AgentT,
         base_prompt: &str,
-    ) -> impl Future<Output = Result<EvolveInfo>> + Send
+    ) -> impl Future<Output = std::result::Result<EvolveInfo, EvolveError>> + Send
     where
         AgentT: EvolutionAgent + Sync,
     {
@@ -791,7 +860,7 @@ impl Runtime {
         &'a self,
         agent: &'a AgentT,
         prompts: &'a [S],
-    ) -> impl Future<Output = Vec<Result<EvolveInfo>>> + Send + 'a
+    ) -> impl Future<Output = Vec<std::result::Result<EvolveInfo, EvolveError>>> + Send + 'a
     where
         AgentT: EvolutionAgent + Sync,
         S: AsRef<str> + Sync,
@@ -804,7 +873,12 @@ impl Runtime {
                 Ok(mut failures) => failures.clear(),
                 // Every lane would fail on the same poisoned lock; report it
                 // once per lane rather than pretending the batch ran.
-                Err(_) => return prompts.iter().map(|_| Err(Error::MutexPoison)).collect(),
+                Err(_) => {
+                    return prompts
+                        .iter()
+                        .map(|_| Err(EvolveError::from(Error::MutexPoison)))
+                        .collect();
+                }
             }
 
             info!(
@@ -818,7 +892,7 @@ impl Runtime {
             // Completion order in, input order out: the reordering buffer is
             // the whole difference between this and
             // [`Runtime::evolve_batch_stream`].
-            let mut slots: Vec<Option<Result<EvolveInfo>>> =
+            let mut slots: Vec<Option<std::result::Result<EvolveInfo, EvolveError>>> =
                 Vec::from_iter(prompts.iter().map(|_| None));
             {
                 let mut lanes = std::pin::pin!(self.evolve_batch_stream(agent, prompts));
@@ -826,7 +900,7 @@ impl Runtime {
                     slots[lane] = Some(result);
                 }
             }
-            let results = Vec::<Result<EvolveInfo>>::from_iter(
+            let results = Vec::<std::result::Result<EvolveInfo, EvolveError>>::from_iter(
                 slots
                     .into_iter()
                     .map(|slot| slot.expect("every lane yields exactly one result")),
@@ -886,7 +960,7 @@ impl Runtime {
         &'a self,
         agent: &'a AgentT,
         prompts: &'a [S],
-    ) -> impl Stream<Item = (usize, Result<EvolveInfo>)> + Send + 'a
+    ) -> impl Stream<Item = (usize, std::result::Result<EvolveInfo, EvolveError>)> + Send + 'a
     where
         AgentT: EvolutionAgent + Sync,
         S: AsRef<str> + Sync,
@@ -960,7 +1034,7 @@ impl Runtime {
         base_prompt: &str,
         lane: usize,
         publish: Publish,
-    ) -> impl Future<Output = Result<EvolveInfo>> + Send
+    ) -> impl Future<Output = std::result::Result<EvolveInfo, EvolveError>> + Send
     where
         AgentT: EvolutionAgent + Sync,
     {
@@ -969,6 +1043,11 @@ impl Runtime {
             let mut prompt = base_prompt.to_string();
             // Scoped to this call; see the doc comment above.
             let mut history: Vec<Message> = Vec::new();
+            // Everything before this index has been retired by a context or
+            // repeat reset: still part of the trace's transcript, no longer
+            // part of the request. Resets advance it instead of truncating,
+            // so the trace keeps what the lane actually exchanged.
+            let mut history_base: usize = 0;
             let mut attempts: usize = 0;
             let mut context_resets: usize = 0;
             let mut usage = Usage::new();
@@ -976,9 +1055,39 @@ impl Runtime {
             // Code of the most recent rejected attempt, used to detect an
             // agent that echoes the same broken code back verbatim.
             let mut last_failed_code: Option<String> = None;
+            let mut trace = EvolutionTrace::new(lane, base_prompt.to_string());
+
+            // Finish the lane: move the transcript into the trace and stamp
+            // the outcome. Called on every exit path.
+            macro_rules! finish {
+                ($outcome:expr) => {{
+                    trace.history = std::mem::take(&mut history);
+                    trace.outcome = $outcome;
+                    trace.duration = t_start.elapsed();
+                    trace
+                }};
+            }
 
             loop {
                 attempts += 1;
+                let t_attempt = Instant::now();
+                let produced_start = history.len();
+                let mut run_out: Option<AgentRun> = None;
+                let mut stages = StageTimings::default();
+                let attempt_prompt = prompt.clone();
+
+                // Build this attempt's `RunTrace` from whatever the pipeline
+                // got far enough to produce.
+                macro_rules! run_trace {
+                    () => {
+                        run_out.take().map(|run| RunTrace {
+                            produced: produced_start..history.len(),
+                            response: run.output,
+                            usage: run.usage,
+                            completion_calls: run.completion_calls,
+                        })
+                    };
+                }
                 // The gate is entered inside `evolve_no_backpressure` and
                 // left again before the compile stage, so a lane queued on
                 // `build_slot` is not also occupying a slot at the endpoint.
@@ -993,18 +1102,57 @@ impl Runtime {
                     .inference_gate
                     .scope(
                         Priority::attempt(attempts),
-                        self.evolve_no_backpressure(agent, &prompt, &mut history, &mut usage),
+                        self.evolve_no_backpressure(
+                            agent,
+                            &prompt,
+                            &mut history,
+                            history_base,
+                            &mut usage,
+                            &mut run_out,
+                            &mut stages,
+                        ),
                     )
                     .await
                 {
                     Ok(revision) => {
                         if publish == Publish::Yes {
-                            self.publish_revision(revision, "evolve")?;
+                            // The revision built and registered; only making
+                            // it the active one can still fail, and the trace
+                            // is complete by then and worth keeping.
+                            if let Err(e) = self.publish_revision(revision, "evolve") {
+                                let reason = e.to_string();
+                                trace.push_attempt(
+                                    attempts,
+                                    attempt_prompt,
+                                    run_trace!(),
+                                    stages,
+                                    LadderEvent::Terminal {
+                                        reason: reason.clone(),
+                                    },
+                                    t_attempt.elapsed(),
+                                );
+                                return Err(EvolveError::new(
+                                    e,
+                                    finish!(TraceOutcome::Failed { reason }),
+                                ));
+                            }
                             info!("Hot-reloaded evolvable dylib (revision {revision}).");
                         }
                         histogram!(EVOLVE_ATTEMPTS).record(attempts as f64);
                         histogram!(EVOLVE_DURATION).record(t_start.elapsed().as_secs_f64());
-                        return Ok(EvolveInfo::new(revision, usage));
+                        trace.push_attempt(
+                            attempts,
+                            attempt_prompt,
+                            run_trace!(),
+                            stages,
+                            LadderEvent::Registered { revision },
+                            t_attempt.elapsed(),
+                        );
+                        return Ok(EvolveInfo::new(
+                            revision,
+                            usage,
+                            finish!(TraceOutcome::Registered { revision }),
+                        ));
                     }
                     Err(e) => {
                         counter!(
@@ -1026,10 +1174,26 @@ impl Runtime {
                             repeated = !code.is_empty()
                                 && last_failed_code.as_deref() == Some(code.as_str());
                             last_failed_code = Some(code.clone());
-                            self.evolve_failures
-                                .write()
-                                .map_err(|_| MutexPoison)?
-                                .push(failure);
+                            match self.evolve_failures.write() {
+                                Ok(mut failures) => failures.push(failure),
+                                Err(_) => {
+                                    let reason = MutexPoison.to_string();
+                                    trace.push_attempt(
+                                        attempts,
+                                        attempt_prompt,
+                                        run_trace!(),
+                                        stages,
+                                        LadderEvent::Terminal {
+                                            reason: reason.clone(),
+                                        },
+                                        t_attempt.elapsed(),
+                                    );
+                                    return Err(EvolveError::new(
+                                        MutexPoison,
+                                        finish!(TraceOutcome::Failed { reason }),
+                                    ));
+                                }
+                            }
                         }
                         // A request that exceeds the model's context window can
                         // never succeed by resending: shrink it instead.
@@ -1038,14 +1202,28 @@ impl Runtime {
                         // overflows (empty history), the base prompt itself is
                         // too large and only the caller can slim it down.
                         if is_context_size_error(&e) {
-                            if history.is_empty() {
+                            if history.len() == history_base {
                                 warn!(
                                     "Request exceeds the model's context window even without \
                                      chat history; the base prompt is too large: {e}"
                                 );
                                 histogram!(EVOLVE_ATTEMPTS).record(attempts as f64);
                                 histogram!(EVOLVE_DURATION).record(t_start.elapsed().as_secs_f64());
-                                return Err(e);
+                                let reason = e.to_string();
+                                trace.push_attempt(
+                                    attempts,
+                                    attempt_prompt,
+                                    run_trace!(),
+                                    stages,
+                                    LadderEvent::Terminal {
+                                        reason: reason.clone(),
+                                    },
+                                    t_attempt.elapsed(),
+                                );
+                                return Err(EvolveError::new(
+                                    e,
+                                    finish!(TraceOutcome::Failed { reason }),
+                                ));
                             }
                             if context_resets >= Self::MAX_CONTEXT_RESETS {
                                 warn!(
@@ -1055,21 +1233,47 @@ impl Runtime {
                                 );
                                 histogram!(EVOLVE_ATTEMPTS).record(attempts as f64);
                                 histogram!(EVOLVE_DURATION).record(t_start.elapsed().as_secs_f64());
-                                return Err(MaxRetriesExceeded {
+                                let reason = e.to_string();
+                                trace.push_attempt(
                                     attempts,
-                                    last_error: Box::new(e),
-                                });
+                                    attempt_prompt,
+                                    run_trace!(),
+                                    stages,
+                                    LadderEvent::Terminal {
+                                        reason: reason.clone(),
+                                    },
+                                    t_attempt.elapsed(),
+                                );
+                                return Err(EvolveError::new(
+                                    MaxRetriesExceeded {
+                                        attempts,
+                                        last_error: Box::new(e),
+                                    },
+                                    finish!(TraceOutcome::Failed { reason }),
+                                ));
                             }
                             context_resets += 1;
+                            let dropped = history.len() - history_base;
                             warn!(
                                 "Request exceeded the model's context window (restart \
-                                 {context_resets}/{}); discarding {} history messages and \
+                                 {context_resets}/{}); discarding {dropped} history messages and \
                                  restarting from the base prompt",
                                 Self::MAX_CONTEXT_RESETS,
-                                history.len()
                             );
                             counter!(EVOLVE_CONTEXT_RESETS).increment(1);
-                            history.clear();
+                            let brief = first_line_of(&e);
+                            trace.push_attempt(
+                                attempts,
+                                attempt_prompt,
+                                run_trace!(),
+                                stages,
+                                LadderEvent::ContextReset {
+                                    messages_dropped: dropped,
+                                    brief,
+                                },
+                                t_attempt.elapsed(),
+                            );
+                            history_base = history.len();
                             prompt.clear();
                             prompt.push_str(base_prompt);
                             // The restart consumes this attempt: unlike
@@ -1090,7 +1294,21 @@ impl Runtime {
                                 );
                                 histogram!(EVOLVE_ATTEMPTS).record(attempts as f64);
                                 histogram!(EVOLVE_DURATION).record(t_start.elapsed().as_secs_f64());
-                                return Err(e);
+                                let reason = e.to_string();
+                                trace.push_attempt(
+                                    attempts,
+                                    attempt_prompt,
+                                    run_trace!(),
+                                    stages,
+                                    LadderEvent::Terminal {
+                                        reason: reason.clone(),
+                                    },
+                                    t_attempt.elapsed(),
+                                );
+                                return Err(EvolveError::new(
+                                    e,
+                                    finish!(TraceOutcome::Failed { reason }),
+                                ));
                             }
                             let backoff = Self::transient_backoff(transient_attempts);
                             transient_attempts += 1;
@@ -1100,6 +1318,17 @@ impl Runtime {
                                 "Transient HTTP error from LLM provider (retry {transient_attempts}/{} in {:?}): {e}",
                                 Self::MAX_TRANSIENT_RETRIES,
                                 backoff,
+                            );
+                            trace.push_attempt(
+                                attempts,
+                                attempt_prompt,
+                                run_trace!(),
+                                stages,
+                                LadderEvent::TransientRetry {
+                                    backoff,
+                                    cause: e.to_string(),
+                                },
+                                t_attempt.elapsed(),
                             );
                             // Don't count this against the self-healing budget.
                             attempts -= 1;
@@ -1113,10 +1342,24 @@ impl Runtime {
                             );
                             histogram!(EVOLVE_ATTEMPTS).record(attempts as f64);
                             histogram!(EVOLVE_DURATION).record(t_start.elapsed().as_secs_f64());
-                            return Err(MaxRetriesExceeded {
+                            let reason = e.to_string();
+                            trace.push_attempt(
                                 attempts,
-                                last_error: Box::new(e),
-                            });
+                                attempt_prompt,
+                                run_trace!(),
+                                stages,
+                                LadderEvent::Terminal {
+                                    reason: reason.clone(),
+                                },
+                                t_attempt.elapsed(),
+                            );
+                            return Err(EvolveError::new(
+                                MaxRetriesExceeded {
+                                    attempts,
+                                    last_error: Box::new(e),
+                                },
+                                finish!(TraceOutcome::Failed { reason }),
+                            ));
                         }
 
                         info!(
@@ -1136,17 +1379,16 @@ impl Runtime {
                         // NOT quote the rejected code.
                         if repeated {
                             counter!(EVOLVE_REPEAT_RESETS).increment(1);
+                            let dropped = history.len() - history_base;
                             warn!(
-                                "Agent repeated the same rejected code verbatim; discarding {} \
-                                 history messages and restarting from the base prompt",
-                                history.len()
+                                "Agent repeated the same rejected code verbatim; discarding \
+                                 {dropped} history messages and restarting from the base prompt",
                             );
-                            history.clear();
+                            history_base = history.len();
                             // Only the first line of the error: the full
                             // diagnostics quote the rejected code, which is
                             // exactly the echo source being removed here.
-                            let brief = e.to_string();
-                            let brief = brief.lines().next().unwrap_or_default().to_string();
+                            let brief = first_line_of(&e);
                             write!(
                                 prompt,
                                 "{base_prompt}\n\nYour previous attempt was rejected: {brief}\n\
@@ -1155,8 +1397,24 @@ impl Runtime {
                                  with a different, valid implementation."
                             )
                             .expect("Can write to prompt");
+                            trace.push_attempt(
+                                attempts,
+                                attempt_prompt,
+                                run_trace!(),
+                                stages,
+                                LadderEvent::RepeatReset {
+                                    messages_dropped: dropped,
+                                    brief,
+                                },
+                                t_attempt.elapsed(),
+                            );
                             continue;
                         }
+
+                        // The nudge the ladder is about to build *is* the
+                        // diagnostics fed back to the agent, so the ladder
+                        // event is recorded after the match writes it.
+                        let kind = failure_kind_of(&e).to_string();
 
                         use Error::*;
                         match e {
@@ -1198,9 +1456,30 @@ impl Runtime {
                         ).expect("Can write to prompt"),
                         e => {
                             warn!("Unhandled error: {e}");
-                            return Err(e)
+                            let reason = e.to_string();
+                            trace.push_attempt(
+                                attempts,
+                                attempt_prompt,
+                                run_trace!(),
+                                stages,
+                                LadderEvent::Terminal { reason: reason.clone() },
+                                t_attempt.elapsed(),
+                            );
+                            return Err(EvolveError::new(e, finish!(TraceOutcome::Failed { reason })))
                         },
                     }
+
+                        trace.push_attempt(
+                            attempts,
+                            attempt_prompt,
+                            run_trace!(),
+                            stages,
+                            LadderEvent::SelfHeal {
+                                kind,
+                                diagnostics: prompt.clone(),
+                            },
+                            t_attempt.elapsed(),
+                        );
                     }
                 }
             }
@@ -1350,6 +1629,15 @@ impl Runtime {
             _ => None,
         })
     }
+}
+
+/// The first line of an error's display form.
+///
+/// Reset nudges quote only this: the full diagnostics repeat the rejected
+/// code, which is exactly the echo source a reset is removing.
+fn first_line_of(e: &Error) -> String {
+    let text = e.to_string();
+    text.lines().next().unwrap_or_default().to_string()
 }
 
 /// Internal lookup behind the `<name>_fn` accessors generated by `evolvable!`:
