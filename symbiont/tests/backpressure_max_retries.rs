@@ -50,14 +50,14 @@ async fn retry_budget_is_bounded_and_nudges_do_not_accumulate() {
         .await
         .expect_err("evolution must give up after the retry budget is spent");
 
-    match err {
+    match err.error() {
         Error::MaxRetriesExceeded {
             attempts,
             last_error,
         } => {
-            assert_eq!(attempts, Runtime::MAX_EVOLVE_ATTEMPTS);
+            assert_eq!(*attempts, Runtime::MAX_EVOLVE_ATTEMPTS);
             assert!(
-                matches!(*last_error, Error::NoRustCode),
+                matches!(**last_error, Error::NoRustCode),
                 "last error should be the missing-code-block failure, got: {last_error}"
             );
         }

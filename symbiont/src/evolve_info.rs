@@ -11,7 +11,10 @@ use serde::{
     Serialize,
 };
 
-use crate::revision::Revision;
+use crate::{
+    evolution_trace::EvolutionTrace,
+    revision::Revision,
+};
 
 /// Everything a caller needs from a successful [`crate::Runtime::evolve`]
 /// call.
@@ -19,7 +22,7 @@ use crate::revision::Revision;
 /// The `usage` field is the sum over every LLM request the call made,
 /// including self-healing retries whose output was rejected: those runs
 /// consumed tokens too, so they are part of the call's real cost.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Getters, CopyGetters, Serialize, Deserialize)]
+#[derive(Debug, Clone, Getters, CopyGetters, Serialize, Deserialize)]
 pub struct EvolveInfo {
     /// The revision the new implementation was registered under.
     #[getset(get_copy = "pub")]
@@ -28,11 +31,27 @@ pub struct EvolveInfo {
     /// Token usage of the call's LLM requests.
     #[getset(get = "pub")]
     usage: Usage,
+
+    /// The full trajectory of the lane that produced this revision: every
+    /// prompt and nudge, every response and tool exchange, every recovery
+    /// decision the harness took, and the per-stage timings.
+    #[getset(get = "pub")]
+    trace: EvolutionTrace,
 }
 
 impl EvolveInfo {
     /// Create a new instance.
-    pub(crate) fn new(revision: Revision, usage: Usage) -> Self {
-        Self { revision, usage }
+    pub(crate) fn new(revision: Revision, usage: Usage, trace: EvolutionTrace) -> Self {
+        Self {
+            revision,
+            usage,
+            trace,
+        }
+    }
+
+    /// Take the trajectory, consuming the info.
+    #[must_use]
+    pub fn into_trace(self) -> EvolutionTrace {
+        self.trace
     }
 }

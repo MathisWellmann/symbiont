@@ -52,7 +52,7 @@ async fn fatal_agent_error_propagates_without_retry() {
         .expect_err("a fatal provider error must propagate");
 
     assert!(
-        matches!(err, Error::RigPrompt(_)),
+        matches!(err.error(), Error::RigPrompt(_)),
         "expected the rig error to propagate unchanged, got: {err}"
     );
     assert_eq!(

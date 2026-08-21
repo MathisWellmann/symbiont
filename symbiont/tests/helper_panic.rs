@@ -16,6 +16,7 @@ use rig_core::{
 };
 use symbiont::{
     AgentRun,
+    CompletionCall,
     EvolutionAgent,
     Profile,
     Runtime,
@@ -75,6 +76,7 @@ impl EvolutionAgent for MockAgent {
             output: MOCK_LLM_REPLY.to_string(),
             new_messages: vec![Message::user(prompt), Message::assistant(MOCK_LLM_REPLY)],
             usage: Usage::new(),
+            completion_calls: vec![CompletionCall::new(0, Usage::new())],
         })
     }
 }

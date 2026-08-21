@@ -528,7 +528,7 @@ fn spawn_evolution_worker(
                 // The candidate is compiled and loaded; committing to it is
                 // the only step bound by the feedback-loop contract. Park the
                 // render thread at a frame boundary, swap, resume.
-                let swap = result.and_then(|info| {
+                let swap = result.map_err(symbiont::Error::from).and_then(|info| {
                     let revision = info.revision();
                     let swap_start = Instant::now();
                     gate.drain();

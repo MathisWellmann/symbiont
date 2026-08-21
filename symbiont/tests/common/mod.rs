@@ -25,6 +25,7 @@ use rig_core::{
 };
 use symbiont::{
     AgentRun,
+    CompletionCall,
     EvolutionAgent,
 };
 
@@ -118,6 +119,7 @@ impl EvolutionAgent for ScriptedAgent {
             output: text,
             new_messages,
             usage,
+            completion_calls: vec![CompletionCall::new(0, usage)],
         })
     }
 }
@@ -206,6 +208,7 @@ impl EvolutionAgent for RoutedAgent {
             output: text,
             new_messages,
             usage: Usage::new(),
+            completion_calls: vec![CompletionCall::new(0, Usage::new())],
         })
     }
 }
