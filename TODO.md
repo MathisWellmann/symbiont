@@ -2,7 +2,10 @@
 - Show example of using external dependency in generated dylibs, if configured.
 - Proper eval pipeline to compare model performance across tasks. My own benchmark suite so to say, aka `symbiont-eval`
 - Run Harness for my symbolic regression evaluation comparison, to see if it beats SOTA for ~150 optimization targets.
-- Capture the inference cost in the responses, if available.
+- Capture the inference cost in the responses, if available. Per-request token usage is now
+  exposed: `AgentRun::completion_calls` carries one `CompletionCall` per HTTP request, and
+  `EvolutionTrace` records them per attempt. A monetary cost still needs provider pricing,
+  which rig does not report.
 - Prefix-cache visibility is provider-dependent: `LLM_TOKENS{kind="cached_input"}` comes from
   `usage.prompt_tokens_details.cached_tokens`, which vLLM never populates (verified: identical
   923-token prompt sent twice, field stays `null`) even though its prefix cache is working.
@@ -15,8 +18,11 @@
 - Track the context length of the prompt (system + user) and make it available to query.
   `symbiont_llm_request_body_bytes` now measures the serialized payload of every outbound
   request, which sizes the prompt against the endpoint's context window, but in bytes and
-  only as a metric. Exposing a token count (or the rendered payload itself) to the host
-  would need a tokenizer or a provider round-trip.
+  only as a metric. A token count is now partly answered: each `CompletionCall` carries the
+  input-token count the provider reported for that request. The rendered *request* payload is
+  still unexposed — capturing it needs a task-local sink in `MeteredHttpClient`, plumbed
+  through the gate scope. (Response bodies reach us via `CompletionCall::raw` but are dropped
+  on purpose: they duplicate the transcript. See `docs/evolution-trace-design.md` §6.)
 - Provide a way to call `info`, `debug` and `trace` like logging functions in the code and have them feed into the context in a smart way.
   Maybe its possible to re-use `tracing` here, depending on if its safe to do across dylib boundaries.
   It would need to be its own buffer though.
