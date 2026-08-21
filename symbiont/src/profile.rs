@@ -4,7 +4,7 @@
 /// Use [`Profile::Release`] when benchmarking evolved functions — the
 /// optimizer can make orders-of-magnitude difference for compute-heavy code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub enum Profile {
     /// `cargo build` (unoptimized, fast compilation).
     #[default]
