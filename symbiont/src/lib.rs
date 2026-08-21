@@ -18,6 +18,7 @@ mod dylib_config;
 mod dylib_dependency;
 mod error;
 mod evolution_agent;
+mod evolution_trace;
 mod evolve_failure;
 mod evolve_info;
 mod inference;
@@ -52,9 +53,15 @@ pub use evolution_agent::{
     AgentRun,
     EvolutionAgent,
 };
-// Reachable through `AgentRun::completion_calls`, so hosts need it nameable
-// without depending on `rig-agent` directly.
-pub use rig_agent::agent::CompletionCall;
+pub use evolution_trace::{
+    AttemptTrace,
+    BuildRecord,
+    EvolutionTrace,
+    LadderEvent,
+    RunTrace,
+    StageTimings,
+    TraceOutcome,
+};
 pub use evolve_failure::EvolveFailure;
 pub use evolve_info::EvolveInfo;
 pub use inference::{
@@ -71,8 +78,10 @@ pub use revision::{
     Revision,
     RevisionFn,
 };
+// Reachable through `AgentRun::completion_calls`, so hosts need it nameable
+// without depending on `rig-agent` directly.
+pub use rig_agent::agent::CompletionCall;
 pub use runtime::Runtime;
-pub use system_prompt::system_prompt;
 /// Evolvable return types must implement [`Default`]: when an evolved
 /// implementation panics, the in-dylib `catch_unwind` wrapper substitutes
 /// `Default::default()` as a safe placeholder return value. The bound is
@@ -86,6 +95,7 @@ pub use system_prompt::system_prompt;
 /// }
 /// ```
 pub use symbiont_macros::evolvable;
+pub use system_prompt::system_prompt;
 pub use thinking_level::ThinkingLevel;
 
 /// type alias for the return type of `init_agent`

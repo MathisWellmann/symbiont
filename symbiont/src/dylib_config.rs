@@ -4,6 +4,10 @@ use getset::{
     CopyGetters,
     Getters,
 };
+use serde::{
+    Serialize,
+    Deserialize,
+}
 
 use crate::dylib_dependency::{
     DylibDependency,
@@ -19,8 +23,7 @@ use crate::dylib_dependency::{
 /// [`DylibConfig::host_package`] is the ergonomic path for examples and
 /// single-package applications: it depends on the current package's library
 /// target as the crate alias `host` and prepends `use host::prelude::*;`.
-#[derive(Debug, Clone, Getters, CopyGetters)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Getters, CopyGetters, Serialize, Deserialize)]
 pub struct DylibConfig {
     /// Compilation profile (`debug` or `release`).
     #[getset(get_copy = "pub")]

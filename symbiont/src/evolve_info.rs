@@ -6,6 +6,10 @@ use getset::{
     Getters,
 };
 use rig_core::completion::Usage;
+use serde::{
+    Deserialize,
+    Serialize,
+};
 
 use crate::revision::Revision;
 
@@ -15,8 +19,7 @@ use crate::revision::Revision;
 /// The `usage` field is the sum over every LLM request the call made,
 /// including self-healing retries whose output was rejected: those runs
 /// consumed tokens too, so they are part of the call's real cost.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Getters, CopyGetters)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Getters, CopyGetters, Serialize, Deserialize)]
 pub struct EvolveInfo {
     /// The revision the new implementation was registered under.
     #[getset(get_copy = "pub")]

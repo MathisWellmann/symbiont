@@ -4,6 +4,10 @@ use getset::{
     CopyGetters,
     Getters,
 };
+use serde::{
+    Deserialize,
+    Serialize,
+};
 
 /// A `[patch.<source>]` entry for the generated dylib crate's `Cargo.toml`.
 ///
@@ -13,8 +17,7 @@ use getset::{
 /// into the dylib crate with [`crate::DylibConfig::with_patch`] — otherwise
 /// the dylib compiles the unpatched upstream source and the two sides of the
 /// `dlopen` boundary disagree.
-#[derive(Debug, Clone, PartialEq, Eq, Getters)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Getters, Serialize, Deserialize)]
 pub struct DylibPatch {
     /// The patched source: `"crates-io"` for the default registry, or a git
     /// URL such as `"https://github.com/foo/bar"`.
@@ -47,8 +50,7 @@ impl DylibPatch {
 }
 
 /// A dependency entry for the generated dylib crate's `Cargo.toml`.
-#[derive(Debug, Clone, PartialEq, Eq, Getters, CopyGetters)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Getters, CopyGetters, Serialize, Deserialize)]
 pub struct DylibDependency {
     /// Dependency key in the generated `Cargo.toml`, e.g. `host`.
     #[getset(get = "pub")]

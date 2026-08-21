@@ -1,10 +1,14 @@
+use serde::{
+    Deserialize,
+    Serialize,
+};
+
 /// Compilation profile for the evolvable dylib.
 ///
 /// Controls whether `cargo build` is invoked with or without `--release`.
 /// Use [`Profile::Release`] when benchmarking evolved functions — the
 /// optimizer can make orders-of-magnitude difference for compute-heavy code.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]]
 pub enum Profile {
     /// `cargo build` (unoptimized, fast compilation).
     #[default]

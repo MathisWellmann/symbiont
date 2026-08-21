@@ -17,6 +17,10 @@ use libloading::{
     Library,
     Symbol,
 };
+use serde::{
+    Deserialize,
+    Serialize,
+};
 
 use crate::{
     Error,
@@ -32,8 +36,7 @@ use crate::{
 /// [`crate::Runtime::evolve`] registers the next id. All registered revisions
 /// stay loaded for the lifetime of the process, so any of them can be pointed
 /// at again later.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct Revision(u64);
 
 impl Revision {
