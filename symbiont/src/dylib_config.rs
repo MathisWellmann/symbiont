@@ -20,6 +20,7 @@ use crate::dylib_dependency::{
 /// single-package applications: it depends on the current package's library
 /// target as the crate alias `host` and prepends `use host::prelude::*;`.
 #[derive(Debug, Clone, Getters, CopyGetters)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct DylibConfig {
     /// Compilation profile (`debug` or `release`).
     #[getset(get_copy = "pub")]

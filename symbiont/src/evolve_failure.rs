@@ -27,6 +27,7 @@ use crate::{
 /// prompt variant struggled with — that per-variant view is the point of
 /// running a batch in the first place.
 #[derive(Debug, Clone, Getters, CopyGetters)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct EvolveFailure {
     /// 1-based attempt index within a single `evolve` call, or within a
     /// single lane of an `evolve_batch` call.
