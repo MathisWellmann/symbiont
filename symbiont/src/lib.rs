@@ -83,7 +83,19 @@ pub use revision::{
 // Reachable through `AgentRun::completion_calls`, so hosts need it nameable
 // without depending on `rig-agent` directly.
 pub use rig_agent::agent::CompletionCall;
+// Reachable through `EvolveInfo::usage` and `EvolutionTrace::usage`, so hosts
+// tallying token spend need it nameable without depending on `rig-core`
+// directly.
+pub use rig_core::completion::Usage;
+// Reachable through `AgentRun::new_messages` and `EvolutionTrace::history`, so
+// hosts inspecting the agent transcript need it nameable without depending
+// on `rig-core` directly.
+pub use rig_core::message::Message;
 pub use runtime::Runtime;
+// Reachable through `ThinkingLevel::to_additional_params`, so hosts merging
+// provider parameters need it nameable without depending on `serde_json`
+// directly.
+pub use serde_json::Value;
 /// Evolvable return types must implement [`Default`]: when an evolved
 /// implementation panics, the in-dylib `catch_unwind` wrapper substitutes
 /// `Default::default()` as a safe placeholder return value. The bound is
