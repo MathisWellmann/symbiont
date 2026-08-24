@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
-//! End-to-end coverage for metrics emitted by a successful evolution.
+//! End-to-end coverage for metrics emitted by a successful evolution and by
+//! a failed inference run.
 //!
 //! One test per binary: [`symbiont::Runtime`] is a process-wide singleton.
 #![expect(
@@ -20,6 +21,8 @@ use metrics_util::{
         DebuggingRecorder,
     },
 };
+use rig_agent::completion::PromptError;
+use rig_core::completion::CompletionError;
 use symbiont::{
     Profile,
     Runtime,
@@ -44,6 +47,35 @@ fn find<'a>(snapshot: &'a [SnapshotEntry], name: &str) -> Vec<&'a SnapshotEntry>
 
 fn has_label(key: &CompositeKey, k: &str, v: &str) -> bool {
     key.key().labels().any(|l| l.key() == k && l.value() == v)
+}
+
+/// The fatal provider failure must count once as a failed inference run and
+/// once under its `reason`.
+fn assert_failed_run_counted(snapshot: &[SnapshotEntry]) {
+    let failed_runs: u64 = find(snapshot, observability::LLM_RUNS)
+        .iter()
+        .filter(|(key, _, _, _)| has_label(key, "outcome", "error"))
+        .filter_map(|(_, _, _, v)| match v {
+            DebugValue::Counter(n) => Some(*n),
+            _ => None,
+        })
+        .sum();
+    assert_eq!(failed_runs, 1);
+
+    let inference_errors: u64 = find(snapshot, observability::INFERENCE_ERRORS)
+        .iter()
+        .filter_map(|(_, _, _, v)| match v {
+            DebugValue::Counter(n) => Some(*n),
+            _ => None,
+        })
+        .sum();
+    assert_eq!(inference_errors, 1);
+    assert!(
+        find(snapshot, observability::INFERENCE_ERRORS)
+            .iter()
+            .any(|(key, _, _, _)| has_label(key, "reason", "http")),
+        "the provider rejection must carry its reason label",
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -151,4 +183,19 @@ async fn evolution_emits_metrics() {
             )
         );
     }
+
+    // A fatal provider failure must not evolve, but must still count. The
+    // rejection arrives in the shape a provider with a request-id contract
+    // preserves it in.
+    let failing = ScriptedAgent::new([Turn::Fail(PromptError::CompletionError(
+        CompletionError::from_http_response_with_request_id(
+            http::StatusCode::UNAUTHORIZED,
+            r#"{"error":{"message":"invalid api key"}}"#,
+            None,
+        ),
+    ))]);
+    rt.evolve(&failing, BASE_PROMPT)
+        .await
+        .expect_err("a provider failure must not evolve");
+    assert_failed_run_counted(&snapshotter.snapshot().into_vec());
 }

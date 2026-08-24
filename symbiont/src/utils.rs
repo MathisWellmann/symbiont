@@ -211,21 +211,17 @@ pub(crate) fn find_so(crate_dir: &Path, profile: Profile) -> Result<PathBuf> {
 /// discarding the accumulated retry history and restarting from the base
 /// prompt.
 pub(crate) fn is_context_size_error(err: &Error) -> bool {
-    let Some(http_err) = http_error_of(err) else {
+    let (Some(status), Some(body)) = provider_response_of(err) else {
         return false;
     };
 
-    let rig_core::http_client::Error::InvalidStatusCodeWithMessage(status, msg) = http_err else {
-        return false;
-    };
-
-    let markers: &[&str] = match status.as_u16() {
+    let markers: &[&str] = match status {
         400 => &CONTEXT_SIZE_MARKERS,
         500 => &LLAMA_CPP_500_MARKERS,
         _ => return false,
     };
-    let msg = msg.to_ascii_lowercase();
-    markers.iter().any(|marker| msg.contains(marker))
+    let body = body.to_ascii_lowercase();
+    markers.iter().any(|marker| body.contains(marker))
 }
 
 /// Lower-case substrings that identify a context-window overflow in the body
@@ -271,39 +267,76 @@ const LLAMA_CPP_500_MARKERS: [&str; 3] = [
     "context shift is disabled",
 ];
 
-/// The provider HTTP error inside `err`, if that is what it wraps.
-fn http_error_of(err: &Error) -> Option<&rig_core::http_client::Error> {
+/// The status and the raw body of the provider response inside `err`, when
+/// `err` preserves one.
+///
+/// rig keeps a failed provider response in one of three shapes, and which one
+/// a call gets depends on the provider and on the transport, not on the
+/// failure: a plain `HttpError`, an `HttpError` that also kept the response
+/// headers, or a `ProviderResponse` for the providers with a request-id
+/// contract. All three mean the same thing here, so classification reads them
+/// through the accessors of rig instead of matching one variant.
+///
+/// The status can be a `2xx`: some providers send an error envelope with a
+/// success status. A caller must not read failure out of the status alone.
+fn provider_response_of(err: &Error) -> (Option<u16>, Option<&str>) {
     match err {
-        Error::RigPrompt(rig_agent::completion::PromptError::CompletionError(
-            rig_core::completion::CompletionError::HttpError(http_err),
-        )) => Some(http_err),
-        Error::RigHttp(http_err) => Some(http_err),
-        _ => None,
+        Error::RigPrompt(rig_agent::completion::PromptError::CompletionError(e)) => (
+            e.provider_response_status().map(|status| status.as_u16()),
+            e.provider_response_body(),
+        ),
+        Error::RigHttp(e) => {
+            use rig_core::http_client::Error::*;
+            match e {
+                InvalidStatusCode(status) => (Some(status.as_u16()), None),
+                InvalidStatusCodeWithMessage(status, body) => {
+                    (Some(status.as_u16()), Some(body.as_str()))
+                }
+                InvalidStatusCodeWithDetails { status, body, .. } => {
+                    (Some(status.as_u16()), Some(body.as_str()))
+                }
+                _ => (None, None),
+            }
+        }
+        _ => (None, None),
     }
+}
+
+/// The status of the provider response inside `err`, when `err` preserves
+/// one. A `Some` result means the endpoint answered and the answer is the
+/// failure.
+pub(crate) fn provider_status_of(err: &Error) -> Option<u16> {
+    provider_response_of(err).0
 }
 
 /// Return `true` for [`Error`] values that represent transient failures of
 /// the LLM provider (rate-limits, server overload, gateway errors) and are
 /// safe to retry without modifying the prompt.
 pub(crate) fn is_transient_http_error(err: &Error) -> bool {
-    let Some(http_err) = http_error_of(err) else {
+    // Connection-level errors (timeouts, resets, DNS) carry no status and are
+    // transient by nature.
+    if is_connection_error(err) {
+        return true;
+    }
+    let Some(status) = provider_status_of(err) else {
         return false;
     };
 
-    use rig_core::http_client::Error::*;
-    let status = match http_err {
-        InvalidStatusCode(s) => s,
-        InvalidStatusCodeWithMessage(s, _) => s,
-        // Connection-level errors (timeouts, resets, DNS, etc.) are also
-        // transient by nature.
-        Instance(_) => return true,
-        _ => return false,
-    };
-
-    let code = status.as_u16();
     // 408 Request Timeout, 425 Too Early, 429 Too Many Requests,
     // 5xx Server errors (incl. 529 Site Overloaded used by Anthropic).
-    matches!(code, 408 | 425 | 429 | 500..=599)
+    matches!(status, 408 | 425 | 429 | 500..=599)
+}
+
+/// Return `true` when the request never got an answer from the endpoint.
+fn is_connection_error(err: &Error) -> bool {
+    let http_err = match err {
+        Error::RigPrompt(rig_agent::completion::PromptError::CompletionError(
+            rig_core::completion::CompletionError::HttpError(e),
+        )) => e,
+        Error::RigHttp(e) => e,
+        _ => return false,
+    };
+    matches!(http_err, rig_core::http_client::Error::Instance(_))
 }
 
 #[cfg(test)]
@@ -490,5 +523,54 @@ mod tests {
     #[test]
     fn non_http_errors_are_not_context_size_errors() {
         assert!(!is_context_size_error(&Error::NoRustCode));
+    }
+
+    /// The three shapes rig preserves a failed provider response in. Which
+    /// one a call gets depends on the provider and on the transport: a
+    /// provider with a request-id contract reports `ProviderResponse`, and a
+    /// transport that kept the response headers reports the details variant.
+    fn response_shapes(status: http::StatusCode, body: &str) -> [Error; 3] {
+        use rig_core::{
+            completion::CompletionError,
+            http_client::Error as HttpError,
+        };
+        [
+            http_status(status, body),
+            Error::RigHttp(HttpError::InvalidStatusCodeWithDetails {
+                status,
+                body: body.to_string(),
+                headers: Box::new(http::HeaderMap::new()),
+            }),
+            Error::RigPrompt(rig_agent::completion::PromptError::CompletionError(
+                CompletionError::from_http_response_with_request_id(status, body, None),
+            )),
+        ]
+    }
+
+    #[test]
+    fn every_response_shape_is_classified_alike() {
+        for err in response_shapes(
+            http::StatusCode::BAD_REQUEST,
+            "This model's maximum context length is 65536 tokens.",
+        ) {
+            assert!(is_context_size_error(&err), "overflow not detected: {err}");
+        }
+        for err in response_shapes(http::StatusCode::TOO_MANY_REQUESTS, "rate limited") {
+            assert!(is_transient_http_error(&err), "not transient: {err}");
+            assert!(!is_context_size_error(&err));
+        }
+        for err in response_shapes(http::StatusCode::UNAUTHORIZED, "invalid api key") {
+            assert!(!is_transient_http_error(&err), "wrongly transient: {err}");
+            assert!(!is_context_size_error(&err));
+        }
+    }
+
+    #[test]
+    fn connection_errors_are_transient() {
+        let err = Error::RigHttp(rig_core::http_client::Error::Instance(Box::new(
+            std::io::Error::from(std::io::ErrorKind::ConnectionReset),
+        )));
+        assert!(is_transient_http_error(&err));
+        assert!(!is_context_size_error(&err));
     }
 }

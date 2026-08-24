@@ -41,6 +41,7 @@
 //! | [`BUILD_SLOT_WAIT`]         | histogram | —                      |
 //! | [`PIPELINE_STAGE_DURATION`] | histogram | `stage`                |
 //! | [`LLM_RUNS`]                | counter   | `outcome`              |
+//! | [`INFERENCE_ERRORS`]        | counter   | `reason`               |
 //! | [`LLM_TOKENS`]              | counter   | `kind`                 |
 //! | [`LLM_RUN_INPUT_TOKENS`]    | histogram | —                      |
 //! | [`LLM_RUN_OUTPUT_TOKENS`]   | histogram | —                      |
@@ -111,6 +112,12 @@ pub const PIPELINE_STAGE_DURATION: &str = "symbiont_pipeline_stage_duration_seco
 /// Completed agentic runs, by `outcome` (`ok`, `error`). Errors here are
 /// provider or agent-loop failures, not code-validation failures.
 pub const LLM_RUNS: &str = "symbiont_llm_runs_total";
+/// Failed inference requests, by `reason` (see [`inference_error_reason`]).
+/// Each agent run that failed to reach the pipeline increments this counter
+/// once, and [`LLM_RUNS`] with `outcome="error"` once. The `reason` label
+/// splits that same event into a closed set of categories. Divide the sum of
+/// one category by the [`LLM_RUNS`] total to get its failure ratio.
+pub const INFERENCE_ERRORS: &str = "symbiont_inference_errors_total";
 /// Cumulative tokens consumed, by `kind` (`input`, `output`, `cached_input`).
 /// This is the cost metric of the harness.
 pub const LLM_TOKENS: &str = "symbiont_llm_tokens_total";
@@ -201,6 +208,20 @@ pub(crate) mod failure_kind {
     pub(crate) const OTHER: &str = "other";
 }
 
+/// Label values for the `reason` label of [`INFERENCE_ERRORS`]. Ordered as
+/// the self-healing loop treats them: the two recoverable provider families
+/// first, then the rest.
+pub(crate) mod inference_error {
+    pub(crate) const CONTEXT_OVERFLOW: &str = "context_overflow";
+    pub(crate) const TRANSIENT: &str = "transient";
+    pub(crate) const HTTP: &str = "http";
+    pub(crate) const MAX_TURNS: &str = "max_turns";
+    pub(crate) const CANCELLED: &str = "cancelled";
+    pub(crate) const TOOL: &str = "tool";
+    pub(crate) const PARSE: &str = "parse";
+    pub(crate) const OTHER: &str = "other";
+}
+
 /// Label values for the `stage` label of [`PIPELINE_STAGE_DURATION`].
 pub(crate) mod stage {
     pub(crate) const LLM: &str = "llm";
@@ -274,6 +295,11 @@ pub fn describe_metrics() {
         "Duration of evolution pipeline stages"
     );
     describe_counter!(LLM_RUNS, Unit::Count, "Completed agentic runs by outcome");
+    describe_counter!(
+        INFERENCE_ERRORS,
+        Unit::Count,
+        "Failed inference requests by reason"
+    );
     describe_counter!(LLM_TOKENS, Unit::Count, "Tokens consumed by the LLM");
     describe_histogram!(
         LLM_RUN_INPUT_TOKENS,
@@ -370,6 +396,54 @@ pub(crate) fn failure_kind_of(e: &crate::Error) -> &'static str {
         DylibLoad(_) => failure_kind::DYLIB_LOAD,
         Io(_) | WriteLib(_) => failure_kind::IO,
         _ => failure_kind::OTHER,
+    }
+}
+
+/// Map the [`crate::Error`] of one failed agent run to its `reason` label
+/// value for [`INFERENCE_ERRORS`].
+///
+/// The categories are the closed set the self-healing loop itself acts on:
+/// context overflow and transient HTTP errors are the two families it recovers
+/// from, and each remaining family gets one bucket. Classification reuses the
+/// predicates of the loop, so `transient` marks the errors the loop retries
+/// with backoff, and `context_overflow` marks the errors that make it discard
+/// the history. The label says how the loop reads one failed run. It does not
+/// say that the run recovered: a lane that spends its retry budget counts one
+/// `transient` per attempt.
+pub(crate) fn inference_error_reason(e: &crate::Error) -> &'static str {
+    use rig_agent::completion::PromptError;
+
+    use crate::{
+        Error::*,
+        utils::{
+            is_context_size_error,
+            is_transient_http_error,
+            provider_status_of,
+        },
+    };
+    match e {
+        // The provider answered every request, but the agent loop did not
+        // converge within its budget.
+        RigPrompt(PromptError::MaxTurnsError { .. }) => inference_error::MAX_TURNS,
+        RigPrompt(PromptError::PromptCancelled { .. }) => inference_error::CANCELLED,
+        // The model asked for a tool that this turn does not offer.
+        RigPrompt(PromptError::UnknownToolCall { .. }) => inference_error::TOOL,
+        // Provider-side, in the order the loop treats them. Context overflow
+        // first: its 500 variant is also transient, and matching transient
+        // first would hide overflows under `transient`.
+        _ if is_context_size_error(e) => inference_error::CONTEXT_OVERFLOW,
+        _ if is_transient_http_error(e) => inference_error::TRANSIENT,
+        // The endpoint answered, but the payload was unusable.
+        RigPrompt(PromptError::CompletionError(
+            rig_core::completion::CompletionError::JsonError(_)
+            | rig_core::completion::CompletionError::ResponseError(_),
+        )) => inference_error::PARSE,
+        // Any other rejection the endpoint answered with a status
+        // (400/401/403/404/413/422, ...). Errors without a status never
+        // reached the endpoint or never came from it, so they stay in the
+        // catch-all.
+        _ if provider_status_of(e).is_some() => inference_error::HTTP,
+        _ => inference_error::OTHER,
     }
 }
 
@@ -559,6 +633,137 @@ mod tests {
                 key.kind() == kind && key.key().name() == name && *u == Some(unit) && desc.is_some()
             });
             assert!(found, "missing description for {name}");
+        }
+    }
+
+    #[test]
+    fn inference_error_reason_classification() {
+        use http::StatusCode;
+        use rig_agent::completion::PromptError;
+        use rig_core::{
+            completion::{
+                CompletionError,
+                Message,
+            },
+            http_client::Error as HttpError,
+        };
+
+        use crate::Error::*;
+
+        let http_error = |status: u16| {
+            RigPrompt(PromptError::CompletionError(CompletionError::HttpError(
+                HttpError::InvalidStatusCode(StatusCode::from_u16(status).expect("valid status")),
+            )))
+        };
+
+        // Transient provider statuses the retry ladder backs off on.
+        for status in [408u16, 425, 429, 503] {
+            assert_eq!(
+                inference_error_reason(&http_error(status)),
+                inference_error::TRANSIENT,
+                "status {status}",
+            );
+        }
+        // Agent-loop failures: the provider answered every request.
+        assert_eq!(
+            inference_error_reason(&RigPrompt(PromptError::MaxTurnsError {
+                max_turns: 0,
+                chat_history: Box::new(Vec::new()),
+                prompt: Box::new(Message::system("")),
+            })),
+            inference_error::MAX_TURNS,
+        );
+        assert_eq!(
+            inference_error_reason(&RigPrompt(PromptError::PromptCancelled {
+                chat_history: Vec::new(),
+                reason: "test".to_owned(),
+            })),
+            inference_error::CANCELLED,
+        );
+        assert_eq!(
+            inference_error_reason(&RigPrompt(PromptError::UnknownToolCall {
+                tool_name: "grep".to_owned(),
+                available_tools: Vec::new(),
+                allowed_tools: Vec::new(),
+                chat_history: Box::new(Vec::new()),
+            })),
+            inference_error::TOOL,
+        );
+        // Non-transient provider rejections stay plain HTTP.
+        for status in [400u16, 401, 404, 413, 422] {
+            assert_eq!(
+                inference_error_reason(&http_error(status)),
+                inference_error::HTTP,
+                "status {status}",
+            );
+        }
+        // A malformed response body is a parse failure, not an HTTP one.
+        assert_eq!(
+            inference_error_reason(&RigPrompt(PromptError::CompletionError(
+                CompletionError::ResponseError("truncated".to_owned()),
+            ))),
+            inference_error::PARSE,
+        );
+        // A rig-authored diagnostic preserves no provider response, so it is
+        // not an HTTP rejection.
+        assert_eq!(
+            inference_error_reason(&RigPrompt(PromptError::CompletionError(
+                CompletionError::ProviderError("only one tool can be forced".to_owned()),
+            ))),
+            inference_error::OTHER,
+        );
+        // Non-inference errors land in the catch-all.
+        assert_eq!(inference_error_reason(&NoRustCode), inference_error::OTHER);
+    }
+
+    /// rig preserves one failed provider response in three shapes. Which one
+    /// a call gets depends on the provider and on the transport, so the three
+    /// must carry the same `reason`.
+    #[test]
+    fn inference_error_reason_reads_every_response_shape() {
+        use http::StatusCode;
+        use rig_agent::completion::PromptError;
+        use rig_core::{
+            completion::CompletionError,
+            http_client::Error as HttpError,
+        };
+
+        use crate::Error::*;
+
+        let shapes = |status: u16, body: &str| {
+            let status = StatusCode::from_u16(status).expect("valid status");
+            [
+                RigPrompt(PromptError::CompletionError(CompletionError::HttpError(
+                    HttpError::InvalidStatusCodeWithMessage(status, body.to_owned()),
+                ))),
+                RigPrompt(PromptError::CompletionError(CompletionError::HttpError(
+                    HttpError::InvalidStatusCodeWithDetails {
+                        status,
+                        body: body.to_owned(),
+                        headers: Box::new(http::HeaderMap::new()),
+                    },
+                ))),
+                RigPrompt(PromptError::CompletionError(
+                    CompletionError::from_http_response_with_request_id(status, body, None),
+                )),
+            ]
+        };
+
+        for (status, body, expected) in [
+            (429u16, "rate limited", inference_error::TRANSIENT),
+            (400, "prompt is too long", inference_error::CONTEXT_OVERFLOW),
+            // 500 is a transient status, but the llama.cpp overflow wording
+            // outranks it: resending cannot help.
+            (
+                500,
+                "context size has been exceeded",
+                inference_error::CONTEXT_OVERFLOW,
+            ),
+            (401, "invalid api key", inference_error::HTTP),
+        ] {
+            for e in shapes(status, body) {
+                assert_eq!(inference_error_reason(&e), expected, "status {status}");
+            }
         }
     }
 
