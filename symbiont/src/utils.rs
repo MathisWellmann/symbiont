@@ -219,13 +219,13 @@ pub(crate) fn is_context_size_error(err: &Error) -> bool {
         return false;
     };
 
-    if status.as_u16() != 400 {
-        return false;
-    }
+    let markers: &[&str] = match status.as_u16() {
+        400 => &CONTEXT_SIZE_MARKERS,
+        500 => &LLAMA_CPP_500_MARKERS,
+        _ => return false,
+    };
     let msg = msg.to_ascii_lowercase();
-    CONTEXT_SIZE_MARKERS
-        .iter()
-        .any(|marker| msg.contains(marker))
+    markers.iter().any(|marker| msg.contains(marker))
 }
 
 /// Lower-case substrings that identify a context-window overflow in the body
@@ -233,7 +233,8 @@ pub(crate) fn is_context_size_error(err: &Error) -> bool {
 ///
 /// Every provider phrases the same condition differently, and none of them
 /// expose a machine-readable code that all of them agree on, so matching the
-/// body is the only portable option.
+/// body is the only portable option. (llama.cpp's `500` overflow variants
+/// live in [`LLAMA_CPP_500_MARKERS`].)
 const CONTEXT_SIZE_MARKERS: [&str; 5] = [
     // llama.cpp: `{"error":{"code":400,"message":"request (258963 tokens)
     // exceeds the available context size (256000 tokens), try increasing
@@ -252,6 +253,22 @@ const CONTEXT_SIZE_MARKERS: [&str; 5] = [
     // vLLM, engine-side validation: "The decoder prompt (length 70000) is
     // longer than the maximum model length of 65536."
     "longer than the maximum model length",
+];
+
+/// Lower-case substrings that identify a context-window overflow reported by
+/// llama.cpp as a `500 Internal Server Error`.
+const LLAMA_CPP_500_MARKERS: [&str; 3] = [
+    // The KV cache cannot fit even a single-token decode batch:
+    // `err = "Context size has been exceeded."` in `update_slots()`. It is
+    // sent to *every* processing slot and then re-broadcast by
+    // `abort_all_slots("decode() failed: " + err)`, hence the substring
+    // match: both bodies must be recognized.
+    "context size has been exceeded",
+    // The prompt exceeds the physical batch size.
+    "increase the physical batch size",
+    // Generation reached `n_ctx` while `--no-context-shift` is in effect:
+    // "context shift is disabled".
+    "context shift is disabled",
 ];
 
 /// The provider HTTP error inside `err`, if that is what it wraps.
@@ -365,12 +382,17 @@ mod tests {
         assert!(!is_no_mangle(&code));
     }
 
-    /// The [`Error`] a provider surfaces for a `400 Bad Request` with `body`.
-    fn http_400(body: &str) -> Error {
+    /// The [`Error`] a provider surfaces for `status` with `body`.
+    fn http_status(status: http::StatusCode, body: &str) -> Error {
         Error::RigHttp(rig_core::http_client::Error::InvalidStatusCodeWithMessage(
-            http::StatusCode::BAD_REQUEST,
+            status,
             body.to_string(),
         ))
+    }
+
+    /// The [`Error`] a provider surfaces for a `400 Bad Request` with `body`.
+    fn http_400(body: &str) -> Error {
+        http_status(http::StatusCode::BAD_REQUEST, body)
     }
 
     #[test]
@@ -432,13 +454,35 @@ mod tests {
     }
 
     #[test]
-    fn context_size_wording_outside_a_400_is_ignored() {
-        // A 5xx carrying the same words is a server failure, not an oversized
+    fn llama_cpp_500_context_overflow_is_detected() {
+        for body in [
+            // KV cache full, single-token batch.
+            r#"{"error":{"code":500,"message":"Context size has been exceeded.","type":"server_error"}}"#,
+            // The same condition after `abort_all_slots`.
+            r#"{"error":{"code":500,"message":"decode() failed: Context size has been exceeded.","type":"server_error"}}"#,
+            // Prompt larger than the physical batch.
+            r#"{"error":{"code":500,"message":"input (70000 tokens) is too large to process. increase the physical batch size (current batch size: 2048)","type":"server_error"}}"#,
+            // Generation hit `n_ctx` with context shifting turned off.
+            r#"{"error":{"code":500,"message":"context shift is disabled","type":"server_error"}}"#,
+        ] {
+            let err = http_status(http::StatusCode::INTERNAL_SERVER_ERROR, body);
+            assert!(is_context_size_error(&err), "overflow not detected: {body}");
+            // Every 5xx is transient too, so the two predicates overlap here:
+            // `Runtime::evolve` must keep testing this one first, otherwise
+            // the request is resent unchanged until the retry budget is gone.
+            assert!(is_transient_http_error(&err), "not transient: {body}");
+        }
+    }
+
+    #[test]
+    fn other_providers_context_wording_in_a_5xx_is_ignored() {
+        // Only llama.cpp reports an overflow as a 5xx. A 5xx carrying another
+        // provider's overflow wording is a server failure, not an oversized
         // prompt: it stays retryable without shrinking the conversation.
-        let err = Error::RigHttp(rig_core::http_client::Error::InvalidStatusCodeWithMessage(
+        let err = http_status(
             http::StatusCode::INTERNAL_SERVER_ERROR,
-            "This model's maximum context length is 65536 tokens".to_string(),
-        ));
+            "This model's maximum context length is 65536 tokens",
+        );
         assert!(!is_context_size_error(&err));
         assert!(is_transient_http_error(&err));
     }
