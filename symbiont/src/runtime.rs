@@ -91,6 +91,7 @@ use crate::{
         EVOLVE_DURATION,
         EVOLVE_FAILURES,
         EVOLVE_REPEAT_RESETS,
+        INFERENCE_ERRORS,
         LLM_RETRY_BACKOFF,
         LLM_RUN_INPUT_TOKENS,
         LLM_RUN_MESSAGES,
@@ -103,6 +104,7 @@ use crate::{
         REVISION_ACTIVE,
         REVISION_DEDUP_HITS,
         failure_kind_of,
+        inference_error_reason,
         stage,
     },
     parser::parse_rust_code,
@@ -391,9 +393,15 @@ impl Runtime {
         let run = match agent.run(prompt, visible).await {
             Ok(run) => run,
             Err(e) => {
+                let err = Error::from(e);
                 counter!(LLM_RUNS, "outcome" => "error").increment(1);
+                counter!(
+                    INFERENCE_ERRORS,
+                    "reason" => inference_error_reason(&err),
+                )
+                .increment(1);
                 stages.set_llm(Some(t0.elapsed()));
-                return Err(e.into());
+                return Err(err);
             }
         };
         // Counted even if a later step rejects the result: a rejected
