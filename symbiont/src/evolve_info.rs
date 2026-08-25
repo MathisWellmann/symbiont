@@ -16,6 +16,29 @@ use crate::{
     revision::Revision,
 };
 
+/// A dedicated lane with an independent retry ladder allows concurrent code evolution.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Eq,
+    PartialEq,
+    PartialOrd,
+    Ord,
+    Serialize,
+    Deserialize,
+    derive_more::Display,
+    derive_more::From,
+)]
+pub struct Lane(u32);
+
+impl Lane {
+    /// Get the inner value.
+    pub fn get(&self) -> u32 {
+        self.0
+    }
+}
+
 /// Everything a caller needs from a successful [`crate::Runtime::evolve`]
 /// call.
 ///
@@ -53,5 +76,11 @@ impl EvolveInfo {
     #[must_use]
     pub fn into_trace(self) -> EvolutionTrace {
         self.trace
+    }
+
+    /// The lane it evolved in.
+    #[inline(always)]
+    pub fn lane(&self) -> Lane {
+        self.trace.lane()
     }
 }

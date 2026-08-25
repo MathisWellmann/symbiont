@@ -66,6 +66,7 @@ use crate::{
     EvolveInfo,
     FullSource,
     LadderEvent,
+    Lane,
     Profile,
     RunTrace,
     StageTimings,
@@ -785,7 +786,8 @@ impl Runtime {
                 .map_err(|_| Error::MutexPoison)?
                 .clear();
 
-            self.evolve_lane(agent, base_prompt, 0, Publish::Yes).await
+            self.evolve_lane(agent, base_prompt, Lane::from(0), Publish::Yes)
+                .await
         }
     }
 
@@ -994,7 +996,8 @@ impl Runtime {
         // Constructing a lane future does no work, so building them all up
         // front is free — and it pins the lifetimes.
         let lanes = Vec::from_iter(prompts.iter().enumerate().map(|(lane, prompt)| {
-            let evolve = self.evolve_lane(agent, prompt.as_ref(), lane, Publish::No);
+            let evolve =
+                self.evolve_lane(agent, prompt.as_ref(), Lane::from(lane as u32), Publish::No);
             async move {
                 let result = evolve.await;
                 let outcome = if result.is_ok() { "ok" } else { "error" };
@@ -1058,7 +1061,7 @@ impl Runtime {
         &self,
         agent: &AgentT,
         base_prompt: &str,
-        lane: usize,
+        lane: Lane,
         publish: Publish,
     ) -> impl Future<Output = std::result::Result<EvolveInfo, EvolveError>> + Send
     where

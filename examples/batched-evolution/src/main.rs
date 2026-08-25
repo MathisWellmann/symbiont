@@ -43,6 +43,7 @@ use std::time::{
 
 use symbiont::{
     DocMode,
+    Lane,
     Revision,
     Runtime,
 };
@@ -342,7 +343,7 @@ async fn main() -> symbiont::Result<()> {
             let kinds = Vec::from_iter(
                 failures
                     .iter()
-                    .filter(|f| f.lane() == lane)
+                    .filter(|f| f.lane() == Lane::from(lane as u32))
                     .map(symbiont::EvolveFailure::kind),
             );
             if !kinds.is_empty() {

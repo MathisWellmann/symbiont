@@ -45,7 +45,10 @@ use serde::{
 };
 use typed_builder::TypedBuilder;
 
-use crate::revision::Revision;
+use crate::{
+    Lane,
+    revision::Revision,
+};
 
 /// The full agent trajectory of one lane (or of a single-prompt
 /// [`crate::Runtime::evolve`]).
@@ -53,7 +56,7 @@ use crate::revision::Revision;
 pub struct EvolutionTrace {
     /// Lane index. It is `0` for single-prompt [`crate::Runtime::evolve`].
     #[getset(get_copy = "pub")]
-    lane: usize,
+    lane: Lane,
 
     /// The prompt the lane started with, before any corrective nudge.
     #[getset(get = "pub")]
@@ -286,7 +289,7 @@ pub enum TraceOutcome {
 
 impl EvolutionTrace {
     /// Start a trace for `lane`, which begins from `base_prompt`.
-    pub(crate) fn new(lane: usize, base_prompt: String) -> Self {
+    pub(crate) fn new(lane: Lane, base_prompt: String) -> Self {
         Self {
             lane,
             base_prompt,
@@ -308,7 +311,7 @@ impl EvolutionTrace {
             outcome: TraceOutcome::Failed {
                 reason: "failed before the lane started".to_string(),
             },
-            ..Self::new(0, String::new())
+            ..Self::new(Lane::from(0), String::new())
         }
     }
 
@@ -548,7 +551,7 @@ mod tests {
 
     fn trace_with(attempts: Vec<AttemptTrace>, outcome: TraceOutcome) -> EvolutionTrace {
         EvolutionTrace {
-            lane: 0,
+            lane: Lane::from(0),
             base_prompt: "write a sort".to_string(),
             history: Vec::new(),
             attempts,
@@ -614,7 +617,7 @@ mod tests {
     /// `attempt` counter repeats across a transient retry.
     #[test]
     fn seq_is_dense_while_attempt_may_repeat() {
-        let mut trace = EvolutionTrace::new(2, "base".to_string());
+        let mut trace = EvolutionTrace::new(Lane::from(2), "base".to_string());
         for attempt_number in [1, 1, 2] {
             trace.push_attempt(
                 attempt_number,

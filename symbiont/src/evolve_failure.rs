@@ -11,6 +11,7 @@ use serde::{
 };
 
 use crate::{
+    Lane,
     error::Error,
     observability::failure_kind_of,
 };
@@ -40,7 +41,7 @@ pub struct EvolveFailure {
     /// belongs to. Always `0` for the single-prompt
     /// [`crate::Runtime::evolve`].
     #[getset(get_copy = "pub")]
-    lane: usize,
+    lane: Lane,
     /// Failure kind label; the same values as the `kind` label of
     /// [`crate::observability::EVOLVE_FAILURES`]: one of `no_rust_code`,
     /// `parse`, `max_turns`, `signature`, `unsafe`, `forbidden` or
@@ -92,7 +93,7 @@ impl EvolveFailure {
         };
         Some(Self {
             attempt,
-            lane: 0,
+            lane: Lane::from(0),
             kind: failure_kind_of(error),
             generated_code,
             diagnostics,
@@ -101,7 +102,7 @@ impl EvolveFailure {
 
     /// Attribute this record to batch lane `lane`.
     #[must_use]
-    pub fn with_lane(mut self, lane: usize) -> Self {
+    pub fn with_lane(mut self, lane: Lane) -> Self {
         self.lane = lane;
         self
     }
@@ -191,10 +192,14 @@ mod tests {
     fn records_default_to_lane_zero_and_can_be_reattributed() {
         let failure = EvolveFailure::from_error(&Error::NoRustCode, 1)
             .expect("missing code blocks feed backpressure");
-        assert_eq!(failure.lane(), 0, "the single-prompt path is lane 0");
+        assert_eq!(
+            failure.lane(),
+            Lane::from(0),
+            "the single-prompt path is lane 0"
+        );
 
-        let relaned = failure.with_lane(5);
-        assert_eq!(relaned.lane(), 5);
+        let relaned = failure.with_lane(Lane::from(5));
+        assert_eq!(relaned.lane(), Lane::from(5));
         assert_eq!(relaned.attempt(), 1, "re-attribution preserves the attempt");
     }
 

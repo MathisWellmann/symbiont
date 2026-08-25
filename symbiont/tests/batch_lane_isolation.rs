@@ -17,6 +17,7 @@ use common::{
 };
 use symbiont::{
     Error,
+    Lane,
     Profile,
     Runtime,
 };
@@ -108,7 +109,7 @@ async fn a_failing_lane_does_not_disturb_its_siblings() {
         "one record per failed attempt of the doomed lane"
     );
     assert!(
-        failures.iter().all(|f| f.lane() == 1),
+        failures.iter().all(|f| f.lane() == Lane::from(1)),
         "healthy lanes must not contribute failure records, got lanes: {:?}",
         Vec::from_iter(failures.iter().map(symbiont::EvolveFailure::lane))
     );
