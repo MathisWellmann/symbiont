@@ -13,7 +13,10 @@
 //! experimenting before it commits to an implementation.
 
 use rig_core::tool::PortableTool;
-use symbiont::Runtime;
+use symbiont::{
+    DocMode,
+    Runtime,
+};
 use tracing::{
     info,
     warn,
@@ -99,7 +102,7 @@ async fn main() -> symbiont::Result<()> {
     // `default_max_turns` must be >= 1, otherwise rig aborts the run with
     // `MaxTurnsError` as soon as the model chains tool calls.
     let model = std::env::var("MODEL").expect("the MODEL env var names the model slug");
-    let agent = symbiont::agent_builder_from_env(None, &model, false)
+    let agent = symbiont::agent_builder_from_env(None, DocMode::default(), &model, false)
         .await?
         .tool(Probe)
         .default_max_turns(10)

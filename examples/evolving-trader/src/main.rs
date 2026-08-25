@@ -50,6 +50,7 @@ use lfest::prelude::{
 };
 use plotters::prelude::*;
 use symbiont::{
+    DocMode,
     DylibConfig,
     Revision,
     Runtime,
@@ -652,14 +653,17 @@ async fn main() -> symbiont::Result<()> {
         ),
     )
     .await?;
-    // Include the host crate's documented API (Candle, AccountState, Action)
-    // in the system prompt. Cap generation so small local models that fail to
-    // stop cannot overflow the inference server's context window.
+    // Document the host crate's API (Candle, AccountState, Action) for the
+    // agent: the prelude index goes into the system prompt, and the `api_doc`
+    // tool gives full definitions on demand. Cap generation so small local
+    // models that fail to stop cannot overflow the inference server's context
+    // window.
     let model = std::env::var("MODEL").expect("the MODEL env var names the model slug");
-    let agent = symbiont::agent_builder_from_env(Some(host_crate), &model, false)
-        .await?
-        .max_tokens(4096)
-        .build();
+    let agent =
+        symbiont::agent_builder_from_env(Some(host_crate), DocMode::default(), &model, false)
+            .await?
+            .max_tokens(4096)
+            .build();
 
     let fn_source = runtime.fn_full_sources();
     let fn_prelude = runtime.fn_prelude();

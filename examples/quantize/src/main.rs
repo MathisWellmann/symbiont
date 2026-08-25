@@ -27,7 +27,10 @@ use std::{
 use colorgrad::Gradient;
 use plotters::prelude::*;
 use romu::Rng;
-use symbiont::Runtime;
+use symbiont::{
+    DocMode,
+    Runtime,
+};
 use tracing::{
     info,
     warn,
@@ -390,7 +393,7 @@ async fn main() -> symbiont::Result<()> {
     info!("fn_sigs: {fn_sigs:?}");
 
     let model = std::env::var("MODEL").expect("the MODEL env var names the model slug");
-    let agent = symbiont::init_agent_from_env(None, &model, false).await?;
+    let agent = symbiont::init_agent_from_env(None, DocMode::default(), &model, false).await?;
 
     // Fixed test data — identical across rounds for fair comparison.
     let rng = Rng::from_seed_with_64bit(42);

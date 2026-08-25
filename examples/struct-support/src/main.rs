@@ -3,6 +3,7 @@
 
 use struct_support_example::prelude::*;
 use symbiont::{
+    DocMode,
     DylibConfig,
     Runtime,
 };
@@ -33,9 +34,9 @@ async fn main() -> symbiont::Result<()> {
     let fn_source = runtime.fn_full_sources();
     info!("fn_prelude: {fn_prelude:#?}, fn_source: {fn_source:#?}");
 
-    let doc_crate = Some(host_crate); // Include documentation of the host crate in the system prompt.
+    let doc_crate = Some(host_crate); // Document the host crate API for the agent.
     let model = std::env::var("MODEL").expect("the MODEL env var names the model slug");
-    let agent = symbiont::init_agent_from_env(doc_crate, &model, false).await?;
+    let agent = symbiont::init_agent_from_env(doc_crate, DocMode::default(), &model, false).await?;
 
     let base_prompt = format!(
         "Give an implementation for this evolvable function:\n

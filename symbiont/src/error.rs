@@ -19,6 +19,9 @@ pub enum Error {
     #[error(transparent)]
     RigHttp(#[from] rig_core::http_client::Error),
 
+    #[error(transparent)]
+    DocIndex(#[from] crate::DocIndexError),
+
     #[error("The mutex was poisoned")]
     MutexPoison,
 

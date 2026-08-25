@@ -533,7 +533,9 @@ pub(crate) mod tests {
     #[test]
     fn render_index_unknown_module_errors() {
         let index = fixture_index();
-        let err = index.render_index(Some("nope")).expect_err("the path does not resolve");
+        let err = index
+            .render_index(Some("nope"))
+            .expect_err("the path does not resolve");
         assert!(matches!(err, DocIndexError::ModuleNotFound(_)));
     }
 
@@ -555,7 +557,10 @@ pub(crate) mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn render_doc_unknown_path_errors() {
         let index = fixture_index();
-        let err = index.render_doc("nope").await.expect_err("the path does not resolve");
+        let err = index
+            .render_doc("nope")
+            .await
+            .expect_err("the path does not resolve");
         assert!(matches!(err, DocIndexError::ItemNotFound(_)));
     }
 }
