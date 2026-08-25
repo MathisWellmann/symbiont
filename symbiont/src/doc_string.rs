@@ -342,7 +342,7 @@ impl<'a> RustApiSynopsis<'a> {
         }
     }
 
-    fn render_external_facade(
+    pub(crate) fn render_external_facade(
         mut self,
         crate_name: &str,
         requests: &BTreeSet<FacadeRequest>,
