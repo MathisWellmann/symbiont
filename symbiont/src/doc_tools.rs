@@ -4,13 +4,34 @@
 
 use std::sync::Arc;
 
-use rig_core::tool::PortableTool;
+use rig_core::tool::{
+    PortableTool,
+    ToolExecutionError,
+};
 use serde::Deserialize;
 
 use crate::doc_index::{
     DocIndex,
     DocIndexError,
 };
+
+/// Make the text of a query error visible to the model.
+///
+/// The default of [`PortableTool::map_error`] is
+/// [`ToolExecutionError::from_error`], which hides the text of the source and
+/// shows the model the string "the tool failed". That string does not tell
+/// the agent what to do next. The explicit constructors keep the message,
+/// so the agent reads which path failed and which tool to call after it.
+fn model_visible(error: DocIndexError) -> ToolExecutionError {
+    let message = error.to_string();
+    let mapped = match error {
+        DocIndexError::NoPrelude
+        | DocIndexError::ModuleNotFound(_)
+        | DocIndexError::ItemNotFound(_) => ToolExecutionError::not_found(message),
+        DocIndexError::PoisonedLock => ToolExecutionError::other(message),
+    };
+    mapped.with_retryable(false)
+}
 
 /// The `api_index` tool: list the public items of a host API module.
 ///
@@ -48,6 +69,10 @@ impl PortableTool for ApiIndexTool {
          Call without arguments to list the prelude. \
          Call `api_doc` with a path to get the full definition of an item."
             .to_string()
+    }
+
+    fn map_error(&self, error: Self::Error) -> ToolExecutionError {
+        model_visible(error)
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -107,6 +132,10 @@ impl PortableTool for ApiDocTool {
          the inherent methods, and the operator impls. \
          Pass a `::`-separated path like `prelude::Order` or a single name from the prelude."
             .to_string()
+    }
+
+    fn map_error(&self, error: Self::Error) -> ToolExecutionError {
+        model_visible(error)
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -184,5 +213,26 @@ mod tests {
         .await
         .expect_err("the path does not resolve");
         assert!(matches!(err, DocIndexError::ItemNotFound(_)));
+    }
+
+    /// The model must read the text of the query error, not the redacted
+    /// default of `ToolExecutionError::from_error`.
+    #[test]
+    fn query_errors_stay_visible_to_the_model() {
+        let index = Arc::new(crate::doc_index::tests::fixture_index());
+        let index_tool = ApiIndexTool::new(Arc::clone(&index));
+        let doc_tool = ApiDocTool::new(index);
+
+        let mapped = index_tool.map_error(DocIndexError::ModuleNotFound("nope".to_string()));
+        let feedback = mapped.model_feedback().expect("the feedback is text");
+        assert!(feedback.contains("nope"), "{feedback}");
+        assert!(feedback.contains("api_index"), "{feedback}");
+        assert_ne!(feedback, "the tool failed");
+
+        let mapped = doc_tool.map_error(DocIndexError::ItemNotFound("Order".to_string()));
+        let feedback = mapped.model_feedback().expect("the feedback is text");
+        assert!(feedback.contains("Order"), "{feedback}");
+        assert!(feedback.contains("api_index"), "{feedback}");
+        assert_eq!(mapped.retryable(), Some(false));
     }
 }
