@@ -27,6 +27,7 @@ use rustdoc_types::{
     ItemKind,
     Use,
 };
+use tokio::sync::OnceCell;
 
 use crate::{
     Error,
@@ -41,6 +42,9 @@ use crate::{
         rustdoc_json,
     },
 };
+
+/// The cache slot of one crate name: empty until the first build finishes.
+type IndexCell = OnceCell<Arc<DocIndex>>;
 
 /// The error of a [`DocIndex`] query.
 #[derive(Debug, thiserror::Error)]
@@ -82,29 +86,44 @@ impl DocIndex {
     ///
     /// The first call for a crate name builds the rustdoc JSON of the host
     /// crate and of every crate that the host facade re-exports, which is
-    /// slow. Later calls return the cached index.
+    /// slow. Later calls return the cached index. Concurrent first calls for
+    /// one crate name await the same build; only a failed build is retried.
     ///
     /// # Errors
     ///
     /// Returns an error if the runtime cannot build or parse the rustdoc JSON
     /// of the host crate.
     pub async fn host(crate_name: &str) -> Result<Arc<Self>> {
-        static CACHE: OnceLock<Mutex<HashMap<String, Arc<DocIndex>>>> = OnceLock::new();
+        static CACHE: OnceLock<Mutex<HashMap<String, Arc<IndexCell>>>> = OnceLock::new();
         let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-        if let Some(index) = cache
-            .lock()
-            .map_err(|_| Error::MutexPoison)?
-            .get(crate_name)
-        {
-            return Ok(Arc::clone(index));
-        }
+        Self::cached(cache, crate_name, Self::build_shared(crate_name)).await
+    }
 
-        let index = Arc::new(Self::build(crate_name).await?);
-        cache
-            .lock()
-            .map_err(|_| Error::MutexPoison)?
-            .insert(crate_name.to_string(), Arc::clone(&index));
-        Ok(index)
+    /// Get the entry of `crate_name` from `cache`, running `build` if the
+    /// cache has none.
+    ///
+    /// The map lock only hands out the cell of one crate name. The build runs
+    /// under that cell, so concurrent first callers await one build instead
+    /// of each running `cargo rustdoc`, and a build for another crate name is
+    /// not blocked. `build` is dropped unpolled if another caller wins.
+    async fn cached(
+        cache: &Mutex<HashMap<String, Arc<IndexCell>>>,
+        crate_name: &str,
+        build: impl Future<Output = Result<Arc<Self>>>,
+    ) -> Result<Arc<Self>> {
+        let cell = {
+            let mut crates = cache.lock().map_err(|_| Error::MutexPoison)?;
+            Arc::clone(crates.entry(crate_name.to_string()).or_default())
+        };
+
+        // A failed build leaves the cell empty, so a later call retries it.
+        let index = cell.get_or_try_init(move || build).await?;
+        Ok(Arc::clone(index))
+    }
+
+    /// [`Self::build`] as the shared handle that the cache stores.
+    async fn build_shared(crate_name: &str) -> Result<Arc<Self>> {
+        Self::build(crate_name).await.map(Arc::new)
     }
 
     /// Build the index and warm the cache for every reachable crate.
@@ -516,8 +535,6 @@ impl Located {
     }
 }
 
-
-
 /// Render one index line for a re-export.
 fn reexport_line(kind: &str, name: &str, origin: Option<&str>) -> String {
     match origin {
@@ -603,6 +620,11 @@ fn kind_str(kind: ItemKind) -> &'static str {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use std::sync::atomic::{
+        AtomicUsize,
+        Ordering,
+    };
+
     use rustdoc_types::{
         Abi,
         ExternalCrate,
@@ -760,7 +782,10 @@ pub(crate) mod tests {
                 Id(100),
                 summary(1, &["dep_crate", "decimal"], ItemKind::Macro),
             ),
-            (Id(10), summary(0, &["host_crate", "deep"], ItemKind::Module)),
+            (
+                Id(10),
+                summary(0, &["host_crate", "deep"], ItemKind::Module),
+            ),
             (
                 Id(11),
                 summary(0, &["host_crate", "deep", "rolling"], ItemKind::Module),
@@ -901,6 +926,51 @@ pub(crate) mod tests {
         fn into_entry(self) -> (Id, Item) {
             (self.id, self)
         }
+    }
+
+    /// A build that counts its runs. It yields once, so a second caller that
+    /// starts while it runs has to wait for it.
+    async fn counted_build(builds: &AtomicUsize) -> Result<Arc<DocIndex>> {
+        builds.fetch_add(1, Ordering::SeqCst);
+        tokio::task::yield_now().await;
+        Ok(Arc::new(fixture_index()))
+    }
+
+    /// Two concurrent first callers for one crate name must share one build.
+    /// Each build runs `cargo rustdoc` for the host crate and every reachable
+    /// crate, so a duplicate is slow and fights the same cargo lock as the
+    /// dylib builds.
+    #[tokio::test]
+    async fn host_cache_builds_one_index_per_crate_name() {
+        let cache = Mutex::new(HashMap::new());
+        let builds = AtomicUsize::new(0);
+
+        let (first, second) = tokio::join!(
+            DocIndex::cached(&cache, "host_crate", counted_build(&builds)),
+            DocIndex::cached(&cache, "host_crate", counted_build(&builds)),
+        );
+        let first = first.expect("the build succeeds");
+        let second = second.expect("the build succeeds");
+
+        assert_eq!(builds.load(Ordering::SeqCst), 1);
+        assert!(Arc::ptr_eq(&first, &second));
+    }
+
+    /// A failed build must not poison the cache: the next call retries it.
+    #[tokio::test]
+    async fn host_cache_retries_after_a_failed_build() {
+        let cache = Mutex::new(HashMap::new());
+        let builds = AtomicUsize::new(0);
+
+        let failed = DocIndex::cached(&cache, "host_crate", std::future::ready(Err(Error::MdDoc)))
+            .await
+            .err();
+        assert!(failed.is_some(), "the build must report its error");
+
+        DocIndex::cached(&cache, "host_crate", counted_build(&builds))
+            .await
+            .expect("the retry succeeds");
+        assert_eq!(builds.load(Ordering::SeqCst), 1);
     }
 
     #[test]
