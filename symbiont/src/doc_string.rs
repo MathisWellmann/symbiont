@@ -9,9 +9,14 @@ use std::{
         HashSet,
     },
     fmt::Write,
+    future::Future,
     path::{
         Path,
         PathBuf,
+    },
+    sync::{
+        Arc,
+        RwLock,
     },
 };
 
@@ -52,9 +57,58 @@ pub(crate) async fn write_prelude_doc_string(s: &mut String, crate_name: &str) -
     trace!("host facade synopsis: {}", rendered.api);
     s.push_str(&rendered.api);
 
-    let mut pending = rendered.external_facades;
+    let crate_cache = Arc::new(RwLock::new(HashMap::new()));
+    render_external_facades(s, rendered.external_facades, move |crate_name: String| {
+        let crate_cache = Arc::clone(&crate_cache);
+        async move { load_crate_data(&crate_cache, &crate_name).await }
+    })
+    .await;
+
+    Ok(())
+}
+
+/// Load the rustdoc JSON of a crate into `cache` and return it. Cached
+/// results, including failures, are returned without a reload.
+pub(crate) async fn load_crate_data(
+    cache: &RwLock<HashMap<String, Option<Arc<RustdocCrate>>>>,
+    crate_name: &str,
+) -> Option<Arc<RustdocCrate>> {
+    if let Some(entry) = cache.read().ok()?.get(crate_name) {
+        return entry.clone();
+    }
+    let package_candidates = package_candidates_for_crate(crate_name);
+    let package_candidates = Vec::from_iter(package_candidates.iter().map(String::as_str));
+    let loaded = match rustdoc_json(crate_name, &package_candidates).await {
+        Ok(crate_data) => Some(Arc::new(crate_data)),
+        Err(err) => {
+            trace!("could not document reachable crate {crate_name}: {err}");
+            None
+        }
+    };
+    cache
+        .write()
+        .ok()?
+        .insert(crate_name.to_string(), loaded.clone());
+    loaded
+}
+
+/// Service external facade requests: load each crate with `load`, render the
+/// requested items into `out`, and repeat for the re-exports that a render
+/// pass finds. A crate that fails to load gets one note in `out`. Later
+/// requests for that crate are skipped.
+///
+/// The loader takes an owned crate name and returns an owned future so the
+/// future can be `Send` without a lifetime bound to the call site.
+pub(crate) async fn render_external_facades<F, Fut>(
+    out: &mut String,
+    mut pending: BTreeMap<String, BTreeSet<FacadeRequest>>,
+    mut load: F,
+) where
+    F: FnMut(String) -> Fut,
+    Fut: Future<Output = Option<Arc<RustdocCrate>>>,
+{
     let mut rendered_facades = BTreeSet::new();
-    let mut crate_cache: HashMap<String, Option<RustdocCrate>> = HashMap::new();
+    let mut noted_failures = HashSet::new();
     let mut rendered_ids: HashMap<String, HashSet<Id>> = HashMap::new();
     while let Some(crate_name) = pending.keys().next().cloned() {
         let requests = pending.remove(&crate_name).unwrap_or_default();
@@ -66,39 +120,27 @@ pub(crate) async fn write_prelude_doc_string(s: &mut String, crate_name: &str) -
             continue;
         }
 
-        if !crate_cache.contains_key(&crate_name) {
-            let package_candidates = package_candidates_for_crate(&crate_name);
-            let package_candidates = Vec::from_iter(package_candidates.iter().map(String::as_str));
-            let crate_data = match rustdoc_json(&crate_name, &package_candidates).await {
-                Ok(crate_data) => Some(crate_data),
-                Err(err) => {
-                    trace!("could not document reachable crate {crate_name}: {err}");
-                    let _ = writeln!(
-                        s,
-                        "\nCould not generate rustdoc JSON for reachable crate `{crate_name}`."
-                    );
-                    None
-                }
-            };
-            crate_cache.insert(crate_name.clone(), crate_data);
-        }
-        let Some(crate_data) = crate_cache.get(&crate_name).and_then(Option::as_ref) else {
+        let Some(crate_data) = load(crate_name.clone()).await else {
+            if noted_failures.insert(crate_name.clone()) {
+                let _ = writeln!(
+                    out,
+                    "\nCould not generate rustdoc JSON for reachable crate `{crate_name}`."
+                );
+            }
             continue;
         };
 
-        let rendered = RustApiSynopsis::new(crate_data)
+        let rendered = RustApiSynopsis::new(&crate_data)
             .with_rendered_items(rendered_ids.remove(&crate_name).unwrap_or_default())
             .render_external_facade(&crate_name, &requests);
         trace!("reachable {crate_name} facade synopsis: {}", rendered.api);
         if !rendered.api.is_empty() {
-            s.push('\n');
-            s.push_str(&rendered.api);
+            out.push('\n');
+            out.push_str(&rendered.api);
         }
         rendered_ids.insert(crate_name.clone(), rendered.rendered_items);
         merge_facades(&mut pending, rendered.external_facades);
     }
-
-    Ok(())
 }
 
 fn merge_facades(
@@ -712,7 +754,7 @@ impl<'a> RustApiSynopsis<'a> {
     }
 }
 
-fn is_public(item: &Item) -> bool {
+pub(crate) fn is_public(item: &Item) -> bool {
     matches!(item.visibility, Visibility::Public)
 }
 
