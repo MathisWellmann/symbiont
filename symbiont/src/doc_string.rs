@@ -110,7 +110,10 @@ fn merge_facades(
     }
 }
 
-async fn rustdoc_json(crate_name: &str, package_candidates: &[&str]) -> Result<RustdocCrate> {
+pub(crate) async fn rustdoc_json(
+    crate_name: &str,
+    package_candidates: &[&str],
+) -> Result<RustdocCrate> {
     for package in package_candidates {
         let args = [
             "rustdoc",
@@ -139,7 +142,7 @@ async fn read_rustdoc_json(crate_name: &str) -> Result<RustdocCrate> {
     serde_json::from_str(&json_str).map_err(|_| Error::MdDoc)
 }
 
-fn package_candidates_for_crate(crate_name: &str) -> Vec<String> {
+pub(crate) fn package_candidates_for_crate(crate_name: &str) -> Vec<String> {
     let mut candidates = vec![crate_name.to_string()];
     let dashed = crate_name.replace('_', "-");
     if dashed != crate_name {
@@ -149,18 +152,20 @@ fn package_candidates_for_crate(crate_name: &str) -> Vec<String> {
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-enum FacadeRequest {
+pub(crate) enum FacadeRequest {
     Module(Vec<String>),
     Item(Vec<String>),
 }
 
-struct RenderedApiSynopsis {
-    api: String,
-    external_facades: BTreeMap<String, BTreeSet<FacadeRequest>>,
+/// The output of one synopsis pass: the rendered text plus the facade
+/// requests that the pass found in re-exports.
+pub(crate) struct RenderedApiSynopsis {
+    pub api: String,
+    pub external_facades: BTreeMap<String, BTreeSet<FacadeRequest>>,
     /// Ids rendered by this synopsis pass, merged with any seeded ids. Used to
     /// avoid re-rendering items when the same crate is documented in multiple
     /// facade batches.
-    rendered_items: HashSet<Id>,
+    pub rendered_items: HashSet<Id>,
 }
 
 /// Small rustdoc-JSON adapter that emits source-like public API snippets.
@@ -169,7 +174,7 @@ struct RenderedApiSynopsis {
 /// JSON tells us which public items exist and where they came from; the synopsis
 /// is built from those original Rust source spans, with function bodies and
 /// constant initializers elided.
-struct RustApiSynopsis<'a> {
+pub(crate) struct RustApiSynopsis<'a> {
     crate_data: &'a RustdocCrate,
     source_cache: HashMap<PathBuf, String>,
     rendered_items: HashSet<Id>,
@@ -180,7 +185,7 @@ struct RustApiSynopsis<'a> {
 }
 
 impl<'a> RustApiSynopsis<'a> {
-    fn new(crate_data: &'a RustdocCrate) -> Self {
+    pub(crate) fn new(crate_data: &'a RustdocCrate) -> Self {
         Self {
             crate_data,
             source_cache: HashMap::new(),
@@ -194,7 +199,7 @@ impl<'a> RustApiSynopsis<'a> {
 
     /// Seeds the set of already rendered item ids so repeated renders of the
     /// same crate do not duplicate items.
-    fn with_rendered_items(mut self, rendered_items: HashSet<Id>) -> Self {
+    pub(crate) fn with_rendered_items(mut self, rendered_items: HashSet<Id>) -> Self {
         self.rendered_items = rendered_items;
         self
     }
@@ -222,12 +227,48 @@ impl<'a> RustApiSynopsis<'a> {
         }
     }
 
+    /// Render the items and modules that `requests` name, without a header.
+    ///
+    /// Re-export targets on external crates are not rendered. They are
+    /// returned in [`RenderedApiSynopsis::external_facades`] for the caller to
+    /// service.
+    pub(crate) fn render_requests(
+        mut self,
+        requests: &BTreeSet<FacadeRequest>,
+    ) -> RenderedApiSynopsis {
+        let api = self.render_request_bodies(requests);
+        RenderedApiSynopsis {
+            api,
+            external_facades: self.external_facades,
+            rendered_items: self.rendered_items,
+        }
+    }
+
     fn render_external_facade(
         mut self,
         crate_name: &str,
         requests: &BTreeSet<FacadeRequest>,
     ) -> RenderedApiSynopsis {
         self.local_crate_alias = crate_name.to_string();
+        let body = self.render_request_bodies(requests);
+
+        let api = if body.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "Reachable items re-exported from `{crate_name}` (the crate path itself is not available):\n\n```rust\n// Use these items unqualified.\n\n{body}```\n"
+            )
+        };
+        RenderedApiSynopsis {
+            api,
+            external_facades: self.external_facades,
+            rendered_items: self.rendered_items,
+        }
+    }
+
+    /// Render the body for each request. Module requests render the module
+    /// items. Item requests render the item.
+    fn render_request_bodies(&mut self, requests: &BTreeSet<FacadeRequest>) -> String {
         let mut body = String::new();
         for request in requests {
             match request {
@@ -244,22 +285,10 @@ impl<'a> RustApiSynopsis<'a> {
             }
         }
         self.write_pending_reexports(&mut body);
-
-        let api = if body.is_empty() {
-            String::new()
-        } else {
-            format!(
-                "Reachable items re-exported from `{crate_name}` (the crate path itself is not available):\n\n```rust\n// Use these items unqualified.\n\n{body}```\n"
-            )
-        };
-        RenderedApiSynopsis {
-            api,
-            external_facades: self.external_facades,
-            rendered_items: self.rendered_items,
-        }
+        body
     }
 
-    fn find_module(&self, path: &[String]) -> Option<Item> {
+    pub(crate) fn find_module(&self, path: &[String]) -> Option<Item> {
         if path.is_empty() {
             return self.crate_data.index.get(&self.crate_data.root).cloned();
         }
@@ -267,7 +296,7 @@ impl<'a> RustApiSynopsis<'a> {
             .filter(|item| matches!(item.inner, ItemEnum::Module(_)))
     }
 
-    fn find_item(&self, path: &[String]) -> Option<Item> {
+    pub(crate) fn find_item(&self, path: &[String]) -> Option<Item> {
         if let Some(item) = self.crate_data.paths.iter().find_map(|(id, summary)| {
             (summary.path.get(1..) == Some(path))
                 .then(|| self.crate_data.index.get(id).cloned())
