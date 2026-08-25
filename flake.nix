@@ -5,6 +5,7 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     rust-overlay.url = "github:oxalica/rust-overlay";
     flake-utils.url = "github:numtide/flake-utils";
+    llm-agents.url = "github:numtide/llm-agents.nix";
   };
   nixConfig = {
     extra-substituters = [
@@ -18,6 +19,7 @@
   outputs = {
     nixpkgs,
     rust-overlay,
+    llm-agents,
     ...
   }: let
     overlays = [(import rust-overlay)];
@@ -108,6 +110,15 @@
       };
       zola = pkgs.mkShell {
         buildInputs = [pkgs.zola];
+      };
+      # Minimal shell for the AI PR review workflow
+      # (.github/workflows/review.yml).
+      review = pkgs.mkShell {
+        buildInputs = with pkgs; [
+          llm-agents.packages.${pkgs.stdenv.hostPlatform.system}.pi
+          jq
+          curl
+        ];
       };
     };
   };
