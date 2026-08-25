@@ -136,6 +136,21 @@ pub type Agent = rig_agent::Agent;
 /// `api_doc` on it, and the other modes carry an empty tool set. Register
 /// your own tools on it with rig's builder API before calling `.build()`,
 /// e.g. `.tool(MyTool).default_max_turns(10).build()`.
+///
+/// The state cannot depend on the [`DocMode`](crate::DocMode):
+/// [`agent_builder`] has one return type, and registering a tool is a
+/// one-way typestate step in rig. The state is therefore fixed for every
+/// mode. An empty tool set builds the same [`Agent`] that rig's
+/// `NoToolConfig` state builds, so only the builder API differs:
+///
+/// - Before 0.29 this alias was `rig_agent::AgentBuilder<NoToolConfig>`. Code
+///   that names that state for the value [`agent_builder`] returns has to
+///   name this alias instead.
+/// - `.tool_server_handle(..)` lives on `NoToolConfig` and is out of reach
+///   here. A host that shares one `ToolServer` between agents builds its own
+///   `rig_agent::AgentBuilder`, with [`system_prompt`] as the preamble and,
+///   for a tool [`DocMode`](crate::DocMode), [`ApiIndexTool`] and
+///   [`ApiDocTool`] over a [`DocIndex`] on its own tool server.
 pub type AgentBuilder = rig_agent::AgentBuilder<rig_agent::agent::WithBuilderTools>;
 
 /// Internal module for macro-generated dispatch code.

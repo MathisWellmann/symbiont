@@ -3004,8 +3004,12 @@ pub const WEIGHTS: [f64; 3] = [1.0, 2.0, 3.0];
         struct_name: &str,
         reexport: Option<(&str, &str)>,
     ) -> Arc<RustdocCrate> {
+        // The tag must be unique per call: these tests run in parallel in one
+        // process, and two of them writing one path races a third reading it.
+        static FIXTURE_ID: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let id = FIXTURE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let source = temp_source_file(
-            &format!("drain_{crate_name}"),
+            &format!("drain_{crate_name}_{id}"),
             &format!("pub struct {struct_name};\n"),
         );
         let mut root_items = vec![Id(1)];
