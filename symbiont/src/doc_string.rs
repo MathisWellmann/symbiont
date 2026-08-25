@@ -85,10 +85,29 @@ pub(crate) async fn load_external_facades(
     out: &mut String,
     pending: BTreeMap<String, BTreeSet<FacadeRequest>>,
 ) -> HashMap<String, Arc<RustdocCrate>> {
+    drain_with_loader(out, pending, async |crate_name: String| {
+        load_crate_data(&crate_name).await
+    })
+    .await
+}
+
+/// Drain the facade requests, loading every crate that the cache misses with
+/// `load`.
+///
+/// This holds the loop of [`load_external_facades`] without its I/O, so that
+/// a test can drive it with a fixture loader.
+async fn drain_with_loader<L>(
+    out: &mut String,
+    pending: BTreeMap<String, BTreeSet<FacadeRequest>>,
+    mut load: L,
+) -> HashMap<String, Arc<RustdocCrate>>
+where
+    L: AsyncFnMut(String) -> Option<Arc<RustdocCrate>>,
+{
     let mut cache: HashMap<String, Arc<RustdocCrate>> = HashMap::new();
     let mut drain = FacadeDrain::new(pending);
     while let Some(crate_name) = drain.render_cached(out, &cache) {
-        match load_crate_data(&crate_name).await {
+        match load(crate_name.clone()).await {
             Some(crate_data) => {
                 cache.insert(crate_name, crate_data);
             }
@@ -142,26 +161,27 @@ impl FacadeDrain {
         cache: &HashMap<String, Arc<RustdocCrate>>,
     ) -> Option<String> {
         while let Some(crate_name) = self.next_crate() {
-            let requests = self.take_requests(&crate_name);
-            if requests.is_empty() {
-                continue;
-            }
+            // Take the requests only once the crate is here. Taking them
+            // earlier marks them rendered, and the caller that loads the
+            // crate then finds nothing left to render.
             let Some(crate_data) = cache.get(&crate_name) else {
-                self.pending.insert(crate_name.clone(), requests);
                 return Some(crate_name);
             };
 
-            let rendered = RustApiSynopsis::new(crate_data)
-                .with_rendered_items(self.rendered_ids.remove(&crate_name).unwrap_or_default())
-                .render_external_facade(&crate_name, &requests);
-            trace!("reachable {crate_name} facade synopsis: {}", rendered.api);
-            if !rendered.api.is_empty() {
-                out.push('\n');
-                out.push_str(&rendered.api);
+            let requests = self.take_requests(&crate_name);
+            if !requests.is_empty() {
+                let rendered = RustApiSynopsis::new(crate_data)
+                    .with_rendered_items(self.rendered_ids.remove(&crate_name).unwrap_or_default())
+                    .render_external_facade(&crate_name, &requests);
+                trace!("reachable {crate_name} facade synopsis: {}", rendered.api);
+                if !rendered.api.is_empty() {
+                    out.push('\n');
+                    out.push_str(&rendered.api);
+                }
+                self.rendered_ids
+                    .insert(crate_name.clone(), rendered.rendered_items);
+                merge_facades(&mut self.pending, rendered.external_facades);
             }
-            self.rendered_ids
-                .insert(crate_name.clone(), rendered.rendered_items);
-            merge_facades(&mut self.pending, rendered.external_facades);
         }
         None
     }
@@ -2975,5 +2995,229 @@ pub const WEIGHTS: [f64; 3] = [1.0, 2.0, 3.0];
         assert!(elided.contains("/// Coefficients available to generated code."));
         assert!(elided.contains("pub const WEIGHTS: [f64; 3];"));
         assert!(!elided.contains("[1.0, 2.0, 3.0]"));
+    }
+
+    /// A crate for the facade drain tests: one unit struct at the root, plus
+    /// an optional named re-export of one item of another crate.
+    fn drain_crate_fixture(
+        crate_name: &str,
+        struct_name: &str,
+        reexport: Option<(&str, &str)>,
+    ) -> Arc<RustdocCrate> {
+        let source = temp_source_file(
+            &format!("drain_{crate_name}"),
+            &format!("pub struct {struct_name};\n"),
+        );
+        let mut root_items = vec![Id(1)];
+        let mut index = HashMap::from([(
+            Id(1),
+            spanned_item(
+                1,
+                Some(struct_name),
+                ItemEnum::Struct(rustdoc_types::Struct {
+                    kind: rustdoc_types::StructKind::Unit,
+                    generics: empty_generics(),
+                    impls: Vec::new(),
+                }),
+                span(&source, (1, 1), (1, struct_name.len() + 13)),
+            ),
+        )]);
+        let mut paths = HashMap::from([(
+            Id(1),
+            local_path_entry(&[crate_name, struct_name], rustdoc_types::ItemKind::Struct),
+        )]);
+        let mut external_crates = HashMap::new();
+
+        if let Some((target_crate, target_item)) = reexport {
+            root_items.push(Id(2));
+            index.insert(
+                Id(2),
+                item(
+                    2,
+                    None,
+                    ItemEnum::Use(Use {
+                        source: format!("{target_crate}::{target_item}"),
+                        name: target_item.to_string(),
+                        id: Some(Id(3)),
+                        is_glob: false,
+                    }),
+                ),
+            );
+            paths.insert(
+                Id(3),
+                rustdoc_types::ItemSummary {
+                    crate_id: 1,
+                    path: vec![target_crate.to_string(), target_item.to_string()],
+                    kind: rustdoc_types::ItemKind::Struct,
+                },
+            );
+            external_crates.insert(
+                1,
+                rustdoc_types::ExternalCrate {
+                    name: target_crate.to_string(),
+                    html_root_url: None,
+                    path: PathBuf::from(format!("target/debug/deps/lib{target_crate}.rmeta")),
+                },
+            );
+        }
+
+        index.insert(
+            Id(0),
+            item(
+                0,
+                Some(crate_name),
+                ItemEnum::Module(rustdoc_types::Module {
+                    is_crate: true,
+                    items: root_items,
+                    is_stripped: false,
+                }),
+            ),
+        );
+        Arc::new(crate_data(index, paths, external_crates))
+    }
+
+    /// The drain must follow the re-export that a render pass finds and
+    /// document the target from the cache, without any I/O.
+    #[test]
+    fn doc_string_cached_facade_drain_follows_a_chained_reexport() {
+        let cache = HashMap::from([
+            (
+                "dep_a".to_string(),
+                drain_crate_fixture("dep_a", "Alpha", Some(("dep_b", "Beta"))),
+            ),
+            (
+                "dep_b".to_string(),
+                drain_crate_fixture("dep_b", "Beta", None),
+            ),
+        ]);
+        let pending = BTreeMap::from([(
+            "dep_a".to_string(),
+            BTreeSet::from([FacadeRequest::Module(Vec::new())]),
+        )]);
+
+        let mut out = String::new();
+        render_cached_external_facades(&mut out, pending, &cache);
+
+        assert!(out.contains("pub struct Alpha;"), "{out}");
+        assert!(out.contains("pub struct Beta;"), "{out}");
+        assert!(
+            out.contains("re-exported from `dep_a`") && out.contains("re-exported from `dep_b`"),
+            "{out}"
+        );
+        assert!(!out.contains("Could not generate"), "{out}");
+    }
+
+    /// A crate that a later render pass requests again must not be documented
+    /// twice.
+    #[test]
+    fn doc_string_cached_facade_drain_renders_a_repeated_request_once() {
+        let cache = HashMap::from([
+            (
+                "dep_a".to_string(),
+                drain_crate_fixture("dep_a", "Alpha", None),
+            ),
+            (
+                "dep_z".to_string(),
+                drain_crate_fixture("dep_z", "Zeta", Some(("dep_a", "Alpha"))),
+            ),
+        ]);
+        let pending = BTreeMap::from([
+            (
+                "dep_a".to_string(),
+                BTreeSet::from([FacadeRequest::Item(vec!["Alpha".to_string()])]),
+            ),
+            (
+                "dep_z".to_string(),
+                BTreeSet::from([FacadeRequest::Module(Vec::new())]),
+            ),
+        ]);
+
+        let mut out = String::new();
+        render_cached_external_facades(&mut out, pending, &cache);
+
+        assert!(out.contains("pub struct Zeta;"), "{out}");
+        assert_eq!(out.matches("pub struct Alpha;").count(), 1, "{out}");
+        assert_eq!(out.matches("re-exported from `dep_a`").count(), 1, "{out}");
+    }
+
+    /// A crate that the cache does not hold gets exactly one note, even when
+    /// several requests name it, and it does not stop the other crates.
+    #[test]
+    fn doc_string_cached_facade_drain_notes_a_missing_crate_once() {
+        let cache = HashMap::from([(
+            "dep_a".to_string(),
+            drain_crate_fixture("dep_a", "Alpha", Some(("missing_dep", "Beta"))),
+        )]);
+        let pending = BTreeMap::from([
+            (
+                "dep_a".to_string(),
+                BTreeSet::from([FacadeRequest::Module(Vec::new())]),
+            ),
+            (
+                "missing_dep".to_string(),
+                BTreeSet::from([
+                    FacadeRequest::Item(vec!["Gone".to_string()]),
+                    FacadeRequest::Item(vec!["AlsoGone".to_string()]),
+                ]),
+            ),
+        ]);
+
+        let mut out = String::new();
+        render_cached_external_facades(&mut out, pending, &cache);
+
+        assert!(out.contains("pub struct Alpha;"), "{out}");
+        assert_eq!(
+            out.matches("Could not generate rustdoc JSON for reachable crate `missing_dep`")
+                .count(),
+            1,
+            "{out}"
+        );
+    }
+
+    /// The loading drain must load every crate one time, keep what it loaded
+    /// in the returned cache, and not retry a crate that failed to load.
+    #[tokio::test]
+    async fn doc_string_loading_facade_drain_loads_each_crate_once() {
+        let fixtures = HashMap::from([
+            (
+                "dep_a".to_string(),
+                drain_crate_fixture("dep_a", "Alpha", Some(("dep_b", "Beta"))),
+            ),
+            (
+                "dep_b".to_string(),
+                drain_crate_fixture("dep_b", "Beta", None),
+            ),
+        ]);
+        let pending = BTreeMap::from([
+            (
+                "dep_a".to_string(),
+                BTreeSet::from([FacadeRequest::Module(Vec::new())]),
+            ),
+            (
+                "missing_dep".to_string(),
+                BTreeSet::from([FacadeRequest::Item(vec!["Gone".to_string()])]),
+            ),
+        ]);
+
+        let mut loaded: Vec<String> = Vec::new();
+        let mut out = String::new();
+        let cache = drain_with_loader(&mut out, pending, async |crate_name: String| {
+            let crate_data = fixtures.get(&crate_name).cloned();
+            loaded.push(crate_name);
+            crate_data
+        })
+        .await;
+
+        assert_eq!(loaded, ["dep_a", "dep_b", "missing_dep"], "{loaded:?}");
+        assert_eq!(cache.len(), 2, "the failed crate must not be cached");
+        assert!(cache.contains_key("dep_a") && cache.contains_key("dep_b"));
+        assert!(out.contains("pub struct Alpha;"), "{out}");
+        assert!(out.contains("pub struct Beta;"), "{out}");
+        assert_eq!(
+            out.matches("Could not generate rustdoc JSON for reachable crate `missing_dep`")
+                .count(),
+            1,
+            "{out}"
+        );
     }
 }

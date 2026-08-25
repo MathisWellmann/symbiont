@@ -220,8 +220,13 @@ impl DocIndex {
     }
 
     /// The `prelude` module of the host crate.
+    ///
+    /// This walks the host root directly instead of going through
+    /// [`Self::resolve`], which asks for the prelude itself.
     fn prelude(&self) -> Option<Located> {
-        self.resolve_module(&["prelude".to_string()])
+        let located = self.walk(self.host_root(), &["prelude".to_string()])?;
+        let located = self.follow_reexports(located)?;
+        matches!(located.item.inner, ItemEnum::Module(_)).then_some(located)
     }
 
     /// The root module of the host crate.
@@ -240,11 +245,15 @@ impl DocIndex {
 
     /// Resolve a normalized path to the item that it names.
     ///
-    /// The walk starts at the host crate root. If that fails, it starts at
-    /// the `prelude` module, so that a name imported by
-    /// `use host::prelude::*;` resolves without its module path. The last
-    /// step is the paths table of the host crate, which holds items that no
-    /// walk reaches.
+    /// A one-segment path resolves against the `prelude` module first,
+    /// because the generated code only has `use host::prelude::*;` in scope.
+    /// A root item of the same spelling is a different item to the compiler,
+    /// so the prelude name must win, as it does in Rust.
+    ///
+    /// Every other path walks the host crate root, then the `prelude` module,
+    /// so that a name imported by `use host::prelude::*;` resolves without
+    /// its module path. The last step is the paths table of the host crate,
+    /// which holds items that no walk reaches.
     ///
     /// The result is the item under the name, which can be a `use` item. Call
     /// [`Self::follow_reexports`] to get the declaration behind it.
@@ -252,10 +261,19 @@ impl DocIndex {
         if segments.is_empty() {
             return None;
         }
+        let from_prelude = || {
+            self.prelude()
+                .and_then(|prelude| self.walk(prelude, segments))
+        };
+        if segments.len() == 1
+            && let Some(located) = from_prelude()
+        {
+            return Some(located);
+        }
         if let Some(located) = self.walk(self.host_root(), segments) {
             return Some(located);
         }
-        if let Some(located) = self.prelude().and_then(|prelude| self.walk(prelude, segments)) {
+        if let Some(located) = from_prelude() {
             return Some(located);
         }
         let item = RustApiSynopsis::new(self.host_data()).find_item(segments)?;
@@ -845,6 +863,36 @@ pub(crate) mod tests {
         )
     }
 
+    /// A host crate whose root declares a name that the prelude also exports,
+    /// with a different declaration behind it.
+    fn shadow_host_fixture() -> RustdocCrate {
+        let index = HashMap::from([
+            (Id(0), module(0, "host_crate", vec![Id(1), Id(3)])),
+            (Id(1), module(1, "prelude", vec![Id(2)])),
+            (Id(2), reexport(2, "decimal", "dep_crate::decimal", 100)),
+            (Id(3), function(3, "decimal")),
+        ]);
+        let paths = HashMap::from([
+            (
+                Id(100),
+                summary(1, &["dep_crate", "decimal"], ItemKind::Macro),
+            ),
+            (
+                Id(3),
+                summary(0, &["host_crate", "decimal"], ItemKind::Function),
+            ),
+        ]);
+        let external_crates = HashMap::from([(
+            1,
+            ExternalCrate {
+                name: "dep_crate".to_string(),
+                html_root_url: None,
+                path: std::path::PathBuf::new(),
+            },
+        )]);
+        crate_data(index, paths, external_crates)
+    }
+
     trait IntoEntry {
         fn into_entry(self) -> (Id, Item);
     }
@@ -989,6 +1037,31 @@ pub(crate) mod tests {
             listing.contains("mod prelude (glob re-export from `dep_crate`)"),
             "{listing}"
         );
+    }
+
+    /// The generated code only has `use host::prelude::*;` in scope, so a
+    /// one-segment name means the prelude name, not a root item of the same
+    /// spelling. The definition must match the name the agent compiles
+    /// against, and it must match what the listing shows.
+    #[test]
+    fn render_doc_prefers_the_prelude_name_over_a_root_item() {
+        let index = DocIndex::from_crates(
+            "host_crate",
+            shadow_host_fixture(),
+            HashMap::from([("dep_crate".to_string(), dep_fixture())]),
+        );
+
+        let listing = index.render_index(None).expect("prelude exists");
+        assert!(
+            listing.contains("macro decimal (re-exported from `dep_crate`)"),
+            "{listing}"
+        );
+
+        let doc = index
+            .render_doc("decimal")
+            .expect("the prelude name exists");
+        assert!(doc.contains("macro_rules! decimal"), "{doc}");
+        assert!(!doc.contains("pub fn decimal"), "{doc}");
     }
 
     #[test]
