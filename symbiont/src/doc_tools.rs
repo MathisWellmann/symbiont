@@ -60,6 +60,7 @@ impl PortableTool for ApiIndexTool {
     fn description(&self) -> String {
         "List the public items of a host API module as `kind name` lines. \
          Call without arguments to list the prelude. \
+         Pass a name that a listing shows, for example `indicators`, to list that module. \
          Call `api_doc` with a path to get the full definition of an item."
             .to_string()
     }
@@ -74,7 +75,7 @@ impl PortableTool for ApiIndexTool {
             "properties": {
                 "module": {
                     "type": "string",
-                    "description": "The `::`-separated module path, for example `prelude::indicators`. Omit to list the prelude."
+                    "description": "A module name from a listing, for example `indicators`, or a `::`-separated path, for example `prelude::indicators`. Omit to list the prelude."
                 }
             }
         })

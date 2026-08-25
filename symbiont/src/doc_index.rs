@@ -153,19 +153,15 @@ impl DocIndex {
         &self,
         module_path: Option<&str>,
     ) -> std::result::Result<String, DocIndexError> {
-        let host = self.host_data();
-        let path = match module_path {
-            None => vec!["prelude".to_string()],
-            Some(path) => normalize_path(path, &self.host_crate),
+        let module = match module_path {
+            None => self.prelude().ok_or(DocIndexError::NoPrelude)?,
+            Some(path) => {
+                let segments = normalize_path(path, &self.host_crate);
+                self.resolve_module(&segments)
+                    .ok_or_else(|| DocIndexError::ModuleNotFound(path.to_string()))?
+            }
         };
-        let module =
-            RustApiSynopsis::new(host)
-                .find_module(&path)
-                .ok_or_else(|| match module_path {
-                    None => DocIndexError::NoPrelude,
-                    Some(path) => DocIndexError::ModuleNotFound(path.to_string()),
-                })?;
-        Ok(render_module_index(host, &module))
+        Ok(self.render_module_index(&module))
     }
 
     /// Render the full synopsis of the host item or module at `path`: the
@@ -182,18 +178,28 @@ impl DocIndex {
     ///
     /// Returns an error if no public item or module exists at `path`.
     pub fn render_doc(&self, path: &str) -> std::result::Result<String, DocIndexError> {
+        let not_found = || DocIndexError::ItemNotFound(path.to_string());
         let segments = normalize_path(path, &self.host_crate);
-        let host = self.host_data();
-        let request = find_request(host, &segments)
-            .ok_or_else(|| DocIndexError::ItemNotFound(path.to_string()))?;
+        let located = self.resolve(&segments).ok_or_else(not_found)?;
+        let crate_data = self
+            .crate_data(&located.crate_name)
+            .ok_or_else(not_found)?
+            .clone();
+        let request = request_for(&crate_data, &located).ok_or_else(not_found)?;
+        let requests = BTreeSet::from([request]);
 
-        let mut out = String::new();
-        let rendered = RustApiSynopsis::new(host).render_requests(&BTreeSet::from([request]));
-        out.push_str(&rendered.api);
+        let synopsis = RustApiSynopsis::new(&crate_data);
+        let rendered = if located.crate_name == self.host_crate {
+            synopsis.render_requests(&requests)
+        } else {
+            synopsis.render_external_facade(&located.crate_name, &requests)
+        };
+
+        let mut out = rendered.api;
         render_cached_external_facades(&mut out, rendered.external_facades, &self.crates);
 
         if out.trim().is_empty() {
-            return Err(DocIndexError::ItemNotFound(path.to_string()));
+            return Err(not_found());
         }
         Ok(out.trim_end().to_string())
     }
@@ -203,6 +209,265 @@ impl DocIndex {
         self.crates
             .get(&self.host_crate)
             .expect("the constructors always insert the host crate")
+    }
+
+    /// Get the cached rustdoc data of a crate.
+    fn crate_data(&self, crate_name: &str) -> Option<&Arc<RustdocCrate>> {
+        self.crates.get(crate_name)
+    }
+
+    /// The `prelude` module of the host crate.
+    fn prelude(&self) -> Option<Located> {
+        self.resolve_module(&["prelude".to_string()])
+    }
+
+    /// The root module of the host crate.
+    fn host_root(&self) -> Located {
+        let host = self.host_data();
+        Located {
+            crate_name: self.host_crate.clone(),
+            path: Vec::new(),
+            item: host
+                .index
+                .get(&host.root)
+                .cloned()
+                .unwrap_or_else(|| empty_root(host.root)),
+        }
+    }
+
+    /// Resolve a normalized path to the item that it names.
+    ///
+    /// The walk starts at the host crate root. If that fails, it starts at
+    /// the `prelude` module, so that a name imported by
+    /// `use host::prelude::*;` resolves without its module path. The last
+    /// step is the paths table of the host crate, which holds items that no
+    /// walk reaches.
+    ///
+    /// The result is the item under the name, which can be a `use` item. Call
+    /// [`Self::follow_reexports`] to get the declaration behind it.
+    fn resolve(&self, segments: &[String]) -> Option<Located> {
+        if segments.is_empty() {
+            return None;
+        }
+        if let Some(located) = self.walk(self.host_root(), segments) {
+            return Some(located);
+        }
+        if let Some(located) = self.prelude().and_then(|prelude| self.walk(prelude, segments)) {
+            return Some(located);
+        }
+        let item = RustApiSynopsis::new(self.host_data()).find_item(segments)?;
+        Some(Located {
+            crate_name: self.host_crate.clone(),
+            path: segments.to_vec(),
+            item,
+        })
+    }
+
+    /// Resolve a normalized path to the module that it names.
+    fn resolve_module(&self, segments: &[String]) -> Option<Located> {
+        self.resolve(segments)
+            .and_then(|located| self.follow_reexports(located))
+            .filter(|located| matches!(located.item.inner, ItemEnum::Module(_)))
+    }
+
+    /// Walk `segments` down from `start`, one name per segment.
+    ///
+    /// Every segment except the last must name a module. A segment that names
+    /// a re-export of a module walks through it.
+    fn walk(&self, start: Located, segments: &[String]) -> Option<Located> {
+        let mut current = start;
+        for (position, segment) in segments.iter().enumerate() {
+            let child = self
+                .children(&current)
+                .into_iter()
+                .find(|child| child.item.name.as_deref() == Some(segment.as_str()))?;
+            if position + 1 == segments.len() {
+                return Some(child);
+            }
+            current = self.follow_reexports(child)?;
+        }
+        Some(current)
+    }
+
+    /// The public children of a module.
+    fn children(&self, module: &Located) -> Vec<Located> {
+        let Some(crate_data) = self.crate_data(&module.crate_name) else {
+            return Vec::new();
+        };
+        let ItemEnum::Module(inner) = &module.item.inner else {
+            return Vec::new();
+        };
+        inner
+            .items
+            .iter()
+            .filter_map(|id| crate_data.index.get(id))
+            .filter(|item| is_public(item) && item.name.is_some())
+            .map(|item| module.child(item.clone()))
+            .collect()
+    }
+
+    /// Follow a chain of re-exports to the item that declares the name.
+    ///
+    /// A `use` item carries no declaration. The index needs the kind of the
+    /// target, which can live in another crate.
+    fn follow_reexports(&self, located: Located) -> Option<Located> {
+        let mut current = located;
+        for _ in 0..MAX_REEXPORT_DEPTH {
+            let ItemEnum::Use(use_item) = &current.item.inner else {
+                return Some(current);
+            };
+            current = self.follow_use(&current, use_item)?;
+        }
+        None
+    }
+
+    /// The target of one `use` item, in the crate that declares it.
+    fn follow_use(&self, owner: &Located, use_item: &Use) -> Option<Located> {
+        let owner_data = self.crate_data(&owner.crate_name)?;
+        let id = use_item.id?;
+        if let Some(summary) = owner_data.paths.get(&id)
+            && let Some(external) = owner_data.external_crates.get(&summary.crate_id)
+        {
+            let target_data = self.crate_data(&external.name)?;
+            let path = Vec::from_iter(summary.path.iter().skip(1).cloned());
+            let item = RustApiSynopsis::new(target_data).find_item(&path)?;
+            return Some(Located {
+                crate_name: external.name.clone(),
+                path,
+                item,
+            });
+        }
+        let item = owner_data.index.get(&id)?.clone();
+        let path = match owner_data.paths.get(&id) {
+            Some(summary) => Vec::from_iter(summary.path.iter().skip(1).cloned()),
+            None => owner.path.clone(),
+        };
+        Some(Located {
+            crate_name: owner.crate_name.clone(),
+            path,
+            item,
+        })
+    }
+
+    /// Render the public children of a module as one `kind name` line each.
+    fn render_module_index(&self, module: &Located) -> String {
+        let mut out = String::new();
+        for child in self.children(module) {
+            if let Some(line) = self.index_line(&child) {
+                out.push_str(&line);
+                out.push('\n');
+            }
+        }
+        out
+    }
+
+    /// Render one line of the compact index.
+    ///
+    /// The name is the one that the module exports. A re-export shows the
+    /// kind of its target and the crate that declares it.
+    fn index_line(&self, child: &Located) -> Option<String> {
+        let name = child.item.name.as_deref()?;
+        let ItemEnum::Use(use_item) = &child.item.inner else {
+            return Some(format!("{} {name}", kind_str(child.item.inner.item_kind())));
+        };
+        if use_item.is_glob {
+            return Some(self.glob_index_line(child, use_item, name));
+        }
+        match self.follow_reexports(child.clone()) {
+            Some(target) => Some(reexport_line(
+                kind_str(target.item.inner.item_kind()),
+                name,
+                (target.crate_name != child.crate_name).then_some(target.crate_name.as_str()),
+            )),
+            // The target crate has no cached rustdoc JSON. The paths table of
+            // the owner still gives the kind and the origin.
+            None => Some(self.summary_index_line(child, use_item, name)),
+        }
+    }
+
+    /// Render the index line of a glob re-export.
+    fn glob_index_line(&self, child: &Located, use_item: &Use, name: &str) -> String {
+        match self.follow_use(child, use_item) {
+            Some(target) if target.crate_name != child.crate_name => {
+                format!("mod {name} (glob re-export from `{}`)", target.crate_name)
+            }
+            _ => format!("mod {name} (glob re-export)"),
+        }
+    }
+
+    /// Render the index line of a re-export from the paths table alone.
+    fn summary_index_line(&self, child: &Located, use_item: &Use, name: &str) -> String {
+        let summary = self
+            .crate_data(&child.crate_name)
+            .and_then(|crate_data| Some((crate_data, use_item.id?)))
+            .and_then(|(crate_data, id)| Some((crate_data, crate_data.paths.get(&id)?)));
+        let Some((crate_data, summary)) = summary else {
+            return format!("use {}", use_item.source);
+        };
+        reexport_line(
+            kind_str(summary.kind),
+            name,
+            crate_data
+                .external_crates
+                .get(&summary.crate_id)
+                .map(|external| external.name.as_str()),
+        )
+    }
+}
+
+/// The maximum number of re-exports that one name can chain through.
+const MAX_REEXPORT_DEPTH: usize = 8;
+
+/// An item, the crate that holds it, and its path inside that crate.
+///
+/// The path starts under the crate root and is what a facade request needs.
+#[derive(Clone)]
+struct Located {
+    crate_name: String,
+    path: Vec<String>,
+    item: Item,
+}
+
+impl Located {
+    /// A child of this module, one path segment deeper.
+    fn child(&self, item: Item) -> Self {
+        let mut path = self.path.clone();
+        path.extend(item.name.clone());
+        Self {
+            crate_name: self.crate_name.clone(),
+            path,
+            item,
+        }
+    }
+}
+
+/// Render one index line for a re-export.
+fn reexport_line(kind: &str, name: &str, origin: Option<&str>) -> String {
+    match origin {
+        Some(origin) => format!("{kind} {name} (re-exported from `{origin}`)"),
+        None => format!("{kind} {name}"),
+    }
+}
+
+/// A stand-in for a crate root that the index does not hold.
+fn empty_root(id: rustdoc_types::Id) -> Item {
+    Item {
+        id,
+        crate_id: 0,
+        name: None,
+        span: None,
+        visibility: rustdoc_types::Visibility::Public,
+        docs: None,
+        links: HashMap::new(),
+        attrs: Vec::new(),
+        deprecation: None,
+        stability: None,
+        const_stability: None,
+        inner: ItemEnum::Module(rustdoc_types::Module {
+            is_crate: true,
+            items: Vec::new(),
+            is_stripped: false,
+        }),
     }
 }
 
@@ -224,99 +489,22 @@ fn normalize_path(path: &str, host_crate: &str) -> Vec<String> {
     segments
 }
 
-/// Find the facade request for `segments` in the host crate. A single
-/// segment resolves against the children of the `prelude` module.
-fn find_request(host: &RustdocCrate, segments: &[String]) -> Option<FacadeRequest> {
-    if segments.is_empty() {
-        return None;
-    }
-    let synopsis = RustApiSynopsis::new(host);
-    if let Some(item) = synopsis.find_item(segments) {
-        return Some(request_for(host, &item, segments.to_vec()));
-    }
-    if segments.len() == 1 {
-        let prelude = synopsis.find_module(&["prelude".to_string()])?;
-        let ItemEnum::Module(prelude) = &prelude.inner else {
-            return None;
-        };
-        let item = prelude
-            .items
-            .iter()
-            .filter_map(|id| host.index.get(id))
-            .find(|item| item.name.as_deref() == Some(segments[0].as_str()))?;
-        return Some(request_for(
-            host,
-            item,
-            vec!["prelude".to_string(), segments[0].clone()],
-        ));
-    }
-    None
-}
-
-/// Build the request that renders `item`. `fallback_path` is the path of
-/// `item` relative to the crate root, for items missing from the paths
-/// table.
-fn request_for(host: &RustdocCrate, item: &Item, fallback_path: Vec<String>) -> FacadeRequest {
-    let path = host
-        .paths
-        .get(&item.id)
-        .map(|summary| summary.path.iter().skip(1).cloned().collect())
-        .unwrap_or(fallback_path);
-    if matches!(item.inner, ItemEnum::Module(_)) {
+/// Build the request that renders `located` from its own crate.
+///
+/// The path must be valid inside that crate. The paths table gives it. The
+/// walked path is the fallback for the items that the table omits, for
+/// example a `use` item.
+fn request_for(crate_data: &RustdocCrate, located: &Located) -> Option<FacadeRequest> {
+    let path: Vec<String> = match crate_data.paths.get(&located.item.id) {
+        Some(summary) => summary.path.iter().skip(1).cloned().collect(),
+        None if located.path.is_empty() => return None,
+        None => located.path.clone(),
+    };
+    Some(if matches!(located.item.inner, ItemEnum::Module(_)) {
         FacadeRequest::Module(path)
     } else {
         FacadeRequest::Item(path)
-    }
-}
-
-/// Render the public children of `module` as one `kind name` line per item.
-fn render_module_index(crate_data: &RustdocCrate, module: &Item) -> String {
-    let ItemEnum::Module(module) = &module.inner else {
-        return String::new();
-    };
-    let mut out = String::new();
-    for item_id in &module.items {
-        let Some(item) = crate_data.index.get(item_id) else {
-            continue;
-        };
-        if !is_public(item) {
-            continue;
-        }
-        if let Some(line) = index_line(crate_data, item) {
-            out.push_str(&line);
-            out.push('\n');
-        }
-    }
-    out
-}
-
-/// Render one line of the compact index for `item`.
-fn index_line(crate_data: &RustdocCrate, item: &Item) -> Option<String> {
-    let name = item.name.as_deref()?;
-    Some(match &item.inner {
-        ItemEnum::Use(use_item) => reexport_line(crate_data, use_item, name),
-        inner => format!("{} {name}", kind_str(inner.item_kind())),
     })
-}
-
-/// Render the index line of a `use` item. Resolve the target to show its
-/// kind and the crate it comes from.
-fn reexport_line(crate_data: &RustdocCrate, use_item: &Use, name: &str) -> String {
-    let Some(summary) = use_item.id.and_then(|id| crate_data.paths.get(&id)) else {
-        return format!("use {}", use_item.source);
-    };
-    let kind = kind_str(summary.kind);
-    let origin = crate_data.external_crates.get(&summary.crate_id);
-    if use_item.is_glob {
-        return match origin {
-            Some(external) => format!("mod {name} (glob re-export from `{}`)", external.name),
-            None => format!("mod {name} (glob re-export)"),
-        };
-    }
-    match origin {
-        Some(external) => format!("{kind} {name} (re-exported from `{}`)", external.name),
-        None => format!("{kind} {name}"),
-    }
 }
 
 /// Map an item kind to the keyword of its declaration.
@@ -428,37 +616,68 @@ pub(crate) mod tests {
         }
     }
 
-    /// The host crate: a `prelude` module with one external re-export, one
-    /// local function, and one nested module with a function.
+    /// A `use` item that re-exports one name.
+    fn reexport(id: u32, name: &str, source: &str, target: u32) -> Item {
+        item(
+            id,
+            Some(name),
+            ItemEnum::Use(Use {
+                source: source.to_string(),
+                name: name.to_string(),
+                id: Some(Id(target)),
+                is_glob: false,
+            }),
+        )
+    }
+
+    /// A summary for the paths table of a crate.
+    fn summary(crate_id: u32, path: &[&str], kind: ItemKind) -> ItemSummary {
+        ItemSummary {
+            crate_id,
+            path: path.iter().map(|segment| segment.to_string()).collect(),
+            kind,
+        }
+    }
+
+    /// The host crate. The `prelude` module holds one external re-export, one
+    /// local function, one nested module, one re-export of a module from
+    /// another module, and one renamed re-export.
     fn host_fixture() -> RustdocCrate {
         let index = HashMap::from([
-            (Id(0), module(0, "host_crate", vec![Id(1)])),
-            (Id(1), module(1, "prelude", vec![Id(2), Id(3), Id(4)])),
+            (Id(0), module(0, "host_crate", vec![Id(1), Id(10)])),
+            (
+                Id(1),
+                module(1, "prelude", vec![Id(2), Id(3), Id(4), Id(6), Id(7)]),
+            ),
             (
                 Id(2),
-                item(
-                    2,
-                    Some("decimal"),
-                    ItemEnum::Use(Use {
-                        source: "dep_crate::decimal".to_string(),
-                        name: "decimal".to_string(),
-                        id: Some(Id(100)),
-                        is_glob: false,
-                    }),
-                ),
+                reexport(2, "decimal", "dep_crate::decimal", 100),
             ),
             (Id(3), function(3, "submit_order")),
             (Id(4), module(4, "indicators", vec![Id(5)])),
             (Id(5), function(5, "zscore")),
+            (Id(6), reexport(6, "rolling", "crate::deep::rolling", 11)),
+            (Id(7), reexport(7, "Bar", "crate::deep::Foo", 13)),
+            (Id(10), module(10, "deep", vec![Id(11), Id(13)])),
+            (Id(11), module(11, "rolling", vec![Id(12)])),
+            (Id(12), function(12, "mean")),
+            (Id(13), function(13, "Foo")),
         ]);
-        let paths = HashMap::from([(
-            Id(100),
-            ItemSummary {
-                crate_id: 1,
-                path: vec!["dep_crate".to_string(), "decimal".to_string()],
-                kind: ItemKind::Macro,
-            },
-        )]);
+        let paths = HashMap::from([
+            (
+                Id(100),
+                summary(1, &["dep_crate", "decimal"], ItemKind::Macro),
+            ),
+            (Id(10), summary(0, &["host_crate", "deep"], ItemKind::Module)),
+            (
+                Id(11),
+                summary(0, &["host_crate", "deep", "rolling"], ItemKind::Module),
+            ),
+            (
+                Id(13),
+                summary(0, &["host_crate", "deep", "Foo"], ItemKind::Function),
+            ),
+        ]);
         let external_crates = HashMap::from([(
             1,
             ExternalCrate {
@@ -483,11 +702,7 @@ pub(crate) mod tests {
         ]);
         let paths = HashMap::from([(
             Id(100),
-            ItemSummary {
-                crate_id: 0,
-                path: vec!["dep_crate".to_string(), "decimal".to_string()],
-                kind: ItemKind::Macro,
-            },
+            summary(0, &["dep_crate", "decimal"], ItemKind::Macro),
         )]);
         crate_data(index, paths, HashMap::new())
     }
@@ -565,6 +780,38 @@ pub(crate) mod tests {
         let doc = index.render_doc("decimal").expect("the re-export resolves");
         assert!(doc.contains("Could not generate rustdoc JSON"), "{doc}");
         assert!(doc.contains("dep_crate"), "{doc}");
+    }
+
+    /// A module that the prelude re-exports must be listable under the name
+    /// that the index shows, without the internal path of the host crate.
+    #[test]
+    fn render_index_follows_a_reexported_module() {
+        let index = fixture_index();
+        let listing = index.render_index(None).expect("prelude exists");
+        assert!(listing.contains("mod rolling"), "{listing}");
+
+        for path in ["rolling", "prelude::rolling", "deep::rolling"] {
+            let listing = index
+                .render_index(Some(path))
+                .unwrap_or_else(|err| panic!("`{path}` must resolve: {err}"));
+            assert_eq!(listing, "fn mean\n", "{path}");
+        }
+    }
+
+    /// A renamed re-export keeps the name of the prelude in the index.
+    #[test]
+    fn render_index_keeps_the_exported_name_of_a_renamed_reexport() {
+        let index = fixture_index();
+        let listing = index.render_index(None).expect("prelude exists");
+        assert!(listing.contains("fn Bar"), "{listing}");
+        assert!(!listing.contains("fn Foo"), "{listing}");
+    }
+
+    #[test]
+    fn render_doc_follows_a_reexported_module() {
+        let index = fixture_index();
+        let doc = index.render_doc("rolling").expect("the module resolves");
+        assert!(doc.contains("pub fn mean()"), "{doc}");
     }
 
     #[test]
