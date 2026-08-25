@@ -412,7 +412,7 @@ impl<'a> RustApiSynopsis<'a> {
                 self.crate_data
                     .index
                     .get(id)
-                    .filter(|child| child.name.as_ref() == Some(segment))
+                    .filter(|child| exported_name(child) == Some(segment.as_str()))
                     .cloned()
             })?;
         }
@@ -812,6 +812,17 @@ impl<'a> RustApiSynopsis<'a> {
 
 pub(crate) fn is_public(item: &Item) -> bool {
     matches!(item.visibility, Visibility::Public)
+}
+
+/// The name under which a module exports an item.
+///
+/// A `use` item carries its name in the re-export. Rustdoc leaves
+/// `Item::name` empty for it.
+pub(crate) fn exported_name(item: &Item) -> Option<&str> {
+    match &item.inner {
+        ItemEnum::Use(use_item) => Some(use_item.name.as_str()),
+        _ => item.name.as_deref(),
+    }
 }
 
 fn is_documentable_external_crate(external_crate: &rustdoc_types::ExternalCrate) -> bool {
