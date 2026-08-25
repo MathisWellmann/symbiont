@@ -34,6 +34,7 @@ use crate::{
     doc_string::{
         FacadeRequest,
         RustApiSynopsis,
+        exported_name as item_name,
         is_public,
         load_external_facades,
         render_cached_external_facades,
@@ -282,7 +283,7 @@ impl DocIndex {
             let child = self
                 .children(&current)
                 .into_iter()
-                .find(|child| child.item.name.as_deref() == Some(segment.as_str()))?;
+                .find(|child| item_name(&child.item) == Some(segment.as_str()))?;
             if position + 1 == segments.len() {
                 return Some(child);
             }
@@ -303,8 +304,8 @@ impl DocIndex {
         let mut children = Vec::new();
         self.collect_children(module, &mut children, &mut HashSet::new());
         let mut seen = HashSet::new();
-        children.retain(|child| match child.item.name.clone() {
-            Some(name) => seen.insert(name),
+        children.retain(|child| match item_name(&child.item) {
+            Some(name) => seen.insert(name.to_string()),
             None => false,
         });
         children
@@ -337,7 +338,7 @@ impl DocIndex {
         {
             match &item.inner {
                 ItemEnum::Use(use_item) if use_item.is_glob => globs.push((item, use_item)),
-                _ if item.name.is_some() => out.push(module.child(item.clone())),
+                _ if item_name(item).is_some() => out.push(module.child(item.clone())),
                 _ => {}
             }
         }
@@ -347,8 +348,7 @@ impl DocIndex {
                 Some(target) => self.collect_children(&target, out, visited),
                 // The target crate has no cached rustdoc JSON. Keep the glob
                 // itself so that the listing reports the gap.
-                None if item.name.is_some() => out.push(module.child(item.clone())),
-                None => {}
+                None => out.push(module.child(item.clone())),
             }
         }
     }
@@ -413,7 +413,7 @@ impl DocIndex {
     /// The name is the one that the module exports. A re-export shows the
     /// kind of its target and the crate that declares it.
     fn index_line(&self, child: &Located) -> Option<String> {
-        let name = child.item.name.as_deref()?;
+        let name = item_name(&child.item)?;
         let ItemEnum::Use(use_item) = &child.item.inner else {
             let kind = kind_str(child.item.inner.item_kind());
             // A child from a glob re-export already is the declaration. Name
@@ -489,7 +489,7 @@ impl Located {
     /// A child of this module, one path segment deeper.
     fn child(&self, item: Item) -> Self {
         let mut path = self.path.clone();
-        path.extend(item.name.clone());
+        path.extend(item_name(&item).map(str::to_string));
         Self {
             crate_name: self.crate_name.clone(),
             path,
@@ -497,6 +497,8 @@ impl Located {
         }
     }
 }
+
+
 
 /// Render one index line for a re-export.
 fn reexport_line(kind: &str, name: &str, origin: Option<&str>) -> String {
@@ -674,15 +676,33 @@ pub(crate) mod tests {
     }
 
     /// A `use` item that re-exports one name.
+    ///
+    /// Rustdoc leaves `Item::name` empty on a `use` item and puts the
+    /// exported name in `Use::name`. The fixtures must match that, or the
+    /// index looks correct here and stays empty against a real crate.
     fn reexport(id: u32, name: &str, source: &str, target: u32) -> Item {
         item(
             id,
-            Some(name),
+            None,
             ItemEnum::Use(Use {
                 source: source.to_string(),
                 name: name.to_string(),
                 id: Some(Id(target)),
                 is_glob: false,
+            }),
+        )
+    }
+
+    /// A `use` item that re-exports a whole module.
+    fn glob_reexport(id: u32, name: &str, source: &str, target: u32) -> Item {
+        item(
+            id,
+            None,
+            ItemEnum::Use(Use {
+                source: source.to_string(),
+                name: name.to_string(),
+                id: Some(Id(target)),
+                is_glob: true,
             }),
         )
     }
@@ -706,10 +726,7 @@ pub(crate) mod tests {
                 Id(1),
                 module(1, "prelude", vec![Id(2), Id(3), Id(4), Id(6), Id(7)]),
             ),
-            (
-                Id(2),
-                reexport(2, "decimal", "dep_crate::decimal", 100),
-            ),
+            (Id(2), reexport(2, "decimal", "dep_crate::decimal", 100)),
             (Id(3), function(3, "submit_order")),
             (Id(4), module(4, "indicators", vec![Id(5)])),
             (Id(5), function(5, "zscore")),
@@ -780,16 +797,7 @@ pub(crate) mod tests {
             (Id(1), module(1, "prelude", vec![Id(2), Id(3)])),
             (
                 Id(2),
-                item(
-                    2,
-                    Some("prelude"),
-                    ItemEnum::Use(Use {
-                        source: "dep_crate::prelude::*".to_string(),
-                        name: "prelude".to_string(),
-                        id: Some(Id(200)),
-                        is_glob: true,
-                    }),
-                ),
+                glob_reexport(2, "prelude", "dep_crate::prelude::*", 200),
             ),
             (Id(3), function(3, "submit_order")),
         ]);
