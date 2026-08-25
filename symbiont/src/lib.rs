@@ -82,7 +82,10 @@ pub use evolution_trace::{
 };
 pub use evolve_error::EvolveError;
 pub use evolve_failure::EvolveFailure;
-pub use evolve_info::EvolveInfo;
+pub use evolve_info::{
+    EvolveInfo,
+    Lane,
+};
 pub use inference::{
     DOC_TOOLS_MAX_TURNS,
     INFERENCE_REQUEST_TIMEOUT,

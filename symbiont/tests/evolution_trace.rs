@@ -21,6 +21,7 @@ use common::{
 use symbiont::{
     BuildRecord,
     LadderEvent,
+    Lane,
     Profile,
     Runtime,
     TraceOutcome,
@@ -57,7 +58,11 @@ async fn trace_records_the_whole_lane() {
         .expect("evolution should succeed after one self-healing retry");
     let trace = info.trace();
 
-    assert_eq!(trace.lane(), 0, "single-prompt evolve is lane 0");
+    assert_eq!(
+        trace.lane(),
+        Lane::from(0),
+        "single-prompt evolve is lane 0"
+    );
     assert_eq!(trace.base_prompt(), BASE_PROMPT);
     assert_eq!(trace.attempts().len(), 2, "one rejection plus one success");
 

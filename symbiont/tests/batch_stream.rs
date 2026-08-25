@@ -17,6 +17,7 @@ use common::{
 };
 use futures_util::StreamExt;
 use symbiont::{
+    Lane,
     Profile,
     Runtime,
 };
@@ -111,5 +112,5 @@ async fn lanes_are_yielded_as_they_finish() {
     // would discard the records of an overlapping round.
     let failures = rt.take_evolve_failures();
     assert_eq!(failures.len(), 1, "the rejected answer of lane 1");
-    assert_eq!(failures[0].lane(), 1);
+    assert_eq!(failures[0].lane(), Lane::from(1));
 }
