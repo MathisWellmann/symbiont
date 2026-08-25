@@ -13,6 +13,7 @@ mod compiler;
 #[cfg(debug_assertions)]
 mod debug_call_counter;
 mod decl;
+mod doc_index;
 mod doc_string;
 mod dylib_config;
 mod dylib_dependency;
@@ -40,6 +41,10 @@ mod validation;
 pub use decl::{
     EvolvableDecl,
     FullSource,
+};
+pub use doc_index::{
+    DocIndex,
+    DocIndexError,
 };
 pub use dylib_config::DylibConfig;
 pub use dylib_dependency::{
