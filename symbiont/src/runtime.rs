@@ -132,7 +132,8 @@ static RUNTIME: OnceLock<Runtime> = OnceLock::new();
 /// one. Batch lanes register without publishing, so the host can evaluate all
 /// candidates before choosing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Publish {
+#[expect(missing_docs, reason = "Self explanatory")]
+pub enum Publish {
     Yes,
     No,
 }
@@ -796,8 +797,8 @@ impl Runtime {
     /// Each prompt gets its own lane: its own chat history, its own
     /// self-healing retry budget, and its own [`Revision`] on success. Lanes
     /// are independent, so eight slightly different prompts can converge on
-    /// eight entirely different implementations — which is the point. The
-    /// returned vector is positionally aligned with `prompts`, and a lane that
+    /// eight entirely different implementations.
+    /// The returned vector is positionally aligned with `prompts`, and a lane that
     /// exhausts its budget yields `Err` without affecting its siblings.
     ///
     /// Lanes that converge on byte-identical source share one revision rather
@@ -815,25 +816,6 @@ impl Runtime {
     /// Results arrive as one `Vec` when the slowest lane is done. To act on
     /// each candidate as it lands — and overlap the next round's generation
     /// with this round's evaluation — use [`Runtime::evolve_batch_stream`].
-    ///
-    /// # Why this is faster than a loop
-    ///
-    /// Against an OpenAI-compatible endpoint there is no batch API to call:
-    /// batching *is* issuing the requests concurrently and letting the server's
-    /// continuous batcher merge them into one forward pass. Two effects
-    /// compound:
-    ///
-    /// - Decode is memory-bandwidth-bound. At batch 1 the model weights are
-    ///   read once per token; at batch `n` they are read once for `n` tokens.
-    /// - All lanes share the symbiont system preamble, so with prefix caching
-    ///   enabled every lane after the first skips that prefill. The preamble
-    ///   is largest with [`DocMode::Inline`](crate::DocMode). The other modes
-    ///   keep it small and let each lane fetch API details with tool calls,
-    ///   which extend the per-lane suffix after the shared prefix.
-    ///
-    /// Keep the varying part of each prompt at the *end*. Prefix reuse stops at
-    /// the first differing token, so a per-lane preamble throws the second
-    /// effect away.
     ///
     /// # The active revision is not changed
     ///
@@ -855,25 +837,6 @@ impl Runtime {
     ///     .revision;
     /// runtime.activate_revision(best)?;
     /// ```
-    ///
-    /// # The limit caps requests, not lanes
-    ///
-    /// Every lane starts immediately, however large the batch and however small
-    /// [`Runtime::max_in_flight`]. A lane holds a slot only while it is talking
-    /// to the model, and gives it back before it parses, queues for the build
-    /// slot, compiles and loads — so lanes doing local work are covered by other
-    /// lanes generating in their place. The limit belongs to the endpoint, not
-    /// to one call: it lives on the runtime and is shared by everything the
-    /// process sends.
-    ///
-    /// # Contract
-    ///
-    /// Because nothing is published, this method is **exempt** from the
-    /// feedback-loop contract that [`Runtime::evolve`] imposes: a
-    /// retained-but-inactive revision is invisible to running calls, so a batch
-    /// may generate while evolvable functions from an earlier round are still
-    /// executing. That is what makes it possible to overlap evaluation of round
-    /// `n` with generation of round `n + 1`.
     ///
     /// # Failures
     ///
@@ -920,8 +883,9 @@ impl Runtime {
             // Completion order in, input order out: the reordering buffer is
             // the whole difference between this and
             // [`Runtime::evolve_batch_stream`].
-            let mut slots: Vec<Option<std::result::Result<EvolveInfo, EvolveError>>> =
-                Vec::from_iter(prompts.iter().map(|_| None));
+            let mut slots = Vec::<Option<std::result::Result<EvolveInfo, EvolveError>>>::from_iter(
+                prompts.iter().map(|_| None),
+            );
             {
                 let mut lanes = std::pin::pin!(self.evolve_batch_stream(agent, prompts));
                 while let Some((lane, result)) = lanes.next().await {
@@ -1057,7 +1021,7 @@ impl Runtime {
         clippy::too_many_lines,
         reason = "The retry policy is one sequential decision ladder; splitting it would obscure the order of the recovery rules"
     )]
-    fn evolve_lane<AgentT>(
+    pub fn evolve_lane<AgentT>(
         &self,
         agent: &AgentT,
         base_prompt: &str,
