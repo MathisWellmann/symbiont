@@ -112,7 +112,10 @@ pub use rig_core::completion::Usage;
 // hosts inspecting the agent transcript need it nameable without depending
 // on `rig-core` directly.
 pub use rig_core::message::Message;
-pub use runtime::Runtime;
+pub use runtime::{
+    Publish,
+    Runtime,
+};
 // Reachable through `ThinkingLevel::to_additional_params`, so hosts merging
 // provider parameters need it nameable without depending on `serde_json`
 // directly.
