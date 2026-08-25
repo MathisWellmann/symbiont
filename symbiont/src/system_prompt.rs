@@ -2,9 +2,12 @@ use owo_colors::OwoColorize;
 use tracing::info;
 
 use crate::{
+    DocIndex,
+    DocIndexError,
     Result,
     doc_string::write_prelude_doc_string,
 };
+
 const BASE_PROMPT: &str = "#Role
 
 You are a Rust coding agent running inside the `symbiont` function-evolution harness.
@@ -65,7 +68,7 @@ The generated crate uses Rust edition 2024.
 
 You may use:
 - Rust `std`
-- items, types, and methods documented in the host API section below
+- items, types, and methods from the host API documentation
 - items already imported by the harness prelude, if any
 
 Do not invent imports or dependencies. Emit no `use` item for a prelude that
@@ -135,52 +138,159 @@ Prefer deterministic, simple, robust code.
 For performance-sensitive functions, avoid unnecessary heap allocation,
 formatting, dynamic dispatch, excessive bounds checks, and avoidable cloning.
 
-# Host API documentation
+";
+
+/// The documentation section for [`DocMode::Inline`]. The full synopsis
+/// follows this header.
+const INLINE_DOC_SECTION: &str = "# Host API documentation
 
 The following section contains generated documentation for host APIs
 available to the evolved code. If empty, only `std` is available.
 
 ";
 
-/// Build the system prompt (the agent preamble) that symbiont sends with every
-/// inference request.
+/// The documentation section for the modes that register the `api_index` and
+/// `api_doc` tools.
+const TOOL_DOC_SECTION: &str = "# Host API documentation
+
+The host API is documented on demand. Two tools give access to it:
+
+- `api_index` lists the public items of a module as `kind name` lines. Call
+  it without arguments to list the prelude.
+- `api_doc` shows the full definition of one item or module: the declaration,
+  the inherent methods, and the operator impls. Pass a `::`-separated path
+  like `prelude::Order` or a single name from the prelude.
+
+If you do not know the exact signature of an item, call `api_doc` before you
+use the item. Tool output is the same synopsis that the inline mode embeds.
+The contract of this prompt applies to it.
+
+";
+
+/// The note for a host crate without a `prelude` module.
+const NO_PRELUDE_NOTE: &str = "The host crate does not expose a `prelude` module, so `use host::prelude::*;` imports nothing. No host API is available beyond explicit `host::...` paths.\n";
+
+/// How the agent gets the host API documentation.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum DocMode {
+    /// The system prompt contains the full API synopsis. The prompt grows
+    /// with the size of the host API, and every inference request sends it
+    /// again.
+    Inline,
+    /// The system prompt contains the compact index of the prelude. The
+    /// `api_index` and `api_doc` tools give the agent the full definitions
+    /// on demand.
+    #[default]
+    IndexAndTools,
+    /// The system prompt contains no API content. The agent explores the API
+    /// with the `api_index` and `api_doc` tools.
+    Tools,
+}
+
+impl DocMode {
+    /// Does this mode register the documentation tools on the agent?
+    pub(crate) fn uses_tools(self) -> bool {
+        !matches!(self, Self::Inline)
+    }
+}
+
+/// Build the system prompt (the agent preamble) that symbiont sends with
+/// every inference request.
 ///
 /// This is the exact string that [`crate::agent_builder`] installs as the
 /// preamble of the agent. A host can thus reproduce what the agent was told
 /// without a copy of its own.
 ///
-/// [`EvolutionTrace`](crate::EvolutionTrace) omits the preamble by design. The
-/// preamble is the same for every attempt of a lane and every lane of a batch,
-/// and it embeds the generated host-API documentation. This makes it the
-/// largest single string in the process. To store it once beside the traces
-/// costs less than one copy per lane.
+/// [`EvolutionTrace`](crate::EvolutionTrace) omits the preamble by design.
+/// The preamble is the same for every attempt of a lane and every lane of a
+/// batch. With [`DocMode::Inline`] it embeds the full host API documentation
+/// and is the largest single string in the process. The other modes keep it
+/// small.
 ///
 /// # Limits
 ///
-/// The result is the same as the string that an agent received only under two
-/// conditions. The caller must pass the same `opt_crate_name`. The caller must
-/// also not replace the preamble on its own builder.
+/// The result is the same as the string that an agent received only under
+/// three conditions. The caller must pass the same `opt_crate_name`. The
+/// caller must pass the same `doc_mode`. The caller must also not replace
+/// the preamble on its own builder.
 ///
-/// With `Some(crate_name)`, this function calls `rustdoc` to build the host API
-/// surface, which is slow. Call it one time and cache the result.
+/// With `Some(crate_name)`, this function builds the rustdoc JSON of the
+/// host crate, which is slow. Call it one time and cache the result.
 ///
 /// # Arguments
 ///
-/// - `opt_crate_name`: If `Some`, the function builds the documentation of
-///   that crate and appends it. The documentation tells the agent which host
-///   APIs the evolved code can call. This is usually
-///   `Some(env!("CARGO_PKG_NAME"))`.
+/// - `opt_crate_name`: The crate to document, usually
+///   `Some(env!("CARGO_PKG_NAME"))`. With `None`, no host API is documented
+///   and `doc_mode` has no effect.
+/// - `doc_mode`: How the prompt carries the host API documentation.
 ///
 /// # Errors
 ///
-/// Returns an error if the runtime cannot build or parse the documentation of
-/// the host crate.
-pub async fn system_prompt(opt_crate_name: Option<&str>) -> Result<String> {
+/// Returns an error if the runtime cannot build or parse the documentation
+/// of the host crate.
+pub async fn system_prompt(opt_crate_name: Option<&str>, doc_mode: DocMode) -> Result<String> {
     let mut prompt = BASE_PROMPT.to_string();
-    if let Some(crate_name) = opt_crate_name {
-        write_prelude_doc_string(&mut prompt, crate_name).await?;
+    match (opt_crate_name, doc_mode) {
+        (Some(crate_name), DocMode::Inline) => {
+            prompt.push_str(INLINE_DOC_SECTION);
+            write_prelude_doc_string(&mut prompt, crate_name).await?;
+        }
+        (Some(crate_name), DocMode::IndexAndTools) => {
+            prompt.push_str(TOOL_DOC_SECTION);
+            let index = DocIndex::host(crate_name).await?;
+            match index.render_index(None) {
+                Ok(listing) if !listing.trim().is_empty() => {
+                    push_prelude_index(&mut prompt, &listing);
+                }
+                Ok(_) => prompt.push_str("The prelude imports no names.\n"),
+                Err(DocIndexError::NoPrelude) => prompt.push_str(NO_PRELUDE_NOTE),
+                Err(err) => return Err(err.into()),
+            }
+        }
+        (Some(_), DocMode::Tools) => prompt.push_str(TOOL_DOC_SECTION),
+        (None, _) => prompt.push_str(INLINE_DOC_SECTION),
     }
     info!("system_prompt: {}", prompt.green());
 
     Ok(prompt)
+}
+
+/// Append the compact prelude index to the prompt.
+fn push_prelude_index(prompt: &mut String, listing: &str) {
+    prompt.push_str(
+        "The harness injects `use host::prelude::*;`. These names are in scope. Call `api_doc` with a name or a path to get the full definition.\n\n```\n",
+    );
+    prompt.push_str(listing);
+    prompt.push_str("```\n");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn system_prompt_without_crate_ignores_doc_mode() {
+        for doc_mode in [DocMode::Inline, DocMode::IndexAndTools, DocMode::Tools] {
+            let prompt = system_prompt(None, doc_mode)
+                .await
+                .expect("no docs to build");
+            assert!(prompt.contains("# Host API documentation"));
+            assert!(prompt.contains("only `std` is available"));
+            assert!(!prompt.contains("api_doc"));
+        }
+    }
+
+    #[test]
+    fn tool_doc_section_names_both_tools() {
+        assert!(TOOL_DOC_SECTION.contains("api_index"));
+        assert!(TOOL_DOC_SECTION.contains("api_doc"));
+    }
+
+    #[test]
+    fn prelude_index_section_wraps_the_listing() {
+        let mut prompt = String::new();
+        push_prelude_index(&mut prompt, "struct Order\nfn submit_order\n");
+        assert!(prompt.contains("use host::prelude::*;"));
+        assert!(prompt.contains("```\nstruct Order\nfn submit_order\n```\n"));
+    }
 }

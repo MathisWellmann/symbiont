@@ -18,8 +18,8 @@
 //! so a batch of eight reads the model weights once per step instead of eight
 //! times. Everything before the strategy hint is byte-identical across lanes
 //! and is prefilled once when the server caches prefixes — a bigger effect for
-//! hosts that pass their crate name to `init_agent`, since that embeds the
-//! rustdoc-derived API surface into the shared part.
+//! hosts that document their crate API, either inline in the system prompt
+//! (`DocMode::Inline`) or as the compact prelude index (`DocMode::IndexAndTools`).
 //! `symbiont/benches/vllm/` has a concurrency sweep that measures both effects
 //! against a containerized vLLM.
 //!
@@ -42,6 +42,7 @@ use std::time::{
 };
 
 use symbiont::{
+    DocMode,
     Revision,
     Runtime,
 };
@@ -295,7 +296,7 @@ async fn main() -> symbiont::Result<()> {
     // model that starts rambling — chat completions generate until the context
     // runs out unless told otherwise — holds up the whole round while its
     // siblings sit finished. Ample for these implementations.
-    let agent = symbiont::agent_builder_from_env(None, &model, false)
+    let agent = symbiont::agent_builder_from_env(None, DocMode::default(), &model, false)
         .await?
         .max_tokens(MAX_OUTPUT_TOKENS)
         .build();

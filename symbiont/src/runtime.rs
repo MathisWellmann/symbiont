@@ -823,10 +823,11 @@ impl Runtime {
     ///
     /// - Decode is memory-bandwidth-bound. At batch 1 the model weights are
     ///   read once per token; at batch `n` they are read once for `n` tokens.
-    /// - All lanes share the symbiont system preamble — which embeds the
-    ///   rustdoc-derived API surface and is by far the largest part of the
-    ///   request — so with prefix caching enabled every lane after the first
-    ///   skips that prefill.
+    /// - All lanes share the symbiont system preamble, so with prefix caching
+    ///   enabled every lane after the first skips that prefill. The preamble
+    ///   is largest with [`DocMode::Inline`](crate::DocMode). The other modes
+    ///   keep it small and let each lane fetch API details with tool calls,
+    ///   which extend the per-lane suffix after the shared prefix.
     ///
     /// Keep the varying part of each prompt at the *end*. Prefix reuse stops at
     /// the first differing token, so a per-lane preamble throws the second
