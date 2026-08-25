@@ -9,15 +9,11 @@ use std::{
         HashSet,
     },
     fmt::Write,
-    future::Future,
     path::{
         Path,
         PathBuf,
     },
-    sync::{
-        Arc,
-        RwLock,
-    },
+    sync::Arc,
 };
 
 use rustdoc_types::{
@@ -57,89 +53,149 @@ pub(crate) async fn write_prelude_doc_string(s: &mut String, crate_name: &str) -
     trace!("host facade synopsis: {}", rendered.api);
     s.push_str(&rendered.api);
 
-    let crate_cache = Arc::new(RwLock::new(HashMap::new()));
-    render_external_facades(s, rendered.external_facades, move |crate_name: String| {
-        let crate_cache = Arc::clone(&crate_cache);
-        async move { load_crate_data(&crate_cache, &crate_name).await }
-    })
-    .await;
+    load_external_facades(s, rendered.external_facades).await;
 
     Ok(())
 }
 
-/// Load the rustdoc JSON of a crate into `cache` and return it. Cached
-/// results, including failures, are returned without a reload.
-pub(crate) async fn load_crate_data(
-    cache: &RwLock<HashMap<String, Option<Arc<RustdocCrate>>>>,
-    crate_name: &str,
-) -> Option<Arc<RustdocCrate>> {
-    if let Some(entry) = cache.read().ok()?.get(crate_name) {
-        return entry.clone();
-    }
+/// Load the rustdoc JSON of one crate.
+async fn load_crate_data(crate_name: &str) -> Option<Arc<RustdocCrate>> {
     let package_candidates = package_candidates_for_crate(crate_name);
     let package_candidates = Vec::from_iter(package_candidates.iter().map(String::as_str));
-    let loaded = match rustdoc_json(crate_name, &package_candidates).await {
+    match rustdoc_json(crate_name, &package_candidates).await {
         Ok(crate_data) => Some(Arc::new(crate_data)),
         Err(err) => {
             trace!("could not document reachable crate {crate_name}: {err}");
             None
         }
-    };
-    cache
-        .write()
-        .ok()?
-        .insert(crate_name.to_string(), loaded.clone());
-    loaded
+    }
 }
 
-/// Service external facade requests: load each crate with `load`, render the
-/// requested items into `out`, and repeat for the re-exports that a render
-/// pass finds. A crate that fails to load gets one note in `out`. Later
-/// requests for that crate are skipped.
+/// Service external facade requests and build the crate cache for them.
 ///
-/// The loader takes an owned crate name and returns an owned future so the
-/// future can be `Send` without a lifetime bound to the call site.
-pub(crate) async fn render_external_facades<F, Fut>(
+/// This function runs `cargo rustdoc` for every reachable crate, renders the
+/// requested items into `out`, and follows the re-exports that each render
+/// pass finds. It returns the crates that loaded. A crate that fails to load
+/// gets one note in `out` and is not loaded again.
+///
+/// This is the only path that builds rustdoc JSON for external crates. It is
+/// slow, so callers that answer queries must run it one time and keep the
+/// returned cache.
+pub(crate) async fn load_external_facades(
     out: &mut String,
-    mut pending: BTreeMap<String, BTreeSet<FacadeRequest>>,
-    mut load: F,
-) where
-    F: FnMut(String) -> Fut,
-    Fut: Future<Output = Option<Arc<RustdocCrate>>>,
-{
-    let mut rendered_facades = BTreeSet::new();
-    let mut noted_failures = HashSet::new();
-    let mut rendered_ids: HashMap<String, HashSet<Id>> = HashMap::new();
-    while let Some(crate_name) = pending.keys().next().cloned() {
-        let requests = pending.remove(&crate_name).unwrap_or_default();
-        let requests = requests
-            .into_iter()
-            .filter(|request| rendered_facades.insert((crate_name.clone(), request.clone())))
-            .collect::<BTreeSet<_>>();
-        if requests.is_empty() {
-            continue;
-        }
-
-        let Some(crate_data) = load(crate_name.clone()).await else {
-            if noted_failures.insert(crate_name.clone()) {
-                let _ = writeln!(
-                    out,
-                    "\nCould not generate rustdoc JSON for reachable crate `{crate_name}`."
-                );
+    pending: BTreeMap<String, BTreeSet<FacadeRequest>>,
+) -> HashMap<String, Arc<RustdocCrate>> {
+    let mut cache: HashMap<String, Arc<RustdocCrate>> = HashMap::new();
+    let mut drain = FacadeDrain::new(pending);
+    while let Some(crate_name) = drain.render_cached(out, &cache) {
+        match load_crate_data(&crate_name).await {
+            Some(crate_data) => {
+                cache.insert(crate_name, crate_data);
             }
-            continue;
-        };
-
-        let rendered = RustApiSynopsis::new(&crate_data)
-            .with_rendered_items(rendered_ids.remove(&crate_name).unwrap_or_default())
-            .render_external_facade(&crate_name, &requests);
-        trace!("reachable {crate_name} facade synopsis: {}", rendered.api);
-        if !rendered.api.is_empty() {
-            out.push('\n');
-            out.push_str(&rendered.api);
+            None => drain.mark_unavailable(&crate_name, out),
         }
-        rendered_ids.insert(crate_name.clone(), rendered.rendered_items);
-        merge_facades(&mut pending, rendered.external_facades);
+    }
+    cache
+}
+
+/// Service external facade requests from `cache` alone, without any I/O.
+///
+/// A request for a crate that `cache` does not hold gets one note in `out`.
+pub(crate) fn render_cached_external_facades(
+    out: &mut String,
+    pending: BTreeMap<String, BTreeSet<FacadeRequest>>,
+    cache: &HashMap<String, Arc<RustdocCrate>>,
+) {
+    let mut drain = FacadeDrain::new(pending);
+    while let Some(crate_name) = drain.render_cached(out, cache) {
+        drain.mark_unavailable(&crate_name, out);
+    }
+}
+
+/// The state of one facade drain: which requests are open, which are done,
+/// and which crates are not available.
+struct FacadeDrain {
+    pending: BTreeMap<String, BTreeSet<FacadeRequest>>,
+    rendered_facades: BTreeSet<(String, FacadeRequest)>,
+    rendered_ids: HashMap<String, HashSet<Id>>,
+    unavailable: HashSet<String>,
+}
+
+impl FacadeDrain {
+    fn new(pending: BTreeMap<String, BTreeSet<FacadeRequest>>) -> Self {
+        Self {
+            pending,
+            rendered_facades: BTreeSet::new(),
+            rendered_ids: HashMap::new(),
+            unavailable: HashSet::new(),
+        }
+    }
+
+    /// Render every open request whose crate is in `cache`.
+    ///
+    /// The return value names the first crate that `cache` does not hold. Its
+    /// requests stay open. The caller must either load that crate into `cache`
+    /// or call [`Self::mark_unavailable`], then call this function again.
+    fn render_cached(
+        &mut self,
+        out: &mut String,
+        cache: &HashMap<String, Arc<RustdocCrate>>,
+    ) -> Option<String> {
+        while let Some(crate_name) = self.next_crate() {
+            let requests = self.take_requests(&crate_name);
+            if requests.is_empty() {
+                continue;
+            }
+            let Some(crate_data) = cache.get(&crate_name) else {
+                self.pending.insert(crate_name.clone(), requests);
+                return Some(crate_name);
+            };
+
+            let rendered = RustApiSynopsis::new(crate_data)
+                .with_rendered_items(self.rendered_ids.remove(&crate_name).unwrap_or_default())
+                .render_external_facade(&crate_name, &requests);
+            trace!("reachable {crate_name} facade synopsis: {}", rendered.api);
+            if !rendered.api.is_empty() {
+                out.push('\n');
+                out.push_str(&rendered.api);
+            }
+            self.rendered_ids
+                .insert(crate_name.clone(), rendered.rendered_items);
+            merge_facades(&mut self.pending, rendered.external_facades);
+        }
+        None
+    }
+
+    /// Record that a crate has no rustdoc JSON and note it one time in `out`.
+    fn mark_unavailable(&mut self, crate_name: &str, out: &mut String) {
+        self.pending.remove(crate_name);
+        if self.unavailable.insert(crate_name.to_string()) {
+            let _ = writeln!(
+                out,
+                "\nCould not generate rustdoc JSON for reachable crate `{crate_name}`."
+            );
+        }
+    }
+
+    /// The next crate with open requests that is known to be available.
+    fn next_crate(&self) -> Option<String> {
+        self.pending
+            .keys()
+            .find(|crate_name| !self.unavailable.contains(*crate_name))
+            .cloned()
+    }
+
+    /// Remove the open requests of a crate, minus the ones already rendered.
+    fn take_requests(&mut self, crate_name: &str) -> BTreeSet<FacadeRequest> {
+        self.pending
+            .remove(crate_name)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|request| {
+                self.rendered_facades
+                    .insert((crate_name.to_string(), request.clone()))
+            })
+            .collect()
     }
 }
 
@@ -246,7 +302,7 @@ impl<'a> RustApiSynopsis<'a> {
         self
     }
 
-    fn render_host_facade(mut self) -> RenderedApiSynopsis {
+    pub(crate) fn render_host_facade(mut self) -> RenderedApiSynopsis {
         self.local_crate_alias = "host".to_string();
         let Some(prelude) = self.find_module(&["prelude".to_string()]) else {
             trace!("host crate exposes no `prelude` module; nothing to document");

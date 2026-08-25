@@ -23,14 +23,7 @@ use crate::doc_index::{
 /// the agent what to do next. The explicit constructors keep the message,
 /// so the agent reads which path failed and which tool to call after it.
 fn model_visible(error: DocIndexError) -> ToolExecutionError {
-    let message = error.to_string();
-    let mapped = match error {
-        DocIndexError::NoPrelude
-        | DocIndexError::ModuleNotFound(_)
-        | DocIndexError::ItemNotFound(_) => ToolExecutionError::not_found(message),
-        DocIndexError::PoisonedLock => ToolExecutionError::other(message),
-    };
-    mapped.with_retryable(false)
+    ToolExecutionError::not_found(error.to_string()).with_retryable(false)
 }
 
 /// The `api_index` tool: list the public items of a host API module.
@@ -152,7 +145,7 @@ impl PortableTool for ApiDocTool {
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
-        self.index.render_doc(&args.path).await
+        self.index.render_doc(&args.path)
     }
 }
 

@@ -215,7 +215,9 @@ impl DocMode {
 /// the preamble on its own builder.
 ///
 /// With `Some(crate_name)`, this function builds the rustdoc JSON of the
-/// host crate, which is slow. Call it one time and cache the result.
+/// host crate and of every crate that the host facade re-exports, which is
+/// slow. Call it one time and cache the result. A mode with tools pays this
+/// cost one time here, so that a later tool call needs no I/O.
 ///
 /// # Arguments
 ///
