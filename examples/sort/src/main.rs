@@ -31,6 +31,7 @@ use std::time::{
 
 use romu::Rng;
 use symbiont::{
+    DocMode,
     Runtime,
     ThinkingLevel,
 };
@@ -243,7 +244,9 @@ async fn main() -> symbiont::Result<()> {
     info!("fn_sigs: {fn_sigs:?}");
 
     let model = std::env::var("MODEL").expect("the MODEL env var names the model slug");
-    let agent = symbiont::init_agent_from_env(None, &model, ThinkingLevel::Medium).await?;
+    let agent =
+        symbiont::init_agent_from_env(None, DocMode::default(), &model, ThinkingLevel::Medium)
+            .await?;
 
     // Fixed test data — identical across rounds for fair comparison.
     let rng = Rng::from_seed_with_64bit(42);

@@ -77,6 +77,7 @@ pub use evolve_error::EvolveError;
 pub use evolve_failure::EvolveFailure;
 pub use evolve_info::EvolveInfo;
 pub use inference::{
+    DOC_TOOLS_MAX_TURNS,
     INFERENCE_REQUEST_TIMEOUT,
     agent_builder,
     agent_builder_from_env,
@@ -119,7 +120,10 @@ pub use serde_json::Value;
 /// }
 /// ```
 pub use symbiont_macros::evolvable;
-pub use system_prompt::system_prompt;
+pub use system_prompt::{
+    DocMode,
+    system_prompt,
+};
 pub use thinking_level::ThinkingLevel;
 
 /// type alias for the return type of `init_agent`
@@ -127,12 +131,12 @@ pub type Agent = rig_agent::Agent;
 
 /// Type alias for the pre-configured agent builder.
 ///
-/// Register your own tools on it with rig's builder API before calling
-/// `.build()`, e.g. `.tool(MyTool).default_max_turns(5).build()`.
-/// Note that registering the first tool transitions the builder's typestate
-/// (to `AgentBuilder<_, WithBuilderTools>`); the resulting [`Agent`] is
-/// unchanged and works with [`Runtime::evolve`] either way.
-pub type AgentBuilder = rig_agent::AgentBuilder;
+/// The builder is always in rig's `WithBuilderTools` state: a
+/// [`DocMode`](crate::DocMode) with tools registers `api_index` and
+/// `api_doc` on it, and the other modes carry an empty tool set. Register
+/// your own tools on it with rig's builder API before calling `.build()`,
+/// e.g. `.tool(MyTool).default_max_turns(10).build()`.
+pub type AgentBuilder = rig_agent::AgentBuilder<rig_agent::agent::WithBuilderTools>;
 
 /// Internal module for macro-generated dispatch code.
 ///

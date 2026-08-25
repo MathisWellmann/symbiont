@@ -12,7 +12,10 @@
 //! report) as feedback, iterating until the code is both valid Rust and
 //! semantically correct.
 
-use symbiont::Runtime;
+use symbiont::{
+    DocMode,
+    Runtime,
+};
 use tracing::{
     info,
     warn,
@@ -98,7 +101,7 @@ async fn main() -> symbiont::Result<()> {
     info!("fn_sigs: {fn_sigs:?}");
 
     let model = std::env::var("MODEL").expect("the MODEL env var names the model slug");
-    let agent = symbiont::init_agent_from_env(None, &model, false).await?;
+    let agent = symbiont::init_agent_from_env(None, DocMode::default(), &model, false).await?;
 
     // -- Round 0: run the default (wrong) implementation ----------------
     println!("\n=== Round 0: default implementation ===");
