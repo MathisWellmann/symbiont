@@ -141,6 +141,12 @@ jobs:
             echo "no PR number in the event payload" >&2
             exit 1
           fi
+          # Empty reviewable diff (e.g. lock-file-only PR) -> run-pi-review
+          # exits 0 without a review.md; the check must pass silently.
+          if [ ! -f review.md ]; then
+            echo "no review.md to post (no reviewable changes)"
+            exit 0
+          fi
           nix develop .#review --accept-flake-config --command jq -n --rawfile body review.md '{body: $body}' > review.json
           # GITHUB_API_URL (https://api.github.com), not
           # "$GITHUB_SERVER_URL/api/v1": the latter is the Gitea/Forgejo API
