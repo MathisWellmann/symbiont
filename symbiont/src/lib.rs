@@ -15,6 +15,7 @@ mod debug_call_counter;
 mod decl;
 mod doc_index;
 mod doc_string;
+mod doc_tools;
 mod dylib_config;
 mod dylib_dependency;
 mod error;
@@ -45,6 +46,10 @@ pub use decl::{
 pub use doc_index::{
     DocIndex,
     DocIndexError,
+};
+pub use doc_tools::{
+    ApiDocTool,
+    ApiIndexTool,
 };
 pub use dylib_config::DylibConfig;
 pub use dylib_dependency::{
