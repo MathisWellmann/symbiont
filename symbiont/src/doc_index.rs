@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 //! The [`DocIndex`]: a queryable cache of the rustdoc JSON of the host crate
 //! and the crates that the host facade re-exports.
+//!
+//! The cache is complete when [`DocIndex::host`] returns. A query reads it
+//! and does no I/O, because a tool call must not run `cargo rustdoc` while
+//! the runtime compiles a dylib with the same cargo lock.
 
 use std::{
     collections::{
@@ -11,7 +15,6 @@ use std::{
         Arc,
         Mutex,
         OnceLock,
-        RwLock,
     },
 };
 
@@ -30,8 +33,8 @@ use crate::{
         FacadeRequest,
         RustApiSynopsis,
         is_public,
-        load_crate_data,
-        render_external_facades,
+        load_external_facades,
+        render_cached_external_facades,
         rustdoc_json,
     },
 };
@@ -54,28 +57,29 @@ pub enum DocIndexError {
         "no public item `{0}` exists in the host API; call `api_index` to list the available names"
     )]
     ItemNotFound(String),
-    /// A thread panicked while it held the cache lock of the index.
-    #[error("the doc index cache lock is poisoned")]
-    PoisonedLock,
 }
 
 /// A queryable cache of the rustdoc JSON of the host crate and the crates
 /// that the host facade re-exports.
 ///
 /// [`DocIndex::host`] builds the index one time per process and crate name.
-/// The rustdoc build is slow, so the result is cached. External crates load
-/// lazily on the first query that names them. A crate that fails to load is
-/// not loaded again.
+/// It runs `cargo rustdoc` for the host crate and for every crate that the
+/// host facade can reach, then keeps the result. A query reads this cache
+/// and does no I/O, so a tool call costs no `cargo rustdoc` run and does not
+/// compete for the cargo lock with a dylib build.
 pub struct DocIndex {
     host_crate: String,
-    crates: Arc<RwLock<HashMap<String, Option<Arc<RustdocCrate>>>>>,
+    /// The rustdoc JSON of the host crate and of every reachable crate that
+    /// loaded. This map never changes after [`DocIndex::host`] returns.
+    crates: HashMap<String, Arc<RustdocCrate>>,
 }
 
 impl DocIndex {
     /// Get the shared index for `crate_name`.
     ///
-    /// The first call for a crate name runs `cargo rustdoc` and caches the
-    /// result. Later calls return the cached index.
+    /// The first call for a crate name builds the rustdoc JSON of the host
+    /// crate and of every crate that the host facade re-exports, which is
+    /// slow. Later calls return the cached index.
     ///
     /// # Errors
     ///
@@ -92,11 +96,7 @@ impl DocIndex {
             return Ok(Arc::clone(index));
         }
 
-        let crate_data = rustdoc_json(crate_name, &[crate_name]).await?;
-        let index = Arc::new(Self::new(
-            crate_name,
-            HashMap::from([(crate_name.to_string(), Some(Arc::new(crate_data)))]),
-        ));
+        let index = Arc::new(Self::build(crate_name).await?);
         cache
             .lock()
             .map_err(|_| Error::MutexPoison)?
@@ -104,11 +104,22 @@ impl DocIndex {
         Ok(index)
     }
 
-    fn new(host_crate: &str, crates: HashMap<String, Option<Arc<RustdocCrate>>>) -> Self {
-        Self {
-            host_crate: host_crate.to_string(),
-            crates: Arc::new(RwLock::new(crates)),
-        }
+    /// Build the index and warm the cache for every reachable crate.
+    ///
+    /// The host facade render names the external crates that a query can
+    /// reach. This function loads all of them, and the crates that their own
+    /// re-exports reach, so that no query needs I/O. The rendered text is not
+    /// kept: the system prompt of a tool mode does not embed it.
+    async fn build(crate_name: &str) -> Result<Self> {
+        let host_data = Arc::new(rustdoc_json(crate_name, &[crate_name]).await?);
+        let rendered = RustApiSynopsis::new(&host_data).render_host_facade();
+        let mut discarded = String::new();
+        let mut crates = load_external_facades(&mut discarded, rendered.external_facades).await;
+        crates.insert(crate_name.to_string(), host_data);
+        Ok(Self {
+            host_crate: crate_name.to_string(),
+            crates,
+        })
     }
 
     /// Build an index from prepared rustdoc data, for tests.
@@ -118,11 +129,14 @@ impl DocIndex {
         host_data: RustdocCrate,
         externals: HashMap<String, RustdocCrate>,
     ) -> Self {
-        let mut crates = HashMap::from([(host_crate.to_string(), Some(Arc::new(host_data)))]);
+        let mut crates = HashMap::from([(host_crate.to_string(), Arc::new(host_data))]);
         for (name, data) in externals {
-            crates.insert(name, Some(Arc::new(data)));
+            crates.insert(name, Arc::new(data));
         }
-        Self::new(host_crate, crates)
+        Self {
+            host_crate: host_crate.to_string(),
+            crates,
+        }
     }
 
     /// Render the compact index of a host module: one `kind name` line per
@@ -139,19 +153,19 @@ impl DocIndex {
         &self,
         module_path: Option<&str>,
     ) -> std::result::Result<String, DocIndexError> {
-        let host = self.host_data()?;
+        let host = self.host_data();
         let path = match module_path {
             None => vec!["prelude".to_string()],
             Some(path) => normalize_path(path, &self.host_crate),
         };
         let module =
-            RustApiSynopsis::new(&host)
+            RustApiSynopsis::new(host)
                 .find_module(&path)
                 .ok_or_else(|| match module_path {
                     None => DocIndexError::NoPrelude,
                     Some(path) => DocIndexError::ModuleNotFound(path.to_string()),
                 })?;
-        Ok(render_module_index(&host, &module))
+        Ok(render_module_index(host, &module))
     }
 
     /// Render the full synopsis of the host item or module at `path`: the
@@ -160,30 +174,23 @@ impl DocIndex {
     /// The path is `::`-separated and relative to the host crate root. A
     /// leading `host` segment is removed. A single segment resolves against
     /// the names that `use host::prelude::*;` imports. A re-export renders
-    /// the target item and loads the rustdoc JSON of its crate lazily.
+    /// the target item from the cached rustdoc JSON of its crate.
+    ///
+    /// This function reads the cache and does no I/O.
     ///
     /// # Errors
     ///
     /// Returns an error if no public item or module exists at `path`.
-    pub async fn render_doc(&self, path: &str) -> std::result::Result<String, DocIndexError> {
+    pub fn render_doc(&self, path: &str) -> std::result::Result<String, DocIndexError> {
         let segments = normalize_path(path, &self.host_crate);
-        let host = self.host_data()?;
-        let request = find_request(&host, &segments)
+        let host = self.host_data();
+        let request = find_request(host, &segments)
             .ok_or_else(|| DocIndexError::ItemNotFound(path.to_string()))?;
 
         let mut out = String::new();
-        let rendered = RustApiSynopsis::new(&host).render_requests(&BTreeSet::from([request]));
+        let rendered = RustApiSynopsis::new(host).render_requests(&BTreeSet::from([request]));
         out.push_str(&rendered.api);
-        let crates = Arc::clone(&self.crates);
-        render_external_facades(
-            &mut out,
-            rendered.external_facades,
-            move |crate_name: String| {
-                let crates = Arc::clone(&crates);
-                async move { load_crate_data(&crates, &crate_name).await }
-            },
-        )
-        .await;
+        render_cached_external_facades(&mut out, rendered.external_facades, &self.crates);
 
         if out.trim().is_empty() {
             return Err(DocIndexError::ItemNotFound(path.to_string()));
@@ -192,14 +199,10 @@ impl DocIndex {
     }
 
     /// Get the cached rustdoc data of the host crate.
-    fn host_data(&self) -> std::result::Result<Arc<RustdocCrate>, DocIndexError> {
+    fn host_data(&self) -> &RustdocCrate {
         self.crates
-            .read()
-            .map_err(|_| DocIndexError::PoisonedLock)?
             .get(&self.host_crate)
-            .and_then(Option::as_ref)
-            .map(Arc::clone)
-            .ok_or(DocIndexError::PoisonedLock)
+            .expect("the constructors always insert the host crate")
     }
 }
 
@@ -539,27 +542,36 @@ pub(crate) mod tests {
         assert!(matches!(err, DocIndexError::ModuleNotFound(_)));
     }
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn render_doc_renders_local_function_by_prelude_name() {
+    #[test]
+    fn render_doc_renders_local_function_by_prelude_name() {
         let index = fixture_index();
-        let doc = index.render_doc("submit_order").await.expect("item exists");
+        let doc = index.render_doc("submit_order").expect("item exists");
         assert!(doc.contains("pub fn submit_order()"));
     }
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn render_doc_follows_reexport_into_external_crate() {
+    #[test]
+    fn render_doc_follows_reexport_into_external_crate() {
         let index = fixture_index();
-        let doc = index.render_doc("decimal").await.expect("item exists");
+        let doc = index.render_doc("decimal").expect("item exists");
         assert!(doc.contains("macro_rules! decimal"));
         assert!(doc.contains("dep_crate"));
     }
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn render_doc_unknown_path_errors() {
+    /// A query must never load a crate. When the cache has no data for a
+    /// re-export target, the render says so instead of running `cargo`.
+    #[test]
+    fn render_doc_notes_a_dependency_that_is_not_cached() {
+        let index = DocIndex::from_crates("host_crate", host_fixture(), HashMap::new());
+        let doc = index.render_doc("decimal").expect("the re-export resolves");
+        assert!(doc.contains("Could not generate rustdoc JSON"), "{doc}");
+        assert!(doc.contains("dep_crate"), "{doc}");
+    }
+
+    #[test]
+    fn render_doc_unknown_path_errors() {
         let index = fixture_index();
         let err = index
             .render_doc("nope")
-            .await
             .expect_err("the path does not resolve");
         assert!(matches!(err, DocIndexError::ItemNotFound(_)));
     }
