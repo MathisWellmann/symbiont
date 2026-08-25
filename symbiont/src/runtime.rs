@@ -1198,9 +1198,7 @@ impl Runtime {
                         // Along the way, detect a verbatim repeat of the
                         // previously rejected code.
                         let mut repeated = false;
-                        if let Some(failure) =
-                            EvolveFailure::from_error(&e, attempts).map(|f| f.with_lane(lane))
-                        {
+                        if let Some(failure) = EvolveFailure::from_error(&e, attempts, lane) {
                             let code = failure.generated_code();
                             repeated = !code.is_empty()
                                 && last_failed_code.as_deref() == Some(code.as_str());
