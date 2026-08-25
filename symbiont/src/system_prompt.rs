@@ -156,10 +156,15 @@ const TOOL_DOC_SECTION: &str = "# Host API documentation
 The host API is documented on demand. Two tools give access to it:
 
 - `api_index` lists the public items of a module as `kind name` lines. Call
-  it without arguments to list the prelude.
+  it without arguments to list the prelude. Pass a `mod` name from a listing
+  to list that module.
 - `api_doc` shows the full definition of one item or module: the declaration,
-  the inherent methods, and the operator impls. Pass a `::`-separated path
-  like `prelude::Order` or a single name from the prelude.
+  the inherent methods, and the operator impls.
+
+Both tools accept a single name from a listing, for example `Order`, or a
+`::`-separated path, for example `prelude::Order`. A line that ends with
+`(re-exported from `crate`)` names the crate that declares the item. The name
+is still in scope unqualified. Do not add an import for that crate.
 
 If you do not know the exact signature of an item, call `api_doc` before you
 use the item. Tool output is the same synopsis that the inline mode embeds.
@@ -260,7 +265,7 @@ pub async fn system_prompt(opt_crate_name: Option<&str>, doc_mode: DocMode) -> R
 /// Append the compact prelude index to the prompt.
 fn push_prelude_index(prompt: &mut String, listing: &str) {
     prompt.push_str(
-        "The harness injects `use host::prelude::*;`. These names are in scope. Call `api_doc` with a name or a path to get the full definition.\n\n```\n",
+        "The harness injects `use host::prelude::*;`. The following list is complete: these names are in scope and no others. Call `api_doc` with a name or a path to get the full definition.\n\n```\n",
     );
     prompt.push_str(listing);
     prompt.push_str("```\n");

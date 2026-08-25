@@ -10,6 +10,7 @@ use std::{
     collections::{
         BTreeSet,
         HashMap,
+        HashSet,
     },
     sync::{
         Arc,
@@ -20,6 +21,7 @@ use std::{
 
 use rustdoc_types::{
     Crate as RustdocCrate,
+    Id,
     Item,
     ItemEnum,
     ItemKind,
@@ -289,21 +291,66 @@ impl DocIndex {
         Some(current)
     }
 
-    /// The public children of a module.
+    /// The public children of a module, with the glob re-exports expanded.
+    ///
+    /// `pub use dep::prelude::*;` puts the names of that module in scope. It
+    /// does not put the name `prelude` in scope. The listing must therefore
+    /// show the names behind the glob, not the glob itself.
+    ///
+    /// A name that the module declares hides a name of the same spelling
+    /// from a glob, as it does in Rust.
     fn children(&self, module: &Located) -> Vec<Located> {
+        let mut children = Vec::new();
+        self.collect_children(module, &mut children, &mut HashSet::new());
+        let mut seen = HashSet::new();
+        children.retain(|child| match child.item.name.clone() {
+            Some(name) => seen.insert(name),
+            None => false,
+        });
+        children
+    }
+
+    /// Collect the public children of a module and of every module that it
+    /// re-exports with a glob. `visited` stops a cycle of glob re-exports.
+    fn collect_children(
+        &self,
+        module: &Located,
+        out: &mut Vec<Located>,
+        visited: &mut HashSet<(String, Id)>,
+    ) {
+        if !visited.insert((module.crate_name.clone(), module.item.id)) {
+            return;
+        }
         let Some(crate_data) = self.crate_data(&module.crate_name) else {
-            return Vec::new();
+            return;
         };
         let ItemEnum::Module(inner) = &module.item.inner else {
-            return Vec::new();
+            return;
         };
-        inner
+
+        let mut globs = Vec::new();
+        for item in inner
             .items
             .iter()
             .filter_map(|id| crate_data.index.get(id))
-            .filter(|item| is_public(item) && item.name.is_some())
-            .map(|item| module.child(item.clone()))
-            .collect()
+            .filter(|item| is_public(item))
+        {
+            match &item.inner {
+                ItemEnum::Use(use_item) if use_item.is_glob => globs.push((item, use_item)),
+                _ if item.name.is_some() => out.push(module.child(item.clone())),
+                _ => {}
+            }
+        }
+
+        for (item, use_item) in globs {
+            match self.follow_use(module, use_item) {
+                Some(target) => self.collect_children(&target, out, visited),
+                // The target crate has no cached rustdoc JSON. Keep the glob
+                // itself so that the listing reports the gap.
+                None if item.name.is_some() => out.push(module.child(item.clone())),
+                None => {}
+            }
+        }
     }
 
     /// Follow a chain of re-exports to the item that declares the name.
@@ -368,7 +415,11 @@ impl DocIndex {
     fn index_line(&self, child: &Located) -> Option<String> {
         let name = child.item.name.as_deref()?;
         let ItemEnum::Use(use_item) = &child.item.inner else {
-            return Some(format!("{} {name}", kind_str(child.item.inner.item_kind())));
+            let kind = kind_str(child.item.inner.item_kind());
+            // A child from a glob re-export already is the declaration. Name
+            // the crate it comes from, as a named re-export does.
+            let origin = (child.crate_name != self.host_crate).then_some(child.crate_name.as_str());
+            return Some(reexport_line(kind, name, origin));
         };
         if use_item.is_glob {
             return Some(self.glob_index_line(child, use_item, name));
@@ -385,32 +436,38 @@ impl DocIndex {
         }
     }
 
-    /// Render the index line of a glob re-export.
+    /// Render the index line of a glob re-export that does not resolve.
+    ///
+    /// A glob that resolves never reaches this function: its names replace it
+    /// in the listing. This line reports that the target has no cached
+    /// rustdoc JSON, so the names behind it are not known.
     fn glob_index_line(&self, child: &Located, use_item: &Use, name: &str) -> String {
-        match self.follow_use(child, use_item) {
-            Some(target) if target.crate_name != child.crate_name => {
-                format!("mod {name} (glob re-export from `{}`)", target.crate_name)
-            }
-            _ => format!("mod {name} (glob re-export)"),
+        match self.reexport_origin(child, use_item) {
+            Some(origin) => format!("mod {name} (glob re-export from `{origin}`)"),
+            None => format!("mod {name} (glob re-export)"),
         }
+    }
+
+    /// The crate that a `use` item points at, from the paths table alone.
+    fn reexport_origin(&self, child: &Located, use_item: &Use) -> Option<String> {
+        let crate_data = self.crate_data(&child.crate_name)?;
+        let summary = crate_data.paths.get(&use_item.id?)?;
+        let external = crate_data.external_crates.get(&summary.crate_id)?;
+        Some(external.name.clone())
     }
 
     /// Render the index line of a re-export from the paths table alone.
     fn summary_index_line(&self, child: &Located, use_item: &Use, name: &str) -> String {
         let summary = self
             .crate_data(&child.crate_name)
-            .and_then(|crate_data| Some((crate_data, use_item.id?)))
-            .and_then(|(crate_data, id)| Some((crate_data, crate_data.paths.get(&id)?)));
-        let Some((crate_data, summary)) = summary else {
+            .and_then(|crate_data| crate_data.paths.get(&use_item.id?));
+        let Some(summary) = summary else {
             return format!("use {}", use_item.source);
         };
         reexport_line(
             kind_str(summary.kind),
             name,
-            crate_data
-                .external_crates
-                .get(&summary.crate_id)
-                .map(|external| external.name.as_str()),
+            self.reexport_origin(child, use_item).as_deref(),
         )
     }
 }
@@ -450,7 +507,7 @@ fn reexport_line(kind: &str, name: &str, origin: Option<&str>) -> String {
 }
 
 /// A stand-in for a crate root that the index does not hold.
-fn empty_root(id: rustdoc_types::Id) -> Item {
+fn empty_root(id: Id) -> Item {
     Item {
         id,
         crate_id: 0,
@@ -715,6 +772,71 @@ pub(crate) mod tests {
         )
     }
 
+    /// A host crate whose prelude re-exports a module of `dep_crate` with a
+    /// glob, next to one name that it declares itself.
+    fn glob_host_fixture() -> RustdocCrate {
+        let index = HashMap::from([
+            (Id(0), module(0, "host_crate", vec![Id(1)])),
+            (Id(1), module(1, "prelude", vec![Id(2), Id(3)])),
+            (
+                Id(2),
+                item(
+                    2,
+                    Some("prelude"),
+                    ItemEnum::Use(Use {
+                        source: "dep_crate::prelude::*".to_string(),
+                        name: "prelude".to_string(),
+                        id: Some(Id(200)),
+                        is_glob: true,
+                    }),
+                ),
+            ),
+            (Id(3), function(3, "submit_order")),
+        ]);
+        let paths = HashMap::from([(
+            Id(200),
+            summary(1, &["dep_crate", "prelude"], ItemKind::Module),
+        )]);
+        let external_crates = HashMap::from([(
+            1,
+            ExternalCrate {
+                name: "dep_crate".to_string(),
+                html_root_url: None,
+                path: std::path::PathBuf::new(),
+            },
+        )]);
+        crate_data(index, paths, external_crates)
+    }
+
+    /// The crate behind the glob: a `prelude` module with two names.
+    fn glob_dep_fixture() -> RustdocCrate {
+        let index = HashMap::from([
+            module(0, "dep_crate", vec![Id(200)]).into_entry(),
+            module(200, "prelude", vec![Id(201), Id(202)]).into_entry(),
+            function(201, "quote").into_entry(),
+            function(202, "submit_order").into_entry(),
+        ]);
+        let paths = HashMap::from([
+            (
+                Id(200),
+                summary(0, &["dep_crate", "prelude"], ItemKind::Module),
+            ),
+            (
+                Id(201),
+                summary(0, &["dep_crate", "prelude", "quote"], ItemKind::Function),
+            ),
+        ]);
+        crate_data(index, paths, HashMap::new())
+    }
+
+    fn glob_fixture_index() -> DocIndex {
+        DocIndex::from_crates(
+            "host_crate",
+            glob_host_fixture(),
+            HashMap::from([("dep_crate".to_string(), glob_dep_fixture())]),
+        )
+    }
+
     trait IntoEntry {
         fn into_entry(self) -> (Id, Item);
     }
@@ -812,6 +934,53 @@ pub(crate) mod tests {
         let index = fixture_index();
         let doc = index.render_doc("rolling").expect("the module resolves");
         assert!(doc.contains("pub fn mean()"), "{doc}");
+    }
+
+    /// `use host::prelude::*;` puts the names behind a glob in scope. It does
+    /// not put the name of the glob target module in scope. The listing must
+    /// show the names, not the module.
+    #[test]
+    fn render_index_expands_a_glob_reexport() {
+        let index = glob_fixture_index();
+        let listing = index.render_index(None).expect("prelude exists");
+        assert!(
+            listing.contains("fn quote (re-exported from `dep_crate`)"),
+            "{listing}"
+        );
+        assert!(!listing.contains("glob re-export"), "{listing}");
+        assert!(!listing.contains("mod prelude"), "{listing}");
+    }
+
+    /// A name that the prelude declares hides the name of the same spelling
+    /// behind a glob, as it does in Rust.
+    #[test]
+    fn render_index_prefers_a_declared_name_over_a_glob_name() {
+        let index = glob_fixture_index();
+        let listing = index.render_index(None).expect("prelude exists");
+        assert_eq!(listing.matches("submit_order").count(), 1, "{listing}");
+        assert!(listing.contains("fn submit_order\n"), "{listing}");
+    }
+
+    /// The agent reads a name from the listing and asks for its definition.
+    /// That name must resolve even though the host crate never declares it.
+    #[test]
+    fn render_doc_resolves_a_name_from_a_glob_reexport() {
+        let index = glob_fixture_index();
+        let doc = index.render_doc("quote").expect("the glob name resolves");
+        assert!(doc.contains("pub fn quote()"), "{doc}");
+        assert!(doc.contains("dep_crate"), "{doc}");
+    }
+
+    /// Without cached data for the target crate, the listing keeps the glob
+    /// line so that the gap stays visible.
+    #[test]
+    fn render_index_keeps_a_glob_that_does_not_resolve() {
+        let index = DocIndex::from_crates("host_crate", glob_host_fixture(), HashMap::new());
+        let listing = index.render_index(None).expect("prelude exists");
+        assert!(
+            listing.contains("mod prelude (glob re-export from `dep_crate`)"),
+            "{listing}"
+        );
     }
 
     #[test]
