@@ -79,8 +79,11 @@ pub enum Error {
     #[error(transparent)]
     Observability(#[from] metrics_exporter_prometheus::BuildError),
 
-    #[error("Could not run cargo doc command")]
-    CargoDoc,
+    #[error("cargo doc generation failed: {err}")]
+    CargoDoc { err: String },
+
+    #[error("Failed to read rustdoc JSON at {path}: {err}")]
+    RustdocJson { path: String, err: String },
 
     #[error("Could not convert json docs to markdown")]
     MdDoc,
