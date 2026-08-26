@@ -12,6 +12,7 @@ use std::{
         HashMap,
         HashSet,
     },
+    path::PathBuf,
     sync::{
         Arc,
         Mutex,
@@ -35,6 +36,7 @@ use crate::{
     doc_string::{
         FacadeRequest,
         RustApiSynopsis,
+        cargo_workspace_root,
         exported_name as item_name,
         is_public,
         load_external_facades,
@@ -79,6 +81,10 @@ pub struct DocIndex {
     /// The rustdoc JSON of the host crate and of every reachable crate that
     /// loaded. This map never changes after [`DocIndex::host`] returns.
     crates: HashMap<String, Arc<RustdocCrate>>,
+    /// The cargo workspace root that the rustdoc spans of the host crate are
+    /// recorded relative to. `None` for indexes that build their rustdoc data
+    /// by hand (tests), where spans are already absolute or absent.
+    workspace_root: Option<PathBuf>,
 }
 
 impl DocIndex {
@@ -134,13 +140,17 @@ impl DocIndex {
     /// kept: the system prompt of a tool mode does not embed it.
     async fn build(crate_name: &str) -> Result<Self> {
         let host_data = Arc::new(rustdoc_json(crate_name, &[crate_name]).await?);
-        let rendered = RustApiSynopsis::new(&host_data).render_host_facade();
+        let workspace_root = cargo_workspace_root().await?;
+        let rendered = RustApiSynopsis::new(&host_data)
+            .with_workspace_root(workspace_root.clone())
+            .render_host_facade();
         let mut discarded = String::new();
         let mut crates = load_external_facades(&mut discarded, rendered.external_facades).await;
         crates.insert(crate_name.to_string(), host_data);
         Ok(Self {
             host_crate: crate_name.to_string(),
             crates,
+            workspace_root: Some(workspace_root),
         })
     }
 
@@ -158,6 +168,7 @@ impl DocIndex {
         Self {
             host_crate: host_crate.to_string(),
             crates,
+            workspace_root: None,
         }
     }
 
@@ -210,7 +221,10 @@ impl DocIndex {
         let request = request_for(&crate_data, &located).ok_or_else(not_found)?;
         let requests = BTreeSet::from([request]);
 
-        let synopsis = RustApiSynopsis::new(&crate_data);
+        let mut synopsis = RustApiSynopsis::new(&crate_data);
+        if let Some(workspace_root) = &self.workspace_root {
+            synopsis = synopsis.with_workspace_root(workspace_root.clone());
+        }
         let rendered = if located.crate_name == self.host_crate {
             synopsis.render_requests(&requests)
         } else {
