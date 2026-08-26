@@ -75,17 +75,17 @@ jobs:
             echo "no reviewable changes"
             exit 0
           fi
-          # 150KB of this repo's diffs is ~70K tokens (measured 2.2
-          # bytes/token): fits ctx - max_tokens with room for pi's system
-          # prompt. Denser content (tables, hashes) raises the token count,
-          # so the cap stays conservative.
+          # 250KB of this repo's diffs is ~114K tokens (measured 2.2
+          # bytes/token): fits the 256k window minus max_tokens and pi's
+          # system prompt. Denser content (tables, hashes) can tokenize as
+          # low as ~1.5 bytes/token, so the cap stays conservative.
           # ponytail: byte cap, no tokenizer; chunked multi-pass review if
           # big PRs routinely get clipped.
           TRUNC_NOTE=""
-          if [ "$(wc -c < pr.diff)" -gt 150000 ]; then
-            head -c 150000 pr.diff > pr.trunc && mv pr.trunc pr.diff
-            echo "diff truncated to 150000 bytes (context window limit)"
-            TRUNC_NOTE="NOTE: the diff was truncated at 150000 bytes; review only what is present and mention the truncation in the summary."
+          if [ "$(wc -c < pr.diff)" -gt 250000 ]; then
+            head -c 250000 pr.diff > pr.trunc && mv pr.trunc pr.diff
+            echo "diff truncated to 250000 bytes (context window limit)"
+            TRUNC_NOTE="NOTE: the diff was truncated at 250000 bytes; review only what is present and mention the truncation in the summary."
           fi
           timeout 900 nix develop .#review --accept-flake-config \
             --command pi -p \

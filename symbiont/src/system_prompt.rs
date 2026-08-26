@@ -8,7 +8,8 @@ use crate::{
     doc_string::write_prelude_doc_string,
 };
 
-const BASE_PROMPT: &str = "#Role
+const BASE_PROMPT: &str = "
+# Role
 
 You are a Rust coding agent running inside the `symbiont` function-evolution harness.
 
