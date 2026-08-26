@@ -33,9 +33,15 @@
 //! - the **provider and model names**, which rig's [`CompletionCall`] does not
 //!   record;
 //! - an **absolute start time**, because a trace holds only [`Duration`]s.
-//!   Events are laid out from [`DshSession::started_at`] forward, one
-//!   millisecond apart. The ordering is exact; the individual timestamps are
-//!   synthetic.
+//!   Events are laid out from [`DshSession::started_at`] forward, spaced by
+//!   the trace's own measurements: an attempt spans
+//!   [`AttemptTrace::duration`], the model time inside it spans
+//!   [`StageTimings::llm`], and the lane spans
+//!   [`EvolutionTrace::duration`]. The harness derives every duration it
+//!   shows by subtracting two event times, so those come out right; only the
+//!   absolute instant is the caller's to supply.
+//!
+//! [`StageTimings::llm`]: crate::StageTimings::llm
 //!
 //! [`CompletionCall`]: crate::CompletionCall
 //!
@@ -81,6 +87,7 @@ use std::{
         Ordering,
     },
     time::{
+        Duration,
         SystemTime,
         UNIX_EPOCH,
     },
@@ -233,11 +240,16 @@ pub fn write_dsh_session<W: Write>(
 
     log.header(trace, session)?;
 
+    let session_start = log.time_ms;
     let mut turn = 0;
     for attempt in trace.attempts() {
         turn += 1;
         log.attempt(trace, session, attempt, turn)?;
     }
+
+    // The lane's own measured duration covers whatever happened between and
+    // around the attempts, so the closing turn sits at the end of it.
+    log.advance_to(session_start.saturating_add(millis_of(trace.duration())));
 
     turn += 1;
     log.outcome_turn(trace, session, turn)
@@ -396,6 +408,31 @@ fn is_safe_segment_char(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-')
 }
 
+/// How many assistant turns one attempt put into the transcript.
+///
+/// The model time of the run is divided by this, so a run that answered in
+/// three tool-calling turns reports three timed steps instead of one.
+fn assistant_turns(trace: &EvolutionTrace, attempt: &AttemptTrace) -> u32 {
+    attempt
+        .run()
+        .as_ref()
+        .and_then(|run| trace.history().get(run.produced().clone()))
+        .map_or(0, |messages| {
+            u32::try_from(
+                messages
+                    .iter()
+                    .filter(|message| matches!(message, Message::Assistant { .. }))
+                    .count(),
+            )
+            .unwrap_or(u32::MAX)
+        })
+}
+
+/// A duration as whole milliseconds, saturating rather than wrapping.
+fn millis_of(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
+
 /// Milliseconds since the Unix epoch, saturating at `0` for a pre-epoch time.
 fn epoch_millis(time: SystemTime) -> u64 {
     time.duration_since(UNIX_EPOCH).map_or(0, |since| {
@@ -440,6 +477,15 @@ impl<W: Write> Log<W> {
         attempt: &AttemptTrace,
         turn: u64,
     ) -> io::Result<()> {
+        let attempt_start = self.time_ms;
+        // The model time of the attempt, split evenly over the turns it took.
+        // The trace times the agent run as a whole, not each turn inside it,
+        // so an even split is the most this can honestly claim.
+        let step_llm = attempt
+            .stages()
+            .llm()
+            .map(|llm| llm / assistant_turns(trace, attempt).max(1));
+
         self.event("turn/start", json!({ "turn": turn }))?;
 
         let mut step = 1;
@@ -499,6 +545,13 @@ impl<W: Write> Log<W> {
                         }
                         step_has_assistant = true;
 
+                        // The harness measures model time as `step/start` to
+                        // `assistant/message`, so the wait for this turn lands
+                        // between them.
+                        if let Some(llm) = step_llm {
+                            self.advance(llm);
+                        }
+
                         let blocks: Vec<Value> = content.iter().map(assistant_block).collect();
                         // One completion call per assistant turn, in order, so
                         // the step's own token accounting travels with the
@@ -529,6 +582,11 @@ impl<W: Write> Log<W> {
                 }
             }
         }
+
+        // Everything after the model answered — parse, validate, build — is
+        // wall time of this attempt that no event of its own reports, so the
+        // turn closes on the attempt's measured duration.
+        self.advance_to(attempt_start.saturating_add(millis_of(attempt.duration())));
 
         self.notice(turn, step, &attempt_notice(attempt))?;
         self.event("step/end", json!({ "turn": turn, "step": step }))?;
@@ -730,8 +788,31 @@ impl<W: Write> Log<W> {
             event["surfaceOp"] = json!("append");
         }
         self.seq += 1;
-        self.time_ms += 1;
         writeln!(self.out, "{event}")
+    }
+
+    /// Move the clock forward by `duration`, rounded up to the millisecond the
+    /// harness records.
+    ///
+    /// Rounding up rather than down keeps a sub-millisecond stage from folding
+    /// to a zero-length one, which would make a step look like it never ran.
+    fn advance(&mut self, duration: Duration) {
+        let millis = u64::try_from(duration.as_millis()).unwrap_or(u64::MAX);
+        let millis = if millis == 0 && duration > Duration::ZERO {
+            1
+        } else {
+            millis
+        };
+        self.time_ms = self.time_ms.saturating_add(millis);
+    }
+
+    /// Move the clock to `target`, never backwards.
+    ///
+    /// A stage that reported more time than the attempt containing it would
+    /// otherwise rewind the log, and the harness derives every duration it
+    /// shows by subtracting event times.
+    fn advance_to(&mut self, target: u64) {
+        self.time_ms = self.time_ms.max(target);
     }
 
     /// A fresh message id, unique within the session.
@@ -1099,18 +1180,67 @@ mod tests {
     }
 
     /// The harness rejects a log whose event `seq` differs from the event's
-    /// index, and it reads `time` as epoch milliseconds.
+    /// index, and it reads `time` as epoch milliseconds. Time may stand still
+    /// between two events — several records of one step share a millisecond in
+    /// a harness-written log too — but it must never run backwards, because
+    /// every duration the UI shows is a subtraction of two event times.
     #[test]
-    fn event_seq_is_dense_and_time_is_monotonic() {
+    fn event_seq_is_dense_and_time_never_goes_backwards() {
         let lines = export(&sample_trace());
         let mut previous_time = 0;
 
         for (index, event) in lines.iter().skip(1).enumerate() {
             assert_eq!(event["seq"], index, "seq must equal the event index");
             let time = event["time"].as_u64().expect("an epoch-millisecond time");
-            assert!(time > previous_time, "time must not go backwards");
+            assert!(time >= previous_time, "time must not go backwards");
             previous_time = time;
         }
+    }
+
+    /// Event times come from the trace's own measurements, not from a counter.
+    ///
+    /// They used to be one millisecond apart, which made a lane that ran for
+    /// nine seconds render as a handful of milliseconds everywhere in the UI:
+    /// `dsh-session-stats` derives model time by subtracting the `step/start`
+    /// time from the `assistant/message` time, and the session duration the
+    /// same way.
+    #[test]
+    fn event_times_reproduce_the_traces_own_durations() {
+        let lines = export(&sample_trace());
+        let events = &lines[1..];
+        let time_of = |event: &Value| event["time"].as_u64().expect("a time");
+
+        let start = time_of(&events[0]);
+        let end = time_of(events.last().expect("the log is not empty"));
+        assert_eq!(
+            end - start,
+            9_000,
+            "the session must span the lane's measured 9s",
+        );
+
+        // Attempt 2 reported 900ms in the model over one assistant turn, so
+        // that is what the harness must be able to fold out of the pair.
+        let step_start = events
+            .iter()
+            .filter(|event| event["type"] == "step/start" && event["data"]["turn"] == 2)
+            .map(time_of)
+            .next()
+            .expect("the second turn opens a step");
+        let answered = events
+            .iter()
+            .filter(|event| event["type"] == "assistant/message" && event["data"]["turn"] == 2)
+            .map(time_of)
+            .next()
+            .expect("the second turn has an assistant message");
+        assert_eq!(answered - step_start, 900, "the llm stage of attempt 2");
+
+        // The first attempt measured 4s, so the second one starts there.
+        let turn_two = events
+            .iter()
+            .find(|event| event["type"] == "turn/start" && event["data"]["turn"] == 2)
+            .map(time_of)
+            .expect("a second turn");
+        assert_eq!(turn_two - start, 4_000, "attempt 1 measured 4s");
     }
 
     /// Turns and steps nest, every turn closes, and no step outlives its turn.
