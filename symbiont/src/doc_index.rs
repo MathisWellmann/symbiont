@@ -824,7 +824,7 @@ pub(crate) mod tests {
             ExternalCrate {
                 name: "dep_crate".to_string(),
                 html_root_url: None,
-                path: std::path::PathBuf::new(),
+                path: PathBuf::new(),
             },
         )]);
         crate_data(index, paths, external_crates)
@@ -877,7 +877,7 @@ pub(crate) mod tests {
             ExternalCrate {
                 name: "dep_crate".to_string(),
                 html_root_url: None,
-                path: std::path::PathBuf::new(),
+                path: PathBuf::new(),
             },
         )]);
         crate_data(index, paths, external_crates)
@@ -936,7 +936,7 @@ pub(crate) mod tests {
             ExternalCrate {
                 name: "dep_crate".to_string(),
                 html_root_url: None,
-                path: std::path::PathBuf::new(),
+                path: PathBuf::new(),
             },
         )]);
         crate_data(index, paths, external_crates)

@@ -159,6 +159,8 @@ impl PortableTool for ApiDocTool {
 
 #[cfg(test)]
 mod tests {
+    use rig_core::tool::ToolErrorKind;
+
     use super::*;
 
     #[tokio::test(flavor = "current_thread")]

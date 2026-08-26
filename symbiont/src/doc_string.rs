@@ -3360,7 +3360,8 @@ pub const WEIGHTS: [f64; 3] = [1.0, 2.0, 3.0];
         let relative_source = member_src.join("lib.rs");
         std::fs::write(&relative_source, "pub struct Candle { price: f64 }\n")
             .expect("workspace fixture is writable");
-        let absolute_source = temp_source_file("workspace_root", "pub struct Ledger { price: f64 }\n");
+        let absolute_source =
+            temp_source_file("workspace_root", "pub struct Ledger { price: f64 }\n");
 
         let index = HashMap::from([
             (
