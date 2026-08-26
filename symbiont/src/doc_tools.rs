@@ -23,7 +23,14 @@ use crate::doc_index::{
 /// the agent what to do next. The explicit constructors keep the message,
 /// so the agent reads which path failed and which tool to call after it.
 fn model_visible(error: DocIndexError) -> ToolExecutionError {
-    ToolExecutionError::not_found(error.to_string()).with_retryable(false)
+    match error {
+        // The item exists, so a `not_found` answer would contradict
+        // `api_index`. Tell the model the tool failed to render it instead.
+        DocIndexError::RenderFailed(_) => {
+            ToolExecutionError::other(error.to_string()).with_retryable(false)
+        }
+        _ => ToolExecutionError::not_found(error.to_string()).with_retryable(false),
+    }
 }
 
 /// The `api_index` tool: list the public items of a host API module.
@@ -228,5 +235,24 @@ mod tests {
         assert!(feedback.contains("Order"), "{feedback}");
         assert!(feedback.contains("api_index"), "{feedback}");
         assert_eq!(mapped.retryable(), Some(false));
+    }
+
+    /// An item that resolves but does not render is not a missing item: the
+    /// listing shows it, so the error keeps the `other` kind and says the
+    /// item exists.
+    #[test]
+    fn a_resolved_item_that_cannot_render_is_not_reported_missing() {
+        let doc_tool = ApiDocTool::new(Arc::new(crate::doc_index::tests::fixture_index()));
+
+        let mapped = doc_tool.map_error(DocIndexError::RenderFailed("Candle".to_string()));
+        let feedback = mapped.model_feedback().expect("the feedback is text");
+        assert!(feedback.contains("Candle"), "{feedback}");
+        assert!(feedback.contains("exists"), "{feedback}");
+        assert_eq!(mapped.kind(), ToolErrorKind::Other);
+        assert_eq!(mapped.retryable(), Some(false));
+
+        // A missing item still maps to `not_found`.
+        let mapped = doc_tool.map_error(DocIndexError::ItemNotFound("Candle".to_string()));
+        assert_eq!(mapped.kind(), ToolErrorKind::NotFound);
     }
 }
