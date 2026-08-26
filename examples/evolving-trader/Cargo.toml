@@ -12,7 +12,7 @@ workspace = true
 crate-type = ["dylib", "rlib"]
 
 [dependencies]
-symbiont = { path = "../../symbiont" }
+symbiont = { path = "../../symbiont", features = ["dsh-export"] }
 
 tokio.workspace = true
 tracing.workspace = true

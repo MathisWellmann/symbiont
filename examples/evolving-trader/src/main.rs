@@ -24,9 +24,15 @@
 //! sizing and fee-awareness — expressed as compiled Rust running against a
 //! realistic exchange simulation.
 
-use std::num::{
-    NonZeroU16,
-    NonZeroU32,
+use std::{
+    num::{
+        NonZeroU16,
+        NonZeroU32,
+    },
+    path::{
+        Path,
+        PathBuf,
+    },
 };
 
 use evolving_trader_example::prelude::*;
@@ -51,7 +57,9 @@ use lfest::prelude::{
 use plotters::prelude::*;
 use symbiont::{
     DocMode,
+    DshSession,
     DylibConfig,
+    EvolutionTrace,
     Revision,
     Runtime,
 };
@@ -189,7 +197,7 @@ struct AggCandle {
 fn load_candles() -> Vec<Candle> {
     let path = std::env::var("TRADES_CSV").unwrap_or_else(|_| DEFAULT_DATA_PATH.to_string());
     assert!(
-        std::path::Path::new(&path).exists(),
+        Path::new(&path).exists(),
         "Trade data csv not found at `{path}`. Download it first:\n\
          curl -L --create-dirs -o {DEFAULT_DATA_PATH} \\\n  {DATA_URL}\n\
          or point the TRADES_CSV env var at an existing file with `timestamp,price,size` columns."
@@ -627,6 +635,55 @@ fn buy_hold_curve(candles: &[Candle]) -> Vec<f64> {
 
 // -- Main ----------------------------------------------------------------------
 
+/// Write one round's trajectory into the DeepSeek Harness session store.
+///
+/// The trace carries every message of the round, but not the system prompt,
+/// the provider or the model — see [`symbiont::DshSession`] — so those come
+/// from the caller. The session id is left to the exporter: it must be unique
+/// across the whole store, and a pinned one collides as soon as the same
+/// binary runs from a second working directory.
+///
+/// Exporting is best-effort. A round that evolved a better strategy must not
+/// fail because a session file could not be written.
+fn export_trace(trace: &EvolutionTrace, system_prompt: &str, model: &str, round: usize) {
+    let Some(root) = sessions_root() else {
+        warn!("no session store to export the round-{round} trajectory to");
+        return;
+    };
+
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let cwd = cwd.to_string_lossy();
+
+    let session = DshSession::builder()
+        .system_prompt(system_prompt)
+        .provider("openrouter")
+        .model(model)
+        .cwd(&cwd)
+        .build();
+
+    match symbiont::export_dsh_session(trace, &session, &root) {
+        Ok(path) => println!("Round {round} trajectory: {}", path.display()),
+        Err(error) => warn!("could not export the round-{round} trajectory: {error}"),
+    }
+}
+
+/// Where the DeepSeek Harness keeps its sessions.
+///
+/// `$SYMBIONT_DSH_SESSIONS` wins, so a run can be pointed at a scratch
+/// directory instead of the real store. Otherwise it is `$DSH_HOME/sessions`,
+/// and `~/.dsh/sessions` when `DSH_HOME` is unset.
+fn sessions_root() -> Option<PathBuf> {
+    if let Ok(root) = std::env::var("SYMBIONT_DSH_SESSIONS") {
+        return Some(PathBuf::from(root));
+    }
+    if let Ok(home) = std::env::var("DSH_HOME") {
+        return Some(Path::new(&home).join("sessions"));
+    }
+    std::env::var("HOME")
+        .ok()
+        .map(|home| Path::new(&home).join(".dsh").join("sessions"))
+}
+
 #[tokio::main]
 async fn main() -> symbiont::Result<()> {
     symbiont::init_tracing();
@@ -664,6 +721,12 @@ async fn main() -> symbiont::Result<()> {
             .await?
             .max_tokens(4096)
             .build();
+
+    // The same preamble `agent_builder_from_env` put on the agent, built from
+    // the same crate and doc mode. A trace omits it by design — it is
+    // identical for every attempt of every round — so the exporter takes it
+    // from here.
+    let system_prompt = symbiont::system_prompt(Some(host_crate), DocMode::default()).await?;
 
     let fn_source = runtime.fn_full_sources();
     let fn_prelude = runtime.fn_prelude();
@@ -706,8 +769,15 @@ async fn main() -> symbiont::Result<()> {
 
         let prompt = build_prompt(&task, &last_code, &result, top.first());
         let rev = match runtime.evolve(&agent, &prompt).await {
-            Ok(info) => info.revision(),
+            Ok(info) => {
+                export_trace(info.trace(), &system_prompt, &model, round);
+                info.revision()
+            }
             Err(e) => {
+                // The round that failed is the one worth reading, so its lane
+                // is exported before the loop moves on without it.
+                let (e, trace) = e.into_parts();
+                export_trace(&trace, &system_prompt, &model, round);
                 warn!("Evolution failed: {e} — retrying next round.");
                 continue;
             }
