@@ -45,7 +45,10 @@ use crate::{
 /// Document the exact API imported by `use host::prelude::*;`.
 pub(crate) async fn write_prelude_doc_string(s: &mut String, crate_name: &str) -> Result<()> {
     let crate_data = rustdoc_json(crate_name, &[crate_name]).await?;
-    let rendered = RustApiSynopsis::new(&crate_data).render_host_facade();
+    let workspace_root = cargo_workspace_root().await?;
+    let rendered = RustApiSynopsis::new(&crate_data)
+        .with_workspace_root(workspace_root)
+        .render_host_facade();
     trace!("host facade synopsis: {}", rendered.api);
     s.push_str(&rendered.api);
 
@@ -287,6 +290,29 @@ async fn cargo_target_dir() -> Result<PathBuf> {
         .ok_or_else(|| err("`target_directory` missing from cargo metadata output".to_string()))
 }
 
+/// The absolute directory that rustdoc records the spans of local crate
+/// items relative to: the cargo workspace root. When cargo runs from a
+/// workspace member, the root differs from the current directory, so the
+/// span filenames must be read relative to the root.
+pub(crate) async fn cargo_workspace_root() -> Result<PathBuf> {
+    let err = |e: String| Error::CargoDoc { err: e };
+    let output = Command::new("cargo")
+        .args(["metadata", "--format-version", "1", "--no-deps"])
+        .output()
+        .await
+        .map_err(|e| err(format!("failed to spawn `cargo metadata`: {e}")))?;
+    if !output.status.success() {
+        return Err(err(format!(
+            "`cargo metadata` failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    serde_json::from_slice::<serde_json::Value>(&output.stdout)
+        .ok()
+        .and_then(|meta| meta["workspace_root"].as_str().map(PathBuf::from))
+        .ok_or_else(|| err("`workspace_root` missing from cargo metadata output".to_string()))
+}
+
 async fn read_rustdoc_json(crate_name: &str, target_dir: &Path) -> Result<RustdocCrate> {
     let path = target_dir
         .join("doc")
@@ -340,6 +366,7 @@ pub(crate) struct RustApiSynopsis<'a> {
     pending_reexports: Vec<(Id, bool)>,
     external_facades: BTreeMap<String, BTreeSet<FacadeRequest>>,
     local_crate_alias: String,
+    workspace_root: Option<PathBuf>,
 }
 
 impl<'a> RustApiSynopsis<'a> {
@@ -352,6 +379,7 @@ impl<'a> RustApiSynopsis<'a> {
             pending_reexports: Vec::new(),
             external_facades: BTreeMap::new(),
             local_crate_alias: "host".to_string(),
+            workspace_root: None,
         }
     }
 
@@ -359,6 +387,15 @@ impl<'a> RustApiSynopsis<'a> {
     /// same crate do not duplicate items.
     pub(crate) fn with_rendered_items(mut self, rendered_items: HashSet<Id>) -> Self {
         self.rendered_items = rendered_items;
+        self
+    }
+
+    /// Make relative span filenames resolve against the cargo workspace root
+    /// instead of the current directory. Rustdoc records the spans of local
+    /// crate items relative to the root, which differs from the directory that
+    /// runs cargo when the crate is a workspace member.
+    pub(crate) fn with_workspace_root(mut self, workspace_root: PathBuf) -> Self {
+        self.workspace_root = Some(workspace_root);
         self
     }
 
@@ -856,11 +893,32 @@ impl<'a> RustApiSynopsis<'a> {
     }
 
     fn read_source(&mut self, path: &Path) -> Option<&str> {
-        if !self.source_cache.contains_key(path) {
-            let source = std::fs::read_to_string(path).ok()?;
-            self.source_cache.insert(path.to_owned(), source);
+        let path = self.resolve_span_path(path);
+        if !self.source_cache.contains_key(&path) {
+            let source = std::fs::read_to_string(&path).ok()?;
+            self.source_cache.insert(path.clone(), source);
         }
-        self.source_cache.get(path).map(String::as_str)
+        self.source_cache.get(&path).map(String::as_str)
+    }
+
+    /// The location to read a span filename from.
+    ///
+    /// Rustdoc records the spans of local crate items relative to the cargo
+    /// workspace root, not relative to the directory that runs cargo. When the
+    /// root is known and the file exists under it, read from there; otherwise
+    /// fall back to the current directory, which is where the name resolves
+    /// when cargo ran at the root or the span names a foreign, absolute path.
+    fn resolve_span_path(&self, span: &Path) -> PathBuf {
+        if span.is_absolute() {
+            return span.to_path_buf();
+        }
+        if let Some(root) = &self.workspace_root {
+            let rooted = root.join(span);
+            if rooted.is_file() {
+                return rooted;
+            }
+        }
+        span.to_path_buf()
     }
 
     fn write_snippet(&self, out: &mut String, snippet: &str, indent: usize) {
@@ -3287,5 +3345,99 @@ pub const WEIGHTS: [f64; 3] = [1.0, 2.0, 3.0];
         assert_eq!(crate_data.format_version, rustdoc_types::FORMAT_VERSION);
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn doc_string_resolves_relative_spans_against_workspace_root() {
+        // Rustdoc records the spans of local crate items relative to the
+        // cargo workspace root, not relative to the directory that runs
+        // cargo. With the root set, a relative span reads the member file;
+        // an absolute span reads as before.
+        let root =
+            std::env::temp_dir().join(format!("symbiont_workspace_root_{}", std::process::id()));
+        let member_src = root.join("member").join("src");
+        std::fs::create_dir_all(&member_src).expect("workspace fixture is writable");
+        let relative_source = member_src.join("lib.rs");
+        std::fs::write(&relative_source, "pub struct Candle { price: f64 }\n")
+            .expect("workspace fixture is writable");
+        let absolute_source = temp_source_file("workspace_root", "pub struct Ledger { price: f64 }\n");
+
+        let index = HashMap::from([
+            (
+                Id(0),
+                item(
+                    0,
+                    Some("host_crate"),
+                    ItemEnum::Module(rustdoc_types::Module {
+                        is_crate: true,
+                        items: vec![Id(1), Id(2)],
+                        is_stripped: false,
+                    }),
+                ),
+            ),
+            (
+                Id(1),
+                spanned_item(
+                    1,
+                    Some("Candle"),
+                    ItemEnum::Struct(rustdoc_types::Struct {
+                        kind: rustdoc_types::StructKind::Unit,
+                        generics: empty_generics(),
+                        impls: Vec::new(),
+                    }),
+                    span(Path::new("member/src/lib.rs"), (1, 1), (1, 40)),
+                ),
+            ),
+            (
+                Id(2),
+                spanned_item(
+                    2,
+                    Some("Ledger"),
+                    ItemEnum::Struct(rustdoc_types::Struct {
+                        kind: rustdoc_types::StructKind::Unit,
+                        generics: empty_generics(),
+                        impls: Vec::new(),
+                    }),
+                    span(&absolute_source, (1, 1), (1, 40)),
+                ),
+            ),
+        ]);
+        let paths = HashMap::from([
+            (
+                Id(1),
+                local_path_entry(&["host_crate", "Candle"], rustdoc_types::ItemKind::Struct),
+            ),
+            (
+                Id(2),
+                local_path_entry(&["host_crate", "Ledger"], rustdoc_types::ItemKind::Struct),
+            ),
+        ]);
+        let crate_data = crate_data(index, paths, HashMap::new());
+
+        let candle = FacadeRequest::Item(vec!["Candle".to_string()]);
+        let ledger = FacadeRequest::Item(vec!["Ledger".to_string()]);
+        let requests = BTreeSet::from([candle, ledger]);
+
+        let rendered = RustApiSynopsis::new(&crate_data)
+            .with_workspace_root(root.clone())
+            .render_requests(&requests);
+        assert!(
+            rendered.api.contains("pub struct Candle"),
+            "relative span resolved against the workspace root:\n{}",
+            rendered.api
+        );
+        assert!(
+            rendered.api.contains("pub struct Ledger"),
+            "absolute span read as before:\n{}",
+            rendered.api
+        );
+
+        // Without the root (legacy), the relative span reads against the CWD
+        // and misses: the item renders nothing.
+        let legacy = RustApiSynopsis::new(&crate_data).render_requests(&requests);
+        assert!(!legacy.api.contains("pub struct Candle"), "{}", legacy.api);
+        assert!(legacy.api.contains("pub struct Ledger"), "{}", legacy.api);
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
