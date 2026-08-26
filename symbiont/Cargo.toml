@@ -49,9 +49,19 @@ tracing-test = "0.2"
 
 [features]
 default = []
+# `symbiont::export_dsh_session`: write an `EvolutionTrace` straight into
+# `~/.dsh/sessions` as a DeepSeek Harness session log. The harness reads a
+# zstd-compressed artifact, which is the only reason this is a feature: the
+# `zstd` crate builds vendored C. `symbiont::write_dsh_session` emits the same
+# records as plain JSON Lines and needs no feature.
+dsh-export = ["dep:zstd"]
 # Prometheus exporter for long-running host binaries; pull this in and call
 # `symbiont::observability::init_observability()` at startup.
 prometheus = ["dep:metrics-exporter-prometheus"]
+
+[dependencies.zstd]
+optional = true
+version = "0.13"
 
 [dependencies.metrics-exporter-prometheus]
 default-features = false
