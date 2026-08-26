@@ -66,6 +66,12 @@ pub enum DocIndexError {
         "no public item `{0}` exists in the host API; call `api_index` to list the available names"
     )]
     ItemNotFound(String),
+    /// The item exists, but the renderer produced nothing for it: the source
+    /// file behind its rustdoc span could not be read.
+    #[error(
+        "public item `{0}` exists in the host API, but its definition could not be rendered: its source file could not be read; the name is valid, so use it without the full definition"
+    )]
+    RenderFailed(String),
 }
 
 /// A queryable cache of the rustdoc JSON of the host crate and the crates
@@ -209,7 +215,8 @@ impl DocIndex {
     ///
     /// # Errors
     ///
-    /// Returns an error if no public item or module exists at `path`.
+    /// Returns an error if no public item or module exists at `path`, or if
+    /// the item exists but the renderer produced nothing for it.
     pub fn render_doc(&self, path: &str) -> std::result::Result<String, DocIndexError> {
         let not_found = || DocIndexError::ItemNotFound(path.to_string());
         let segments = normalize_path(path, &self.host_crate);
@@ -235,7 +242,10 @@ impl DocIndex {
         render_cached_external_facades(&mut out, rendered.external_facades, &self.crates);
 
         if out.trim().is_empty() {
-            return Err(not_found());
+            // The path resolved: the item exists. An empty render means its
+            // source could not be read, and the model must not be told the
+            // item is missing, because `api_index` lists it.
+            return Err(DocIndexError::RenderFailed(path.to_string()));
         }
         Ok(out.trim_end().to_string())
     }
@@ -1155,5 +1165,58 @@ pub(crate) mod tests {
             .render_doc("nope")
             .expect_err("the path does not resolve");
         assert!(matches!(err, DocIndexError::ItemNotFound(_)));
+    }
+
+    /// The path resolves but the renderer produces nothing: the item carries
+    /// no readable source. The error must say that the item exists, not that
+    /// it is missing, because `api_index` lists it.
+    #[test]
+    fn render_doc_reports_a_resolved_item_that_cannot_render() {
+        let index =
+            DocIndex::from_crates("host_crate", unrenderable_host_fixture(), HashMap::new());
+        let err = index
+            .render_doc("Widget")
+            .expect_err("the item resolves but renders nothing");
+        assert!(
+            matches!(err, DocIndexError::RenderFailed(ref name) if name == "Widget"),
+            "{err:?}"
+        );
+    }
+
+    /// A host fixture whose prelude names a struct that rustdoc JSON cannot
+    /// render: the entry carries no source span.
+    fn unrenderable_host_fixture() -> RustdocCrate {
+        let index = HashMap::from([
+            (Id(0), module(0, "host_crate", vec![Id(1)])),
+            (Id(1), module(1, "prelude", vec![Id(2)])),
+            (
+                Id(2),
+                item(
+                    2,
+                    Some("Widget"),
+                    ItemEnum::Struct(rustdoc_types::Struct {
+                        kind: rustdoc_types::StructKind::Unit,
+                        generics: Generics {
+                            params: Vec::new(),
+                            where_predicates: Vec::new(),
+                        },
+                        impls: Vec::new(),
+                    }),
+                ),
+            ),
+        ]);
+        let paths = HashMap::from([(
+            Id(2),
+            ItemSummary {
+                crate_id: 0,
+                path: vec![
+                    "host_crate".to_string(),
+                    "prelude".to_string(),
+                    "Widget".to_string(),
+                ],
+                kind: ItemKind::Struct,
+            },
+        )]);
+        crate_data(index, paths, HashMap::new())
     }
 }
