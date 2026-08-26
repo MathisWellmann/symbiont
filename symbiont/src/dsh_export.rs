@@ -86,12 +86,15 @@ use std::{
     },
 };
 
-use rig_core::message::{
-    AssistantContent,
-    Message,
-    ReasoningContent,
-    ToolResultContent,
-    UserContent,
+use rig_core::{
+    completion::Usage,
+    message::{
+        AssistantContent,
+        Message,
+        ReasoningContent,
+        ToolResultContent,
+        UserContent,
+    },
 };
 use serde_json::{
     Value,
@@ -461,6 +464,7 @@ impl<W: Write> Log<W> {
             self.user_text(turn, step, attempt.prompt())?;
         } else {
             let mut step_has_assistant = false;
+            let mut call_index = 0;
             for message in messages {
                 match message {
                     // The system prompt travels as agent configuration, so a
@@ -496,7 +500,16 @@ impl<W: Write> Log<W> {
                         step_has_assistant = true;
 
                         let blocks: Vec<Value> = content.iter().map(assistant_block).collect();
-                        self.assistant_message(turn, step, session, &blocks)?;
+                        // One completion call per assistant turn, in order, so
+                        // the step's own token accounting travels with the
+                        // message the harness folds it out of.
+                        let usage = attempt
+                            .run()
+                            .as_ref()
+                            .and_then(|run| run.completion_calls().get(call_index))
+                            .and_then(|call| token_usage(&call.usage));
+                        call_index += 1;
+                        self.assistant_message(turn, step, session, &blocks, usage)?;
 
                         for item in content.iter() {
                             if let AssistantContent::ToolCall(call) = item {
@@ -640,25 +653,30 @@ impl<W: Write> Log<W> {
         step: u64,
         session: &DshSession<'_>,
         blocks: &[Value],
+        usage: Option<Value>,
     ) -> io::Result<()> {
         let id = self.mint_id("msg");
-        self.surface_event(
-            "assistant/message",
-            json!({
-                "turn": turn,
-                "step": step,
-                "message": {
-                    "id": id,
-                    "role": "assistant",
-                    "content": blocks,
-                    "source": {
-                        "kind": "model",
-                        "provider": session.provider,
-                        "model": session.model,
-                    },
+        let mut data = json!({
+            "turn": turn,
+            "step": step,
+            "message": {
+                "id": id,
+                "role": "assistant",
+                "content": blocks,
+                "source": {
+                    "kind": "model",
+                    "provider": session.provider,
+                    "model": session.model,
                 },
-            }),
-        )
+            },
+        });
+        // Absent, not zeroed, when the provider reported no accounting: the
+        // harness reads a missing `usage` as "unreported" and a present one as
+        // a measurement.
+        if let Some(usage) = usage {
+            data["usage"] = usage;
+        }
+        self.surface_event("assistant/message", data)
     }
 
     /// Write one tool result, answering the call `call_id`.
@@ -752,6 +770,34 @@ fn assistant_block(content: &AssistantContent) -> Value {
         // an image out of a rig transcript has no faithful counterpart.
         Image(_) => json!({ "type": "text", "text": "[image omitted]" }),
     }
+}
+
+/// One completion call's token accounting as a harness `TokenUsage`, or
+/// `None` when the provider reported nothing.
+///
+/// Rig documents all-zero [`Usage`] as its sentinel for missing provider
+/// metrics and does not distinguish that from a genuine all-zero report, so
+/// an empty record becomes an absent one rather than a measured zero.
+///
+/// The cache fields are deliberately dropped. The harness defines its counts
+/// as **disjoint** — billed input is `inputTokens + cacheReadTokens +
+/// cacheWriteTokens` — while rig leaves it to the provider whether
+/// `input_tokens` already contains the cached tokens. Reporting rig's cache
+/// counts alongside its input count would double-bill them on the providers
+/// that fold them in, so only what is unambiguous travels.
+fn token_usage(usage: &Usage) -> Option<Value> {
+    if usage.input_tokens == 0 && usage.output_tokens == 0 && usage.reasoning_tokens == 0 {
+        return None;
+    }
+
+    let mut out = json!({
+        "inputTokens": usage.input_tokens,
+        "outputTokens": usage.output_tokens,
+    });
+    if usage.reasoning_tokens > 0 {
+        out["reasoningTokens"] = json!(usage.reasoning_tokens);
+    }
+    Some(out)
 }
 
 /// One tool-result item as a harness content block.
@@ -891,6 +937,7 @@ fn summary_line(text: &str) -> String {
 mod tests {
     use std::time::Duration;
 
+    use rig_agent::agent::CompletionCall;
     use rig_core::{
         completion::Usage,
         message::{
@@ -916,6 +963,15 @@ mod tests {
         evolve_info::Lane,
         revision::Revision,
     };
+
+    /// A `Usage` that reports `input` prompt and `output` completion tokens.
+    fn usage_of(input: u64, output: u64) -> Usage {
+        let mut usage = Usage::new();
+        usage.input_tokens = input;
+        usage.output_tokens = output;
+        usage.total_tokens = input + output;
+        usage
+    }
 
     /// The stage timings of an attempt that got all the way through a build.
     fn built_stages() -> StageTimings {
@@ -1250,6 +1306,78 @@ mod tests {
             .expect("note text");
         assert!(last.contains("lane 3 finished"));
         assert!(last.contains("registered revision 1"));
+    }
+
+    /// Each assistant turn carries the token accounting of the completion
+    /// call that produced it, in order. The harness folds `usage.outputTokens`
+    /// off this event, so without it a session reports no tokens at all.
+    #[test]
+    fn each_assistant_turn_carries_its_own_token_usage() {
+        let mut trace = EvolutionTrace::new(Lane::from(0), "p".to_string());
+        trace.set_history(vec![
+            Message::user("p"),
+            Message::assistant("first"),
+            Message::assistant("second"),
+        ]);
+        trace.push_attempt(
+            1,
+            "p".to_string(),
+            Some(
+                RunTrace::builder()
+                    .produced(0..3)
+                    .response("second".to_string())
+                    .usage(Usage::new())
+                    .completion_calls(vec![
+                        CompletionCall::new(0, usage_of(11, 22)),
+                        CompletionCall::new(1, usage_of(33, 44)),
+                    ])
+                    .build(),
+            ),
+            StageTimings::default(),
+            LadderEvent::Registered {
+                revision: Revision::new(1),
+            },
+            Duration::from_secs(1),
+        );
+        trace.set_outcome(TraceOutcome::Registered {
+            revision: Revision::new(1),
+        });
+
+        let lines = export(&trace);
+        let usages: Vec<&Value> = lines
+            .iter()
+            .filter(|event| event["type"] == "assistant/message")
+            .map(|event| &event["data"]["usage"])
+            .collect();
+
+        assert_eq!(usages.len(), 2, "one per assistant turn");
+        assert_eq!(usages[0]["inputTokens"], 11);
+        assert_eq!(usages[0]["outputTokens"], 22);
+        // The second turn gets the second call's numbers, not the first's.
+        assert_eq!(usages[1]["inputTokens"], 33);
+        assert_eq!(usages[1]["outputTokens"], 44);
+    }
+
+    /// Rig reports all-zero usage when the provider reported nothing, so an
+    /// empty record must travel as an absent field rather than a measured
+    /// zero. The cache counts are dropped because the harness defines its
+    /// counts as disjoint while rig does not, and reporting both would
+    /// double-bill a provider that folds cache hits into its input count.
+    #[test]
+    fn unreported_usage_is_absent_and_cache_counts_are_dropped() {
+        assert_eq!(token_usage(&Usage::new()), None);
+
+        let mut usage = usage_of(10, 5);
+        usage.reasoning_tokens = 3;
+        usage.cached_input_tokens = 7;
+        usage.cache_creation_input_tokens = 2;
+
+        let mapped = token_usage(&usage).expect("a reported usage maps");
+        assert_eq!(mapped["inputTokens"], 10);
+        assert_eq!(mapped["outputTokens"], 5);
+        assert_eq!(mapped["reasoningTokens"], 3);
+        assert!(mapped.get("cacheReadTokens").is_none());
+        assert!(mapped.get("cacheWriteTokens").is_none());
     }
 
     /// Without a `session/title` the web UI falls back to the basename of the
