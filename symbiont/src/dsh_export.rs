@@ -538,11 +538,35 @@ impl<W: Write> Log<W> {
             // A trace with no attempt at all still needs its header.
             self.request_header(session)?;
         }
+        self.session_title(trace)?;
         self.notice(turn, 1, &outcome_notice(trace))?;
         self.event("step/end", json!({ "turn": turn, "step": 1 }))?;
         self.event(
             "turn/end",
             json!({ "turn": turn, "reason": { "kind": "completed" } }),
+        )
+    }
+
+    /// Name the session.
+    ///
+    /// Without this event the web UI has no title to show and falls back to
+    /// the basename of the session's working directory, so every lane of one
+    /// example renders under the same heading.
+    ///
+    /// Written once, at the end, because the title reports the outcome. The
+    /// durable title is the latest snapshot, so one event settles it.
+    fn session_title(&mut self, trace: &EvolutionTrace) -> io::Result<()> {
+        self.event(
+            "session/title",
+            json!({
+                "title": session_title(trace),
+                // `dsh-session-title`'s invariant: `messageSeqs` is empty if
+                // and only if the source is `user`. A title symbiont chose is
+                // a deliberate name, not one derived from a message, so it
+                // cites none.
+                "messageSeqs": [],
+                "source": { "kind": "user" },
+            }),
         )
     }
 
@@ -805,6 +829,53 @@ fn turn_end_reason(ladder: &LadderEvent) -> Value {
     }
 }
 
+/// The session's heading in the harness UI: which lane this was, and how it
+/// ended.
+///
+/// Leads with the identity rather than the prompt, because the prompt is
+/// near-identical across the rounds of one run while the lane index and the
+/// outcome are what tell two sessions apart.
+fn session_title(trace: &EvolutionTrace) -> String {
+    let outcome = match trace.outcome() {
+        TraceOutcome::Registered { revision } => format!("rev {revision}"),
+        TraceOutcome::Failed { .. } => "failed".to_string(),
+    };
+    let attempts = trace.attempts().len();
+    let plural = if attempts == 1 { "" } else { "s" };
+
+    title_text(&format!(
+        "symbiont lane {} · {outcome} · {attempts} attempt{plural}",
+        trace.lane(),
+    ))
+}
+
+/// The harness's title budget: 80 UTF-8 bytes.
+///
+/// A title appended straight to the log never passes through the title
+/// service, so it never meets `normalizeSessionTitle`. This applies the same
+/// contract at the writing end instead.
+const MAX_TITLE_BYTES: usize = 80;
+
+/// Normalize a title the way the harness's title service would: no control
+/// characters, whitespace runs collapsed to one space, and truncated to
+/// [`MAX_TITLE_BYTES`] on a character boundary.
+fn title_text(raw: &str) -> String {
+    // A control character becomes a space rather than vanishing, so a title
+    // built from a newline-separated source does not run two words together.
+    let spaced: String = raw
+        .chars()
+        .map(|ch| if ch.is_control() { ' ' } else { ch })
+        .collect();
+    let cleaned = spaced.split_whitespace().collect::<Vec<&str>>().join(" ");
+
+    let mut end = cleaned.len().min(MAX_TITLE_BYTES);
+    // Never split a code point: walk back to the nearest boundary.
+    while end > 0 && !cleaned.is_char_boundary(end) {
+        end -= 1;
+    }
+    cleaned[..end].trim_end().to_string()
+}
+
 /// The collapsed one-line form of a note. The harness bounds a `notice`
 /// summary at 120 characters.
 fn summary_line(text: &str) -> String {
@@ -842,6 +913,7 @@ mod tests {
             RunTrace,
             StageTimings,
         },
+        evolve_info::Lane,
         revision::Revision,
     };
 
@@ -892,7 +964,7 @@ mod tests {
             Message::assistant("```rust\nfn sort() { /* fixed */ }\n```"),
         ];
 
-        let mut trace = EvolutionTrace::new(3, "write a sort".to_string());
+        let mut trace = EvolutionTrace::new(Lane::from(3), "write a sort".to_string());
         trace.push_attempt(
             1,
             "write a sort".to_string(),
@@ -1180,11 +1252,89 @@ mod tests {
         assert!(last.contains("registered revision 1"));
     }
 
+    /// Without a `session/title` the web UI falls back to the basename of the
+    /// session's working directory, so every lane of one example renders under
+    /// the same heading. The title has to say which lane this was and how it
+    /// ended.
+    #[test]
+    fn the_session_is_titled_by_lane_and_outcome() {
+        let lines = export(&sample_trace());
+        let title = lines
+            .iter()
+            .find(|event| event["type"] == "session/title")
+            .expect("the session is titled");
+
+        assert_eq!(
+            title["data"]["title"],
+            "symbiont lane 3 \u{b7} rev 1 \u{b7} 2 attempts"
+        );
+
+        // `dsh-session-title`'s invariant: `messageSeqs` is empty if and only
+        // if the source is `user`.
+        assert_eq!(title["data"]["source"]["kind"], "user");
+        assert_eq!(
+            title["data"]["messageSeqs"],
+            serde_json::json!([]),
+            "a `user`-sourced title must cite no message seqs",
+        );
+        assert!(
+            title.get("surfaceOp").is_none(),
+            "a title is log-only and must not claim a place on the transcript",
+        );
+    }
+
+    /// A lane that gave up says so, and one attempt is not "1 attempts".
+    #[test]
+    fn a_failed_lane_is_titled_as_failed() {
+        let mut trace = EvolutionTrace::new(Lane::from(0), "base".to_string());
+        trace.push_attempt(
+            1,
+            "base".to_string(),
+            None,
+            StageTimings::default(),
+            LadderEvent::Terminal {
+                reason: "gave up".to_string(),
+            },
+            Duration::from_secs(1),
+        );
+        trace.set_outcome(TraceOutcome::Failed {
+            reason: "gave up".to_string(),
+        });
+
+        let lines = export(&trace);
+        let title = lines
+            .iter()
+            .find(|event| event["type"] == "session/title")
+            .expect("the session is titled");
+        assert_eq!(
+            title["data"]["title"],
+            "symbiont lane 0 \u{b7} failed \u{b7} 1 attempt"
+        );
+    }
+
+    /// A title never passes through the harness's title service, so this end
+    /// has to keep the service's contract: one line, no control characters,
+    /// and at most 80 UTF-8 bytes cut on a character boundary.
+    #[test]
+    fn a_title_is_normalized_and_bounded() {
+        assert_eq!(title_text("  two\n\tlines\u{7}here "), "two lines here");
+
+        // 40 two-byte characters: 80 bytes exactly, so nothing is cut.
+        let exact = "\u{e9}".repeat(40);
+        assert_eq!(title_text(&exact).len(), MAX_TITLE_BYTES);
+
+        // One more character has to go, and the cut must not split it.
+        let over = "\u{e9}".repeat(41);
+        let bounded = title_text(&over);
+        assert!(bounded.len() <= MAX_TITLE_BYTES);
+        assert_eq!(bounded.chars().count(), 40);
+    }
+
     /// An attempt whose inference call failed has no transcript. It still gets
     /// a turn, so the retry is visible instead of silently missing.
     #[test]
     fn an_attempt_without_a_run_still_gets_a_turn() {
-        let mut trace = EvolutionTrace::new(0, "base".to_string());
+        let mut trace = EvolutionTrace::new(Lane::from(0), "base".to_string());
         trace.push_attempt(
             1,
             "base".to_string(),
@@ -1223,7 +1373,7 @@ mod tests {
     /// one turn that reports why.
     #[test]
     fn a_trace_without_attempts_is_still_a_session() {
-        let mut trace = EvolutionTrace::new(0, String::new());
+        let mut trace = EvolutionTrace::new(Lane::from(0), String::new());
         trace.set_outcome(TraceOutcome::Failed {
             reason: "failed before the lane started".to_string(),
         });
