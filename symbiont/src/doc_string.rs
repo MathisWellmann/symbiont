@@ -34,11 +34,7 @@ use rustdoc_types::{
     Visibility,
     WherePredicate,
 };
-use tokio::{
-    fs::File,
-    io::AsyncReadExt,
-    process::Command,
-};
+use tokio::process::Command;
 use tracing::trace;
 
 use crate::{
@@ -232,6 +228,7 @@ pub(crate) async fn rustdoc_json(
     crate_name: &str,
     package_candidates: &[&str],
 ) -> Result<RustdocCrate> {
+    let mut last_err = "no package candidates".to_string();
     for package in package_candidates {
         let args = [
             "rustdoc",
@@ -242,21 +239,64 @@ pub(crate) async fn rustdoc_json(
             "-Z",
             "unstable-options",
         ];
-        let output = Command::new("cargo").args(args).output().await?;
+        let output = Command::new("cargo")
+            .args(args)
+            .output()
+            .await
+            .map_err(|e| Error::CargoDoc {
+                err: format!("failed to spawn `cargo rustdoc -p {package}`: {e}"),
+            })?;
         trace!("cargo rustdoc output for package {package}: {output:?}");
         if output.status.success() {
-            return read_rustdoc_json(crate_name).await;
+            let target_dir = cargo_target_dir().await?;
+            return read_rustdoc_json(crate_name, &target_dir).await;
         }
+        last_err = format!(
+            "`cargo rustdoc -p {package}` failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
     }
 
-    Err(Error::CargoDoc)
+    Err(Error::CargoDoc {
+        err: format!(
+            "for crate `{crate_name}`, tried [{package_candidates}]: {last_err}",
+            package_candidates = package_candidates.join(", ")
+        ),
+    })
 }
 
-async fn read_rustdoc_json(crate_name: &str) -> Result<RustdocCrate> {
-    let filename = format!("target/doc/{}.json", crate_name.replace('-', "_"));
-    let mut json_file = File::open(&filename).await?;
-    let mut json_str = String::with_capacity(10_000);
-    json_file.read_to_string(&mut json_str).await?;
+/// The absolute directory cargo writes build artifacts to from the current
+/// directory. Not necessarily `<CWD>/target/`: inside a workspace, cargo run
+/// from a member's directory still builds into the workspace root's target.
+async fn cargo_target_dir() -> Result<PathBuf> {
+    let err = |e: String| Error::CargoDoc { err: e };
+    let output = Command::new("cargo")
+        .args(["metadata", "--format-version", "1", "--no-deps"])
+        .output()
+        .await
+        .map_err(|e| err(format!("failed to spawn `cargo metadata`: {e}")))?;
+    if !output.status.success() {
+        return Err(err(format!(
+            "`cargo metadata` failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    serde_json::from_slice::<serde_json::Value>(&output.stdout)
+        .ok()
+        .and_then(|meta| meta["target_directory"].as_str().map(PathBuf::from))
+        .ok_or_else(|| err("`target_directory` missing from cargo metadata output".to_string()))
+}
+
+async fn read_rustdoc_json(crate_name: &str, target_dir: &Path) -> Result<RustdocCrate> {
+    let path = target_dir
+        .join("doc")
+        .join(format!("{}.json", crate_name.replace('-', "_")));
+    let json_str = tokio::fs::read_to_string(&path)
+        .await
+        .map_err(|e| Error::RustdocJson {
+            path: path.display().to_string(),
+            err: e.to_string(),
+        })?;
     serde_json::from_str(&json_str).map_err(|_| Error::MdDoc)
 }
 
@@ -3223,5 +3263,29 @@ pub const WEIGHTS: [f64; 3] = [1.0, 2.0, 3.0];
             1,
             "{out}"
         );
+    }
+
+    #[tokio::test]
+    async fn read_rustdoc_json_reads_from_explicit_target_dir() {
+        // Regression: the JSON is read from the cargo target directory given
+        // as an absolute path, not from a CWD-relative `target/doc/`.
+        let tmp =
+            std::env::temp_dir().join(format!("symbiont-read-rustdoc-test-{}", std::process::id()));
+        let doc_dir = tmp.join("doc");
+        std::fs::create_dir_all(&doc_dir).expect("temp dir is writable");
+
+        let json =
+            serde_json::to_string(&crate_data(HashMap::new(), HashMap::new(), HashMap::new()))
+                .expect("fixture serializes");
+        // Dashes in the crate name become underscores in the file name.
+        std::fs::write(doc_dir.join("evolving_trader_example.json"), json)
+            .expect("temp file is writable");
+
+        let crate_data = read_rustdoc_json("evolving-trader-example", &tmp)
+            .await
+            .expect("reads via the absolute target dir");
+        assert_eq!(crate_data.format_version, rustdoc_types::FORMAT_VERSION);
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
