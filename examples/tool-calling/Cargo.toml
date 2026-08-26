@@ -9,7 +9,7 @@ version.workspace = true
 workspace = true
 
 [dependencies]
-symbiont = { path = "../../symbiont" }
+symbiont = { path = "../../symbiont", features = ["dsh-export"] }
 
 rig-core.workspace = true
 tokio.workspace = true

@@ -518,21 +518,22 @@ pub(crate) fn render_stages(out: &mut String, stages: &StageTimings) {
 
 /// A one-line summary of a ladder decision.
 pub(crate) fn render_ladder(ladder: &LadderEvent) -> String {
+    use LadderEvent::*;
     match ladder {
-        LadderEvent::Registered { revision } => format!("registered revision {revision}"),
-        LadderEvent::SelfHeal { kind, diagnostics } => {
+        Registered { revision } => format!("registered revision {revision}"),
+        SelfHeal { kind, diagnostics } => {
             format!("self-heal ({kind}): {}", first_line(diagnostics))
         }
-        LadderEvent::TransientRetry { backoff, cause } => {
+        TransientRetry { backoff, cause } => {
             format!("transient retry in {backoff:?}: {}", first_line(cause))
         }
-        LadderEvent::ContextReset {
+        ContextReset {
             messages_dropped, ..
         } => format!("context reset, dropped {messages_dropped} message(s)"),
-        LadderEvent::RepeatReset {
+        RepeatReset {
             messages_dropped, ..
         } => format!("repeat reset, dropped {messages_dropped} message(s)"),
-        LadderEvent::Terminal { reason } => format!("terminal: {}", first_line(reason)),
+        Terminal { reason } => format!("terminal: {}", first_line(reason)),
     }
 }
 
