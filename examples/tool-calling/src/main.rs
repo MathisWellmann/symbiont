@@ -11,10 +11,29 @@
 //! dispatches the tool calls internally, and symbiont only consumes the final
 //! code block. Watch the `Tool call: probe(..)` log lines to see the agent
 //! experimenting before it commits to an implementation.
+//!
+//! # Reading the trajectory afterwards
+//!
+//! Every round writes its [`symbiont::EvolutionTrace`] into the DeepSeek
+//! Harness session store, so the whole exchange — system prompt, each `probe`
+//! call with its arguments and result, every corrective nudge, and what the
+//! harness decided — can be replayed in `dsh` instead of scraped out of the
+//! log. A round always exports, including the round that failed.
+//!
+//! The store is `$SYMBIONT_DSH_SESSIONS`, else `$DSH_HOME/sessions`, else
+//! `~/.dsh/sessions`. Each round owns a fixed session id, so a rerun replaces
+//! its previous export rather than piling up.
+
+use std::path::{
+    Path,
+    PathBuf,
+};
 
 use rig_core::tool::PortableTool;
 use symbiont::{
     DocMode,
+    DshSession,
+    EvolutionTrace,
     Runtime,
 };
 use tracing::{
@@ -35,7 +54,7 @@ symbiont::evolvable! {
 /// The hidden ground-truth rule. It is never shown to the agent; it is only
 /// reachable through the [`Probe`] tool.
 fn hidden_rule(n: i64) -> i64 {
-    3 * n + 7
+    3_i64.saturating_mul(n).saturating_add(7)
 }
 
 /// Arguments for the [`Probe`] tool, deserialized from the model's JSON.
@@ -82,6 +101,52 @@ impl PortableTool for Probe {
     }
 }
 
+/// Write one lane's trajectory into the DeepSeek Harness session store.
+///
+/// The trace holds every message of the round but not the system prompt, the
+/// provider or the model — see [`symbiont::DshSession`] for why — so those
+/// come from the caller. Exporting is best-effort: a failure here must not
+/// take down a run whose evolution succeeded.
+fn export_trace(trace: &EvolutionTrace, system_prompt: &str, model: &str, round: u32) {
+    let Some(root) = sessions_root() else {
+        warn!("no session store to export the round-{round} trajectory to");
+        return;
+    };
+
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let cwd = cwd.to_string_lossy();
+
+    let session = DshSession::builder()
+        .system_prompt(system_prompt)
+        .provider("local")
+        .model(model)
+        .cwd(&cwd)
+        .session_id(format!("session-tool-calling-round{round}"))
+        .build();
+
+    match symbiont::export_dsh_session(trace, &session, &root) {
+        Ok(path) => println!("Round {round} trajectory: {}", path.display()),
+        Err(error) => warn!("could not export the round-{round} trajectory: {error}"),
+    }
+}
+
+/// Where the DeepSeek Harness keeps its sessions.
+///
+/// `$SYMBIONT_DSH_SESSIONS` wins, so the export can be pointed at a scratch
+/// directory instead of the real store. Otherwise it is `$DSH_HOME/sessions`,
+/// and `~/.dsh/sessions` when `DSH_HOME` is unset.
+fn sessions_root() -> Option<PathBuf> {
+    if let Ok(root) = std::env::var("SYMBIONT_DSH_SESSIONS") {
+        return Some(PathBuf::from(root));
+    }
+    if let Ok(home) = std::env::var("DSH_HOME") {
+        return Some(Path::new(&home).join("sessions"));
+    }
+    std::env::var("HOME")
+        .ok()
+        .map(|home| Path::new(&home).join(".dsh").join("sessions"))
+}
+
 /// Run the test suite against the hidden rule and return (passed, total).
 fn run_tests() -> (usize, usize) {
     let inputs = -10..=10_i64;
@@ -108,6 +173,11 @@ async fn main() -> symbiont::Result<()> {
         .default_max_turns(10)
         .build();
 
+    // The same preamble `agent_builder_from_env` put on the agent. A trace
+    // omits it by design — it is identical for every attempt of every round —
+    // so the exporter takes it from here.
+    let system_prompt = symbiont::system_prompt(None, DocMode::default()).await?;
+
     // -- Round 0: run the default (wrong) implementation ----------------
     println!("\n=== Round 0: default implementation ===");
     let (mut passed, mut total) = run_tests();
@@ -130,10 +200,17 @@ async fn main() -> symbiont::Result<()> {
     for round in 1..=max_rounds {
         println!("\n=== Round {round}: evolving via LLM (tool calls enabled) ===");
 
-        runtime
-            .evolve(&agent, &prompt)
-            .await
-            .expect("evolution should succeed");
+        let trace = match runtime.evolve(&agent, &prompt).await {
+            Ok(info) => info.into_trace(),
+            Err(error) => {
+                // The failed lane is the one worth reading, so it is exported
+                // before the panic rather than lost with it.
+                let (error, trace) = error.into_parts();
+                export_trace(&trace, &system_prompt, &model, round);
+                panic!("evolution failed in round {round}: {error}");
+            }
+        };
+        export_trace(&trace, &system_prompt, &model, round);
 
         // Re-run tests with the newly hot-swapped implementation.
         (passed, total) = run_tests();

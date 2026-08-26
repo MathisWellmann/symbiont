@@ -21,7 +21,7 @@
 //! | history [`AssistantContent::ToolCall`]                | `tool/call`                          |
 //! | history [`UserContent::ToolResult`]                   | `tool/result`                        |
 //! | [`AttemptTrace::ladder`] and [`AttemptTrace::stages`] | a `notice` user message              |
-//! | [`EvolutionTrace::outcome`] | a final `notice` user message                                  |
+//! | [`EvolutionTrace::outcome`]                           | a final `notice` user message        |
 //!
 //! # What the trace does not hold
 //!
@@ -75,6 +75,10 @@ use std::{
     io::{
         self,
         Write,
+    },
+    sync::atomic::{
+        AtomicU64,
+        Ordering,
     },
     time::{
         SystemTime,
@@ -135,10 +139,31 @@ pub struct DshSession<'a> {
     #[builder(default = SystemTime::now())]
     started_at: SystemTime,
 
-    /// Session id. It must be unique inside the project directory. `None`
-    /// derives `session-symbiont-lane<lane>-<millis>` from the trace.
+    /// Session id.
+    ///
+    /// **It must be unique across the whole sessions root, not merely inside
+    /// its project directory.** The harness's session listing collects every
+    /// id from every project directory into one set and throws on the first
+    /// repeat — at startup, so a repeat stops `dsh` from booting rather than
+    /// hiding one session behind another. A fixed id is therefore only safe
+    /// while the run's working directory never changes: the same id written
+    /// from two directories lands in two project directories and collides.
+    ///
+    /// `None` derives a unique id, which is what you want unless you are
+    /// deliberately overwriting one specific session.
     #[builder(default, setter(strip_option))]
     session_id: Option<String>,
+
+    /// Disambiguator behind a derived [`Self::session_id`], drawn once when
+    /// the session is built.
+    ///
+    /// It is a field rather than something [`Self::resolved_id`] draws per
+    /// call because that method has to be **stable**: the artifact's path and
+    /// the `id` inside its header both come from it, and the harness rejects
+    /// a log whose header id and cwd do not reproduce the path it was found
+    /// at.
+    #[builder(default = fresh_nonce(), setter(skip))]
+    nonce: u64,
 
     /// The model's advertised context window, for the `request/context`
     /// record. Omitted when `None`.
@@ -148,16 +173,37 @@ pub struct DshSession<'a> {
 
 impl DshSession<'_> {
     /// The session id to file this trace under.
+    ///
+    /// Stable for a given session and trace: the harness checks that a log's
+    /// header id and cwd name the exact path the log was found at, so the
+    /// path and the header must be derived from the same answer.
     #[must_use]
     pub fn resolved_id(&self, trace: &EvolutionTrace) -> String {
         self.session_id.clone().unwrap_or_else(|| {
             format!(
-                "session-symbiont-lane{}-{}",
+                "session-symbiont-lane{}-{}-{:x}",
                 trace.lane(),
                 epoch_millis(self.started_at),
+                self.nonce,
             )
         })
     }
+}
+
+/// A fresh disambiguator for a derived session id.
+///
+/// Mixes the process id, a process-local counter and the wall clock, so ids
+/// stay distinct across the lanes of one batch, across repeated runs of one
+/// binary, and across two binaries that started in the same millisecond.
+fn fresh_nonce() -> u64 {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    let count = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| u64::from(since.subsec_nanos()));
+
+    (u64::from(std::process::id()) << 40) ^ (nanos << 8) ^ count
 }
 
 /// Write `trace` as a DeepSeek Harness session log in plain JSON Lines.
@@ -375,7 +421,7 @@ impl<W: Write> Log<W> {
             "id": session.resolved_id(trace),
             "createdAt": self.time_ms,
             "delegationDepth": 0,
-            "agentPreset": "symbiont",
+            "agentPreset": "standard", // Could be standard, code, minimal or cordis.
         });
         if let Some(cwd) = session.cwd {
             header["cwd"] = json!(cwd);
@@ -655,9 +701,10 @@ impl<W: Write> Log<W> {
 
 /// One assistant content item as a harness content block.
 fn assistant_block(content: &AssistantContent) -> Value {
+    use AssistantContent::*;
     match content {
-        AssistantContent::Text(text) => json!({ "type": "text", "text": text.text }),
-        AssistantContent::Reasoning(reasoning) => {
+        Text(text) => json!({ "type": "text", "text": text.text }),
+        Reasoning(reasoning) => {
             let text: String = reasoning
                 .content
                 .iter()
@@ -670,7 +717,7 @@ fn assistant_block(content: &AssistantContent) -> Value {
                 .collect();
             json!({ "type": "reasoning", "text": text })
         }
-        AssistantContent::ToolCall(call) => json!({
+        ToolCall(call) => json!({
             "type": "tool-call",
             "id": call.id.as_str(),
             "name": call.function.name,
@@ -679,28 +726,30 @@ fn assistant_block(content: &AssistantContent) -> Value {
         }),
         // A harness image block references an attachment the harness owns, so
         // an image out of a rig transcript has no faithful counterpart.
-        AssistantContent::Image(_) => json!({ "type": "text", "text": "[image omitted]" }),
+        Image(_) => json!({ "type": "text", "text": "[image omitted]" }),
     }
 }
 
 /// One tool-result item as a harness content block.
 fn tool_result_block(content: &ToolResultContent) -> Value {
+    use ToolResultContent::*;
     match content {
-        ToolResultContent::Text(text) => json!({ "type": "text", "text": text.text }),
-        ToolResultContent::Json { value } => json!({ "type": "text", "text": value.to_string() }),
-        ToolResultContent::Image(_) => json!({ "type": "text", "text": "[image omitted]" }),
+        Text(text) => json!({ "type": "text", "text": text.text }),
+        Json { value } => json!({ "type": "text", "text": value.to_string() }),
+        Image(_) => json!({ "type": "text", "text": "[image omitted]" }),
     }
 }
 
 /// The readable text of a non-tool-result user content item.
 fn user_text(content: &UserContent) -> String {
+    use UserContent::*;
     match content {
-        UserContent::Text(text) => text.text.clone(),
-        UserContent::ToolResult(result) => format!("[tool result from {}]", result.name),
-        UserContent::Image(_) => "[image omitted]".to_string(),
-        UserContent::Audio(_) => "[audio omitted]".to_string(),
-        UserContent::Video(_) => "[video omitted]".to_string(),
-        UserContent::Document(_) => "[document omitted]".to_string(),
+        Text(text) => text.text.clone(),
+        ToolResult(result) => format!("[tool result from {}]", result.name),
+        Image(_) => "[image omitted]".to_string(),
+        Audio(_) => "[audio omitted]".to_string(),
+        Video(_) => "[video omitted]".to_string(),
+        Document(_) => "[document omitted]".to_string(),
     }
 }
 
@@ -721,9 +770,10 @@ fn attempt_notice(attempt: &AttemptTrace) -> String {
 /// The note that closes the lane.
 fn outcome_notice(trace: &EvolutionTrace) -> String {
     let usage = trace.usage();
+    use TraceOutcome::*;
     let verdict = match trace.outcome() {
-        TraceOutcome::Registered { revision } => format!("registered revision {revision}"),
-        TraceOutcome::Failed { reason } => format!("failed — {reason}"),
+        Registered { revision } => format!("registered revision {revision}"),
+        Failed { reason } => format!("failed — {reason}"),
     };
     format!(
         "symbiont lane {} finished in {:?}: {verdict}\n{} attempt(s), {} completion call(s), \
@@ -739,17 +789,17 @@ fn outcome_notice(trace: &EvolutionTrace) -> String {
 
 /// Why the turn of `ladder` ended, in the harness's vocabulary.
 fn turn_end_reason(ladder: &LadderEvent) -> Value {
+    use LadderEvent::*;
     match ladder {
         // The model answered; the harness then chose what to do with the
         // answer. That choice is not a failure of the turn.
-        LadderEvent::Registered { .. }
-        | LadderEvent::SelfHeal { .. }
-        | LadderEvent::ContextReset { .. }
-        | LadderEvent::RepeatReset { .. } => json!({ "kind": "completed" }),
-        LadderEvent::TransientRetry { cause, .. } => {
+        Registered { .. } | SelfHeal { .. } | ContextReset { .. } | RepeatReset { .. } => {
+            json!({ "kind": "completed" })
+        }
+        TransientRetry { cause, .. } => {
             json!({ "kind": "error", "error": { "message": cause, "code": "UNKNOWN" } })
         }
-        LadderEvent::Terminal { reason } => {
+        Terminal { reason } => {
             json!({ "kind": "error", "error": { "message": reason, "code": "UNKNOWN" } })
         }
     }
