@@ -485,7 +485,7 @@ fn render_tool_activity(out: &mut String, message: &Message) {
 }
 
 /// Show the stage breakdown of one attempt.
-fn render_stages(out: &mut String, stages: &StageTimings) {
+pub(crate) fn render_stages(out: &mut String, stages: &StageTimings) {
     let mut parts: Vec<String> = Vec::new();
     if let Some(llm) = stages.llm {
         parts.push(format!("llm {llm:?}"));
@@ -517,7 +517,7 @@ fn render_stages(out: &mut String, stages: &StageTimings) {
 }
 
 /// A one-line summary of a ladder decision.
-fn render_ladder(ladder: &LadderEvent) -> String {
+pub(crate) fn render_ladder(ladder: &LadderEvent) -> String {
     match ladder {
         LadderEvent::Registered { revision } => format!("registered revision {revision}"),
         LadderEvent::SelfHeal { kind, diagnostics } => {
