@@ -59,7 +59,12 @@ pub(crate) async fn compile_dylib(
             unparse(&clean_ast)
         )
     };
-    std::fs::write(crate_dir.join("src").join("lib.rs"), formatted)?;
+    std::fs::write(crate_dir.join("src").join("lib.rs"), formatted).map_err(|e| {
+        Error::DylibLoad(format!(
+            "Failed to write {}: {e}",
+            crate_dir.join("src").join("lib.rs").display()
+        ))
+    })?;
     info!("Created temp dylib crate at {}", crate_dir.display());
 
     let manifest_path = crate_dir.join("Cargo.toml");

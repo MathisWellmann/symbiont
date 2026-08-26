@@ -274,11 +274,21 @@ impl Runtime {
         }
         let hash = hasher.finish();
         let crate_dir = std::env::temp_dir().join(format!("symbiont-evolvable-{hash:x}"));
-        std::fs::create_dir_all(crate_dir.join("src"))?;
+        std::fs::create_dir_all(crate_dir.join("src")).map_err(|e| {
+            Error::DylibLoad(format!(
+                "Failed to create dylib crate directory {}: {e}",
+                crate_dir.display()
+            ))
+        })?;
 
         // Write Cargo.toml
         let cargo_toml = generate_cargo_toml(config.dependencies(), config.patches());
-        std::fs::write(crate_dir.join("Cargo.toml"), cargo_toml)?;
+        std::fs::write(crate_dir.join("Cargo.toml"), cargo_toml).map_err(|e| {
+            Error::DylibLoad(format!(
+                "Failed to write {}: {e}",
+                crate_dir.join("Cargo.toml").display()
+            ))
+        })?;
 
         let mut prelude = Vec::with_capacity(4);
         prelude.extend(
@@ -302,7 +312,13 @@ impl Runtime {
         // stays stable for the lifetime of the registry.
         let so_path = find_so(&crate_dir, config.profile())?;
         let v0_path = versioned_so_path(&crate_dir, Revision::INITIAL.as_u64());
-        std::fs::copy(&so_path, &v0_path)?;
+        std::fs::copy(&so_path, &v0_path).map_err(|e| {
+            Error::DylibLoad(format!(
+                "Failed to copy compiled dylib {} to revision-0 path {}: {e}",
+                so_path.display(),
+                v0_path.display()
+            ))
+        })?;
         let lib = unsafe {
             Library::new(&v0_path).map_err(|e| {
                 Error::DylibLoad(format!("Failed to load {}: {e}", v0_path.display()))
