@@ -1,79 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
-//! Export an [`EvolutionTrace`] as a DeepSeek Harness (`dsh`) session log.
+//! Write a projected session out as JSON Lines, or as the harness's own
+//! zstd artifact under `~/.dsh/sessions`.
 //!
-//! The harness stores one session as a JSON Lines file: a `session` header
-//! record, then one [`SessionEvent`][ev] record per line. `seq` is dense and
-//! zero-based, `time` is Unix epoch milliseconds, and the message-producing
-//! events (`user/message`, `assistant/message`, `tool/result`) carry a
-//! `surfaceOp` that places them on the ordered transcript the UI shows.
-//!
-//! [ev]: https://github.com/deepseek-ai/deepseek-harness
-//!
-//! # The mapping
-//!
-//! | symbiont                                              | dsh                                  |
-//! | ------------------------------------------------------| -------------------------------------|
-//! | [`DshSession::system_prompt`]                         | `request/header` → `header.system`   |
-//! | [`AttemptTrace`]                                      | one turn (`turn/start` … `turn/end`) |
-//! | one assistant message plus the tool calls it made     | one step                             |
-//! | [`EvolutionTrace::history`] user text                 | `user/message`                       |
-//! | history assistant turn                                | `assistant/message`                  |
-//! | history [`AssistantContent::ToolCall`]                | `tool/call`                          |
-//! | history [`UserContent::ToolResult`]                   | `tool/result`                        |
-//! | [`AttemptTrace::ladder`] and [`AttemptTrace::stages`] | a `notice` user message              |
-//! | [`EvolutionTrace::outcome`]                           | a final `notice` user message        |
-//!
-//! # What the trace does not hold
-//!
-//! Three fields the harness header wants are not in an [`EvolutionTrace`], so
-//! [`DshSession`] takes them from the caller:
-//!
-//! - the **system prompt**, which the trace omits by design (see the
-//!   [`crate::EvolutionTrace`] module docs) — pass [`crate::system_prompt`];
-//! - the **provider and model names**, which rig's [`CompletionCall`] does not
-//!   record;
-//! - an **absolute start time**, because a trace holds only [`Duration`]s.
-//!   Events are laid out from [`DshSession::started_at`] forward, spaced by
-//!   the trace's own measurements: an attempt spans
-//!   [`AttemptTrace::duration`], the model time inside it spans
-//!   [`StageTimings::llm`], and the lane spans
-//!   [`EvolutionTrace::duration`]. The harness derives every duration it
-//!   shows by subtracting two event times, so those come out right; only the
-//!   absolute instant is the caller's to supply.
-//!
-//! [`StageTimings::llm`]: crate::StageTimings::llm
-//!
-//! [`CompletionCall`]: crate::CompletionCall
-//!
-//! # Example
-//!
-//! ```no_run
-//! use std::path::Path;
-//!
-//! use symbiont::{
-//!     DocMode,
-//!     DshSession,
-//!     EvolutionTrace,
-//! };
-//!
-//! async fn save(trace: &EvolutionTrace) -> Result<(), Box<dyn std::error::Error>> {
-//!     let prompt = symbiont::system_prompt(None, DocMode::Inline).await?;
-//!     let cwd = std::env::current_dir()?;
-//!     let cwd = cwd.to_string_lossy();
-//!
-//!     let session = DshSession::builder()
-//!         .system_prompt(&prompt)
-//!         .provider("openrouter")
-//!         .model("moonshotai/kimi-k3")
-//!         .cwd(&cwd)
-//!         .build();
-//!
-//!     let root = Path::new(env!("HOME")).join(".dsh/sessions");
-//!     let path = symbiont::export_dsh_session(trace, &session, &root)?;
-//!     println!("wrote {}", path.display());
-//!     Ok(())
-//! }
-//! ```
+//! The mapping itself, and the metadata a trace does not carry, are in the
+//! [module docs](crate::dsh) of `dsh`.
 
 use std::{
     fmt::Write as _,
@@ -101,12 +31,13 @@ use crate::{
     dsh::{
         log::Log,
         millis_of,
+        types::LogLine,
     },
     evolution_trace::EvolutionTrace,
 };
 
 /// The metadata a DeepSeek Harness session needs that an [`EvolutionTrace`]
-/// does not carry. See the [module docs](self) for why each one is here.
+/// does not carry. See the [module docs](crate::dsh) for why each one is here.
 #[derive(Debug, Clone, TypedBuilder, Getters, CopyGetters)]
 pub struct DshSession<'a> {
     /// The rendered system prompt, shown in the session's request header.
@@ -204,6 +135,40 @@ fn fresh_nonce() -> u64 {
     (u64::from(std::process::id()) << 40) ^ (nanos << 8) ^ count
 }
 
+/// Project `trace` onto the DeepSeek Harness session records, in log order.
+///
+/// The first element is always the [`LogLine::Session`] header. This is the
+/// structured form of what [`write_dsh_session`] serializes; take it when you
+/// want to inspect, filter or splice the records rather than write them.
+///
+/// The projection is **lossy on purpose**. The harness has no vocabulary for
+/// a [`crate::LadderEvent`], a [`crate::StageTimings`] or a
+/// [`crate::TraceOutcome`], so those travel as `notice` messages a human
+/// reads. The [`EvolutionTrace`] stays the machine-readable record; see the
+/// [module docs](crate::dsh) for the full mapping.
+#[must_use]
+pub fn dsh_lines(trace: &EvolutionTrace, session: &DshSession<'_>) -> Vec<LogLine> {
+    let mut log = Log::new(epoch_millis(session.started_at));
+
+    log.header(trace, session);
+
+    let session_start = log.time_ms();
+    let mut turn = 0;
+    for attempt in trace.attempts() {
+        turn += 1;
+        log.attempt(trace, session, attempt, turn);
+    }
+
+    // The lane's own measured duration covers whatever happened between and
+    // around the attempts, so the closing turn sits at the end of it.
+    log.advance_to(session_start.saturating_add(millis_of(trace.duration())));
+
+    turn += 1;
+    log.outcome_turn(trace, session, turn);
+
+    log.into_lines()
+}
+
 /// Write `trace` as a DeepSeek Harness session log in plain JSON Lines.
 ///
 /// The harness reads a *zstd-compressed* artifact under its normal
@@ -213,29 +178,18 @@ fn fresh_nonce() -> u64 {
 ///
 /// # Errors
 ///
-/// Returns the write errors of `out`.
+/// Returns the write errors of `out`. Also returns serialization errors,
+/// which indicate a bug, because a [`LogLine`] is plain data.
 pub fn write_dsh_session<W: Write>(
     trace: &EvolutionTrace,
     session: &DshSession<'_>,
-    out: W,
+    mut out: W,
 ) -> io::Result<()> {
-    let mut log = Log::new(out, epoch_millis(session.started_at));
-
-    log.header(trace, session)?;
-
-    let session_start = log.time_ms();
-    let mut turn = 0;
-    for attempt in trace.attempts() {
-        turn += 1;
-        log.attempt(trace, session, attempt, turn)?;
+    for line in dsh_lines(trace, session) {
+        let json = serde_json::to_string(&line).map_err(io::Error::other)?;
+        writeln!(out, "{json}")?;
     }
-
-    // The lane's own measured duration covers whatever happened between and
-    // around the attempts, so the closing turn sits at the end of it.
-    log.advance_to(session_start.saturating_add(millis_of(trace.duration())));
-
-    turn += 1;
-    log.outcome_turn(trace, session, turn)
+    Ok(())
 }
 
 /// Write `trace` into `sessions_root` as a zstd session artifact, under the
@@ -521,15 +475,19 @@ mod tests {
         trace
     }
 
-    fn export(trace: &EvolutionTrace) -> Vec<Value> {
-        let session = DshSession::builder()
+    fn sample_session() -> DshSession<'static> {
+        DshSession::builder()
             .system_prompt("you write rust")
             .provider("local")
             .model("kimi")
             .cwd("/tmp/project")
             .started_at(UNIX_EPOCH + Duration::from_millis(1_700_000_000_000))
             .context_window(131_072)
-            .build();
+            .build()
+    }
+
+    fn export(trace: &EvolutionTrace) -> Vec<Value> {
+        let session = sample_session();
 
         let mut buffer = Vec::new();
         write_dsh_session(trace, &session, &mut buffer).expect("writing to a Vec");
@@ -1031,6 +989,44 @@ mod tests {
         assert!(whole.ends_with('\n'), "every record is newline-terminated");
 
         std::fs::remove_dir_all(&root).expect("the test cleans up after itself");
+    }
+
+    /// [`write_dsh_session`] is a serializer over [`dsh_lines`] and nothing
+    /// more: line `i` of the file is the serialized form of record `i`.
+    ///
+    /// Every line also has to decode back into a [`LogLine`] that serializes
+    /// to the same bytes. `LogLine` is a closed `type`-tagged enum, so this is
+    /// what proves the writer emits no record the reader would reject, and
+    /// that no field is dropped on the way back in.
+    #[test]
+    fn the_written_lines_are_the_typed_records() {
+        let trace = sample_trace();
+        let session = sample_session();
+        let records = dsh_lines(&trace, &session);
+
+        let mut buffer = Vec::new();
+        write_dsh_session(&trace, &session, &mut buffer).expect("writing to a Vec");
+        let text = String::from_utf8(buffer).expect("valid utf-8");
+
+        assert_eq!(
+            text.lines().count(),
+            records.len(),
+            "one written line per record",
+        );
+        assert!(!records.is_empty(), "a sample trace produces records");
+
+        for (index, (record, line)) in records.iter().zip(text.lines()).enumerate() {
+            let written = serde_json::to_string(record).expect("a record is plain data");
+            assert_eq!(written, line, "record {index} is written verbatim");
+
+            let back: LogLine =
+                serde_json::from_str(line).expect("every written line decodes as a `LogLine`");
+            assert_eq!(
+                serde_json::to_string(&back).expect("a record is plain data"),
+                line,
+                "record {index} round-trips without loss",
+            );
+        }
     }
 
     /// The project directory and the session directory follow the harness's
