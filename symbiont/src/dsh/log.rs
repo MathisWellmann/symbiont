@@ -1,22 +1,21 @@
-use std::{
-    io::{
-        self,
-        Write,
-    },
-    time::Duration,
-};
+// SPDX-License-Identifier: MPL-2.0
+//! Build the [`LogLine`] records of one harness session out of an
+//! [`EvolutionTrace`].
+//!
+//! Every record is a typed value of [`crate::dsh::types`], so the compiler,
+//! and not a reviewer, checks the export against the format. [`Log`] owns the
+//! three cursors a session log has to keep dense and monotonic: the event
+//! `seq`, the wall clock, and the message-id counter.
+
+use std::time::Duration;
 
 use getset::CopyGetters;
 use rig_core::message::{
     AssistantContent,
-    Message,
+    Message as RigMessage,
     ReasoningContent,
     ToolResultContent,
     UserContent,
-};
-use serde_json::{
-    Value,
-    json,
 };
 
 use crate::{
@@ -28,6 +27,32 @@ use crate::{
     dsh::{
         millis_of,
         token_usage,
+        types::{
+            AssistantMessageData,
+            ContentBlock,
+            ContextForm,
+            EpochHeader,
+            Event,
+            LlmCallConfig,
+            LlmFailure,
+            LogLine,
+            Message,
+            MessageSource,
+            RequestContextData,
+            RequestHeaderData,
+            RequestHeaderReason,
+            Role,
+            SessionHeaderLine,
+            SessionTitleData,
+            StepStartData,
+            TitleSource,
+            TokenUsage,
+            ToolCallData,
+            ToolResultData,
+            TurnEndData,
+            TurnEndReason,
+            TurnStartData,
+        },
     },
     evolution_trace::{
         render_ladder,
@@ -35,10 +60,14 @@ use crate::{
     },
 };
 
+/// The plugin name that every harness note of this crate is attributed to.
+const PLUGIN: &str = "symbiont";
+
 /// The append-only session log under construction.
 #[derive(CopyGetters)]
-pub(super) struct Log<W: Write> {
-    out: W,
+pub(super) struct Log {
+    /// The records emitted so far, in log order.
+    lines: Vec<LogLine>,
     /// Next event `seq`. The harness requires it dense from zero: it rejects a
     /// log whose event `seq` differs from the event's index.
     seq: u64,
@@ -49,32 +78,34 @@ pub(super) struct Log<W: Write> {
     next_id: u64,
 }
 
-impl<W: Write> Log<W> {
-    pub(super) fn new(out: W, time_ms: u64) -> Self {
+impl Log {
+    pub(super) fn new(time_ms: u64) -> Self {
         Log {
-            out,
+            lines: Vec::new(),
             seq: 0,
             time_ms,
             next_id: 0,
         }
     }
 
+    /// The finished log, in order.
+    pub(super) fn into_lines(self) -> Vec<LogLine> {
+        self.lines
+    }
+
     /// Write the `session` header record: the log's first line.
-    pub(super) fn header(
-        &mut self,
-        trace: &EvolutionTrace,
-        session: &DshSession<'_>,
-    ) -> io::Result<()> {
-        let header = serde_json::to_value(
-            DshHeader::builder()
-                .id(session.resolved_id(trace))
-                .created_at(self.time_ms)
-                .delegation_depth(0)
-                .agent_preset(AgentPreset::Standard)
-                .cwd(session.cwd())
-                .build(),
-        )?;
-        writeln!(self.out, "{header}")
+    pub(super) fn header(&mut self, trace: &EvolutionTrace, session: &DshSession<'_>) {
+        self.lines.push(LogLine::Session(SessionHeaderLine {
+            version: 0,
+            id: session.resolved_id(trace),
+            created_at: self.time_ms,
+            cwd: session.cwd().map(ToString::to_string),
+            parent_session: None,
+            seed_length: None,
+            origin: None,
+            delegation_depth: 0,
+            agent_preset: Some("standard".to_string()),
+        }));
     }
 
     /// Write one attempt as one turn.
@@ -84,7 +115,7 @@ impl<W: Write> Log<W> {
         session: &DshSession<'_>,
         attempt: &AttemptTrace,
         turn: u64,
-    ) -> io::Result<()> {
+    ) {
         let attempt_start = self.time_ms;
         // The model time of the attempt, split evenly over the turns it took.
         // The trace times the agent run as a whole, not each turn inside it,
@@ -94,15 +125,16 @@ impl<W: Write> Log<W> {
             .llm()
             .map(|llm| llm / assistant_turns(trace, attempt).max(1));
 
-        self.event("turn/start", json!({ "turn": turn }))?;
+        let event = self.event(TurnStartData { turn });
+        self.lines.push(LogLine::TurnStart(event));
 
         let mut step = 1;
-        self.event("step/start", json!({ "turn": turn, "step": step }))?;
+        self.step_start(turn, step);
 
         // The header is log-only and must sit inside an open turn. It does not
         // change across a lane, so the first turn is the only one to carry it.
         if turn == 1 {
-            self.request_header(session)?;
+            self.request_header(session);
         }
 
         let messages = attempt
@@ -115,7 +147,7 @@ impl<W: Write> Log<W> {
             // Either the inference call itself failed, so the attempt produced
             // no transcript at all, or the trace carries no history. Show the
             // prompt that was sent regardless.
-            self.user_text(attempt.prompt())?;
+            self.user_text(attempt.prompt());
         } else {
             let mut step_has_assistant = false;
             let mut call_index = 0;
@@ -123,33 +155,29 @@ impl<W: Write> Log<W> {
                 match message {
                     // The system prompt travels as agent configuration, so a
                     // `System` turn never reaches a lane transcript.
-                    Message::System { .. } => {}
-                    Message::User { content } => {
+                    RigMessage::System { .. } => {}
+                    RigMessage::User { content } => {
                         for item in content.iter() {
                             match item {
                                 UserContent::ToolResult(result) => self.tool_result(
                                     turn,
                                     step,
                                     result.call.as_str(),
-                                    &result
-                                        .content
-                                        .iter()
-                                        .map(tool_result_block)
-                                        .collect::<Vec<_>>(),
-                                )?,
-                                other => self.user_text(&user_text(other))?,
+                                    result.content.iter().map(tool_result_block).collect(),
+                                ),
+                                other => self.user_text(&user_text(other)),
                             }
                         }
                     }
-                    Message::Assistant { content, .. } => {
+                    RigMessage::Assistant { content, .. } => {
                         // One step is one model call plus the tool executions
                         // it asked for. A second assistant turn opens the next
                         // step: the harness clears the step's outstanding tool
                         // calls at `step/end`.
                         if step_has_assistant {
-                            self.event("step/end", json!({ "turn": turn, "step": step }))?;
+                            self.step_end(turn, step);
                             step += 1;
-                            self.event("step/start", json!({ "turn": turn, "step": step }))?;
+                            self.step_start(turn, step);
                         }
                         step_has_assistant = true;
 
@@ -160,7 +188,8 @@ impl<W: Write> Log<W> {
                             self.advance(llm);
                         }
 
-                        let blocks: Vec<Value> = content.iter().map(assistant_block).collect();
+                        let blocks: Vec<ContentBlock> =
+                            content.iter().map(assistant_block).collect();
                         // One completion call per assistant turn, in order, so
                         // the step's own token accounting travels with the
                         // message the harness folds it out of.
@@ -170,20 +199,18 @@ impl<W: Write> Log<W> {
                             .and_then(|run| run.completion_calls().get(call_index))
                             .and_then(|call| token_usage(&call.usage));
                         call_index += 1;
-                        self.assistant_message(turn, step, session, &blocks, usage)?;
+                        self.assistant_message(turn, step, session, blocks, usage);
 
                         for item in content.iter() {
                             if let AssistantContent::ToolCall(call) = item {
-                                self.event(
-                                    "tool/call",
-                                    json!({
-                                        "turn": turn,
-                                        "step": step,
-                                        "callId": call.id.as_str(),
-                                        "name": call.function.name,
-                                        "arguments": call.function.arguments.to_string(),
-                                    }),
-                                )?;
+                                let event = self.event(ToolCallData {
+                                    turn,
+                                    step,
+                                    call_id: call.id.to_string(),
+                                    name: call.function.name.clone(),
+                                    arguments: call.function.arguments.to_string(),
+                                });
+                                self.lines.push(LogLine::ToolCall(event));
                             }
                         }
                     }
@@ -196,12 +223,9 @@ impl<W: Write> Log<W> {
         // turn closes on the attempt's measured duration.
         self.advance_to(attempt_start.saturating_add(millis_of(attempt.duration())));
 
-        self.notice(&attempt_notice(attempt))?;
-        self.event("step/end", json!({ "turn": turn, "step": step }))?;
-        self.event(
-            "turn/end",
-            json!({ "turn": turn, "reason": turn_end_reason(attempt.ladder()) }),
-        )
+        self.notice(&attempt_notice(attempt));
+        self.step_end(turn, step);
+        self.turn_end(turn, turn_end_reason(attempt.ladder()));
     }
 
     /// Write a closing turn that carries the lane's outcome.
@@ -210,20 +234,36 @@ impl<W: Write> Log<W> {
         trace: &EvolutionTrace,
         session: &DshSession<'_>,
         turn: u64,
-    ) -> io::Result<()> {
-        self.event("turn/start", json!({ "turn": turn }))?;
-        self.event("step/start", json!({ "turn": turn, "step": 1 }))?;
+    ) {
+        let event = self.event(TurnStartData { turn });
+        self.lines.push(LogLine::TurnStart(event));
+        self.step_start(turn, 1);
         if turn == 1 {
             // A trace with no attempt at all still needs its header.
-            self.request_header(session)?;
+            self.request_header(session);
         }
-        self.session_title(trace)?;
-        self.notice(&outcome_notice(trace))?;
-        self.event("step/end", json!({ "turn": turn, "step": 1 }))?;
-        self.event(
-            "turn/end",
-            json!({ "turn": turn, "reason": { "kind": "completed" } }),
-        )
+        self.session_title(trace);
+        self.notice(&outcome_notice(trace));
+        self.step_end(turn, 1);
+        self.turn_end(turn, TurnEndReason::Completed);
+    }
+
+    /// Open a step.
+    fn step_start(&mut self, turn: u64, step: u64) {
+        let event = self.event(StepStartData { turn, step });
+        self.lines.push(LogLine::StepStart(event));
+    }
+
+    /// Close a step.
+    fn step_end(&mut self, turn: u64, step: u64) {
+        let event = self.event(StepStartData { turn, step });
+        self.lines.push(LogLine::StepEnd(event));
+    }
+
+    /// Close a turn.
+    fn turn_end(&mut self, turn: u64, reason: TurnEndReason) {
+        let event = self.event(TurnEndData { turn, reason });
+        self.lines.push(LogLine::TurnEnd(event));
     }
 
     /// Name the session.
@@ -234,80 +274,82 @@ impl<W: Write> Log<W> {
     ///
     /// Written once, at the end, because the title reports the outcome. The
     /// durable title is the latest snapshot, so one event settles it.
-    fn session_title(&mut self, trace: &EvolutionTrace) -> io::Result<()> {
-        self.event(
-            "session/title",
-            json!({
-                "title": session_title(trace),
-                // `dsh-session-title`'s invariant: `messageSeqs` is empty if
-                // and only if the source is `user`. A title symbiont chose is
-                // a deliberate name, not one derived from a message, so it
-                // cites none.
-                "messageSeqs": [],
-                "source": { "kind": "user" },
-            }),
-        )
+    fn session_title(&mut self, trace: &EvolutionTrace) {
+        let event = self.event(SessionTitleData {
+            title: session_title(trace),
+            // `dsh-session-title`'s invariant: `messageSeqs` is empty if and
+            // only if the source is `user`. A title symbiont chose is a
+            // deliberate name, not one derived from a message, so it cites
+            // none.
+            message_seqs: Vec::new(),
+            source: TitleSource::User,
+        });
+        self.lines.push(LogLine::SessionTitle(event));
     }
 
     /// Write the request header and, when known, the route's context window.
-    fn request_header(&mut self, session: &DshSession<'_>) -> io::Result<()> {
-        self.event(
-            "request/header",
-            json!({
-                "header": {
-                    "config": { "provider": session.provider(), "model": session.model() },
-                    "system": session.system_prompt(),
+    fn request_header(&mut self, session: &DshSession<'_>) {
+        let event = self.event(RequestHeaderData {
+            header: EpochHeader {
+                config: LlmCallConfig {
+                    provider: session.provider().to_string(),
+                    model: session.model().to_string(),
+                    reasoning_effort: None,
+                    temperature: None,
+                    max_tokens: None,
+                    stop: None,
                 },
-                "reason": "initial",
-            }),
-        )?;
+                adapter_defaults: None,
+                system: Some(session.system_prompt().to_string()),
+                // The tool schemas live on the caller's agent, not in the
+                // trace, so the header claims none rather than an empty set.
+                tools: None,
+            },
+            reason: RequestHeaderReason::Initial,
+        });
+        self.lines.push(LogLine::RequestHeader(event));
 
         if let Some(window) = session.context_window() {
-            self.event(
-                "request/context",
-                json!({
-                    "provider": session.provider(),
-                    "model": session.model(),
-                    "contextWindow": window,
-                }),
-            )?;
+            let event = self.event(RequestContextData {
+                provider: session.provider().to_string(),
+                model: session.model().to_string(),
+                context_window: Some(window),
+            });
+            self.lines.push(LogLine::RequestContext(event));
         }
-        Ok(())
     }
 
     /// Write a plain user turn.
-    fn user_text(&mut self, text: &str) -> io::Result<()> {
-        let id = self.mint_id("msg");
-        self.surface_event(
-            "user/message",
-            json!({
-                "id": id,
-                "role": "user",
-                "content": [{ "type": "text", "text": text }],
-                "source": { "kind": "user" },
-            }),
-        )
+    fn user_text(&mut self, text: &str) {
+        let message = self.message(
+            Role::User,
+            vec![ContentBlock::Text {
+                text: text.to_string(),
+            }],
+            MessageSource::user(),
+        );
+        let event = self.event(message).on_surface();
+        self.lines.push(LogLine::UserMessage(event));
     }
 
     /// Write a one-line harness note: what symbiont did, not what the model
     /// said. The harness collapses a `notice` to its `summary` until the
     /// reader expands the row.
-    fn notice(&mut self, text: &str) -> io::Result<()> {
-        let id = self.mint_id("note");
-        self.surface_event(
-            "user/message",
-            json!({
-                "id": id,
-                "role": "user",
-                "content": [{ "type": "text", "text": text }],
-                "source": {
-                    "kind": "plugin",
-                    "plugin": "symbiont",
-                    "form": "notice",
-                    "summary": summary_line(text),
-                },
-            }),
-        )
+    fn notice(&mut self, text: &str) {
+        let source = MessageSource::plugin(
+            PLUGIN,
+            ContextForm::Notice {
+                summary: summary_line(text),
+            },
+        );
+        let message = self.note(
+            vec![ContentBlock::Text {
+                text: text.to_string(),
+            }],
+            source,
+        );
+        let event = self.event(message).on_surface();
+        self.lines.push(LogLine::UserMessage(event));
     }
 
     /// Write one assembled assistant turn.
@@ -316,85 +358,86 @@ impl<W: Write> Log<W> {
         turn: u64,
         step: u64,
         session: &DshSession<'_>,
-        blocks: &[Value],
-        usage: Option<Value>,
-    ) -> io::Result<()> {
-        let id = self.mint_id("msg");
-        let mut data = json!({
-            "turn": turn,
-            "step": step,
-            "message": {
-                "id": id,
-                "role": "assistant",
-                "content": blocks,
-                "source": {
-                    "kind": "model",
-                    "provider": session.provider(),
-                    "model": session.model(),
-                },
-            },
-        });
-        // Absent, not zeroed, when the provider reported no accounting: the
-        // harness reads a missing `usage` as "unreported" and a present one as
-        // a measurement.
-        if let Some(usage) = usage {
-            data["usage"] = usage;
-        }
-        self.surface_event("assistant/message", data)
+        content: Vec<ContentBlock>,
+        usage: Option<TokenUsage>,
+    ) {
+        let message = self.message(
+            Role::Assistant,
+            content,
+            MessageSource::model(session.provider(), session.model()),
+        );
+        // `usage` is absent, not zeroed, when the provider reported no
+        // accounting: the harness reads a missing `usage` as "unreported" and
+        // a present one as a measurement.
+        let event = self
+            .event(AssistantMessageData {
+                turn,
+                step,
+                message,
+                usage,
+            })
+            .on_surface();
+        self.lines.push(LogLine::AssistantMessage(event));
     }
 
     /// Write one tool result, answering the call `call_id`.
-    fn tool_result(
+    fn tool_result(&mut self, turn: u64, step: u64, call_id: &str, content: Vec<ContentBlock>) {
+        let message = self.message(
+            Role::User,
+            vec![ContentBlock::ToolResult {
+                tool_call_id: call_id.to_string(),
+                content,
+                is_error: Some(false),
+            }],
+            MessageSource::tool(call_id),
+        );
+        let event = self
+            .event(ToolResultData {
+                turn,
+                step,
+                message,
+                error: None,
+                meta: None,
+            })
+            .on_surface();
+        self.lines.push(LogLine::ToolResult(event));
+    }
+
+    /// One message with a freshly minted id.
+    fn message(
         &mut self,
-        turn: u64,
-        step: u64,
-        call_id: &str,
-        blocks: &[Value],
-    ) -> io::Result<()> {
-        let id = self.mint_id("msg");
-        self.surface_event(
-            "tool/result",
-            json!({
-                "turn": turn,
-                "step": step,
-                "message": {
-                    "id": id,
-                    "role": "user",
-                    "content": [{
-                        "type": "tool-result",
-                        "toolCallId": call_id,
-                        "content": blocks,
-                        "isError": false,
-                    }],
-                    "source": { "kind": "tool", "callId": call_id },
-                },
-            }),
-        )
-    }
-
-    /// Append one log-only event.
-    fn event(&mut self, kind: &str, data: Value) -> io::Result<()> {
-        self.write_event(kind, data, false)
-    }
-
-    /// Append one event that also lands on the ordered transcript.
-    fn surface_event(&mut self, kind: &str, data: Value) -> io::Result<()> {
-        self.write_event(kind, data, true)
-    }
-
-    /// Serialize one event record and advance the `seq` and time cursors.
-    fn write_event(&mut self, kind: &str, data: Value, on_surface: bool) -> io::Result<()> {
-        let mut event = json!({
-            "type": kind,
-            "seq": self.seq,
-            "time": self.time_ms,
-            "data": data,
-        });
-        if on_surface {
-            event["surfaceOp"] = json!("append");
+        role: Role,
+        content: Vec<ContentBlock>,
+        source: MessageSource,
+    ) -> Message {
+        Message {
+            id: self.mint_id("msg"),
+            role,
+            content,
+            source,
         }
+    }
+
+    /// One harness note. Its id is minted from a separate prefix, so a reader
+    /// can tell a note from a message the lane actually exchanged.
+    fn note(&mut self, content: Vec<ContentBlock>, source: MessageSource) -> Message {
+        Message {
+            id: self.mint_id("note"),
+            role: Role::User,
+            content,
+            source,
+        }
+    }
+
+    /// Wrap `data` in an event envelope and advance the `seq` cursor.
+    fn event<D>(&mut self, data: D) -> Event<D> {
+        // The harness stores `time` signed. A cursor that ever grew past the
+        // signed range would be a clock far outside any session's lifetime, so
+        // saturating there is the honest reading.
+        let time = i64::try_from(self.time_ms).unwrap_or(i64::MAX);
+        let event = Event::new(self.seq, time, data);
         self.seq += 1;
-        writeln!(self.out, "{event}")
+        event
     }
 
     /// Move the clock forward by `duration`, rounded up to the millisecond the
@@ -403,7 +446,7 @@ impl<W: Write> Log<W> {
     /// Rounding up rather than down keeps a sub-millisecond stage from folding
     /// to a zero-length one, which would make a step look like it never ran.
     fn advance(&mut self, duration: Duration) {
-        let millis = u64::try_from(duration.as_millis()).unwrap_or(u64::MAX);
+        let millis = millis_of(duration);
         let millis = if millis == 0 && duration > Duration::ZERO {
             1
         } else {
@@ -441,7 +484,7 @@ fn assistant_turns(trace: &EvolutionTrace, attempt: &AttemptTrace) -> u32 {
             u32::try_from(
                 messages
                     .iter()
-                    .filter(|message| matches!(message, Message::Assistant { .. }))
+                    .filter(|message| matches!(message, RigMessage::Assistant { .. }))
                     .count(),
             )
             .unwrap_or(u32::MAX)
@@ -449,12 +492,14 @@ fn assistant_turns(trace: &EvolutionTrace, attempt: &AttemptTrace) -> u32 {
 }
 
 /// One assistant content item as a harness content block.
-fn assistant_block(content: &AssistantContent) -> Value {
+fn assistant_block(content: &AssistantContent) -> ContentBlock {
     use AssistantContent::*;
     match content {
-        Text(text) => json!({ "type": "text", "text": text.text }),
-        Reasoning(reasoning) => {
-            let text: String = reasoning
+        Text(text) => ContentBlock::Text {
+            text: text.text.clone(),
+        },
+        Reasoning(reasoning) => ContentBlock::Reasoning {
+            text: reasoning
                 .content
                 .iter()
                 .filter_map(|item| match item {
@@ -463,30 +508,31 @@ fn assistant_block(content: &AssistantContent) -> Value {
                     // Opaque provider payloads carry no readable text.
                     ReasoningContent::Encrypted(_) | ReasoningContent::Redacted { .. } => None,
                 })
-                .collect();
-            json!({ "type": "reasoning", "text": text })
-        }
-        ToolCall(call) => json!({
-            "type": "tool-call",
-            "id": call.id.as_str(),
-            "name": call.function.name,
+                .collect(),
+        },
+        ToolCall(call) => ContentBlock::ToolCall {
+            id: call.id.to_string(),
+            name: call.function.name.clone(),
             // The harness wants the model's raw argument JSON, as a string.
-            "arguments": call.function.arguments.to_string(),
-        }),
+            arguments: call.function.arguments.to_string(),
+        },
         // A harness image block references an attachment the harness owns, so
         // an image out of a rig transcript has no faithful counterpart.
-        Image(_) => json!({ "type": "text", "text": "[image omitted]" }),
+        Image(_) => ContentBlock::Text {
+            text: "[image omitted]".to_string(),
+        },
     }
 }
 
 /// One tool-result item as a harness content block.
-fn tool_result_block(content: &ToolResultContent) -> Value {
+fn tool_result_block(content: &ToolResultContent) -> ContentBlock {
     use ToolResultContent::*;
-    match content {
-        Text(text) => json!({ "type": "text", "text": text.text }),
-        Json { value } => json!({ "type": "text", "text": value.to_string() }),
-        Image(_) => json!({ "type": "text", "text": "[image omitted]" }),
-    }
+    let text = match content {
+        Text(text) => text.text.clone(),
+        Json { value } => value.to_string(),
+        Image(_) => "[image omitted]".to_string(),
+    };
+    ContentBlock::Text { text }
 }
 
 /// The readable text of a non-tool-result user content item.
@@ -537,20 +583,25 @@ fn outcome_notice(trace: &EvolutionTrace) -> String {
 }
 
 /// Why the turn of `ladder` ended, in the harness's vocabulary.
-fn turn_end_reason(ladder: &LadderEvent) -> Value {
+fn turn_end_reason(ladder: &LadderEvent) -> TurnEndReason {
     use LadderEvent::*;
-    match ladder {
+    let message = match ladder {
         // The model answered; the harness then chose what to do with the
         // answer. That choice is not a failure of the turn.
         Registered { .. } | SelfHeal { .. } | ContextReset { .. } | RepeatReset { .. } => {
-            json!({ "kind": "completed" })
+            return TurnEndReason::Completed;
         }
-        TransientRetry { cause, .. } => {
-            json!({ "kind": "error", "error": { "message": cause, "code": "UNKNOWN" } })
-        }
-        Terminal { reason } => {
-            json!({ "kind": "error", "error": { "message": reason, "code": "UNKNOWN" } })
-        }
+        TransientRetry { cause, .. } => cause.clone(),
+        Terminal { reason } => reason.clone(),
+    };
+    TurnEndReason::Error {
+        error: LlmFailure {
+            message,
+            code: "UNKNOWN".to_string(),
+            status: None,
+            provider_retry_after_ms: None,
+            request_id: None,
+        },
     }
 }
 
