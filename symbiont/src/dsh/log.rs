@@ -14,10 +14,15 @@ use rig_core::message::{
     ToolResultContent,
     UserContent,
 };
+use serde::{
+    Deserialize,
+    Serialize,
+};
 use serde_json::{
     Value,
     json,
 };
+use typed_builder::TypedBuilder;
 
 use crate::{
     AttemptTrace,
@@ -34,6 +39,31 @@ use crate::{
         render_stages,
     },
 };
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum AgentPreset {
+    #[default]
+    Standard,
+    Code,
+    Minimal,
+    Cordis,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TypedBuilder)]
+#[serde(rename_all = "camelCase")]
+struct DshHeader<'a> {
+    #[builder(default = "session")]
+    r#type: &'a str,
+    #[builder(default = SESSION_FORMAT_VERSION)]
+    version: u32,
+    id: String,
+    created_at: u64,
+    delegation_depth: u32,
+    agent_preset: AgentPreset,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cwd: Option<&'a str>,
+}
 
 /// The on-disk session-format version this exporter writes. The harness
 /// refuses any other value outright, before it looks at the header shape.
@@ -69,17 +99,15 @@ impl<W: Write> Log<W> {
         trace: &EvolutionTrace,
         session: &DshSession<'_>,
     ) -> io::Result<()> {
-        let mut header = json!({
-            "type": "session",
-            "version": SESSION_FORMAT_VERSION,
-            "id": session.resolved_id(trace),
-            "createdAt": self.time_ms,
-            "delegationDepth": 0,
-            "agentPreset": "standard", // Could be standard, code, minimal or cordis.
-        });
-        if let Some(cwd) = session.cwd() {
-            header["cwd"] = json!(cwd);
-        }
+        let header = serde_json::to_value(
+            DshHeader::builder()
+                .id(session.resolved_id(trace))
+                .created_at(self.time_ms)
+                .delegation_depth(0)
+                .agent_preset(AgentPreset::Standard)
+                .cwd(session.cwd())
+                .build(),
+        )?;
         writeln!(self.out, "{header}")
     }
 
