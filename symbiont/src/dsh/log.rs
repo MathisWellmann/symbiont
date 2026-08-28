@@ -28,10 +28,6 @@ use crate::{
     dsh::{
         millis_of,
         token_usage,
-        types::{
-            AgentPreset,
-            DshHeader,
-        },
     },
     evolution_trace::{
         render_ladder,
