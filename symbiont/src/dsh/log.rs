@@ -121,7 +121,7 @@ impl<W: Write> Log<W> {
             // Either the inference call itself failed, so the attempt produced
             // no transcript at all, or the trace carries no history. Show the
             // prompt that was sent regardless.
-            self.user_text(turn, step, attempt.prompt())?;
+            self.user_text(attempt.prompt())?;
         } else {
             let mut step_has_assistant = false;
             let mut call_index = 0;
@@ -143,7 +143,7 @@ impl<W: Write> Log<W> {
                                         .map(tool_result_block)
                                         .collect::<Vec<_>>(),
                                 )?,
-                                other => self.user_text(turn, step, &user_text(other))?,
+                                other => self.user_text(&user_text(other))?,
                             }
                         }
                     }
@@ -202,7 +202,7 @@ impl<W: Write> Log<W> {
         // turn closes on the attempt's measured duration.
         self.advance_to(attempt_start.saturating_add(millis_of(attempt.duration())));
 
-        self.notice(turn, step, &attempt_notice(attempt))?;
+        self.notice(&attempt_notice(attempt))?;
         self.event("step/end", json!({ "turn": turn, "step": step }))?;
         self.event(
             "turn/end",
@@ -224,7 +224,7 @@ impl<W: Write> Log<W> {
             self.request_header(session)?;
         }
         self.session_title(trace)?;
-        self.notice(turn, 1, &outcome_notice(trace))?;
+        self.notice(&outcome_notice(trace))?;
         self.event("step/end", json!({ "turn": turn, "step": 1 }))?;
         self.event(
             "turn/end",
@@ -282,9 +282,8 @@ impl<W: Write> Log<W> {
     }
 
     /// Write a plain user turn.
-    fn user_text(&mut self, turn: u64, step: u64, text: &str) -> io::Result<()> {
+    fn user_text(&mut self, text: &str) -> io::Result<()> {
         let id = self.mint_id("msg");
-        let _ = (turn, step);
         self.surface_event(
             "user/message",
             json!({
@@ -299,9 +298,8 @@ impl<W: Write> Log<W> {
     /// Write a one-line harness note: what symbiont did, not what the model
     /// said. The harness collapses a `notice` to its `summary` until the
     /// reader expands the row.
-    fn notice(&mut self, turn: u64, step: u64, text: &str) -> io::Result<()> {
+    fn notice(&mut self, text: &str) -> io::Result<()> {
         let id = self.mint_id("note");
-        let _ = (turn, step);
         self.surface_event(
             "user/message",
             json!({
