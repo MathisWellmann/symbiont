@@ -1,6 +1,7 @@
 //! Module relating to deepseek-harness export capabilities.
 mod export;
 mod log;
+mod types;
 
 use std::time::Duration;
 
