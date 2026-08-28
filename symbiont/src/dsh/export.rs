@@ -128,7 +128,7 @@ pub struct DshSession<'a> {
     /// directory the harness files the session under, and the directory the
     /// picker shows. `None` files the session under `_no-cwd`.
     #[builder(default, setter(strip_option))]
-    #[getset(get = "pub(super)")]
+    #[getset(get_copy = "pub(super)")]
     cwd: Option<&'a str>,
 
     /// Wall-clock instant the lane started. Event timestamps count up from
@@ -179,7 +179,7 @@ impl DshSession<'_> {
     pub fn resolved_id(&self, trace: &EvolutionTrace) -> String {
         self.session_id.clone().unwrap_or_else(|| {
             format!(
-                "session-symbiont-lane{}-{}-{:x}",
+                "symbiont-lane{}-{}-{:x}",
                 trace.lane(),
                 epoch_millis(self.started_at),
                 self.nonce,
