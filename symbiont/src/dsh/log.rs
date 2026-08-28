@@ -14,15 +14,10 @@ use rig_core::message::{
     ToolResultContent,
     UserContent,
 };
-use serde::{
-    Deserialize,
-    Serialize,
-};
 use serde_json::{
     Value,
     json,
 };
-use typed_builder::TypedBuilder;
 
 use crate::{
     AttemptTrace,
@@ -33,41 +28,16 @@ use crate::{
     dsh::{
         millis_of,
         token_usage,
+        types::{
+            AgentPreset,
+            DshHeader,
+        },
     },
     evolution_trace::{
         render_ladder,
         render_stages,
     },
 };
-
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-enum AgentPreset {
-    #[default]
-    Standard,
-    Code,
-    Minimal,
-    Cordis,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, TypedBuilder)]
-#[serde(rename_all = "camelCase")]
-struct DshHeader<'a> {
-    #[builder(default = "session")]
-    r#type: &'a str,
-    #[builder(default = SESSION_FORMAT_VERSION)]
-    version: u32,
-    id: String,
-    created_at: u64,
-    delegation_depth: u32,
-    agent_preset: AgentPreset,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    cwd: Option<&'a str>,
-}
-
-/// The on-disk session-format version this exporter writes. The harness
-/// refuses any other value outright, before it looks at the header shape.
-const SESSION_FORMAT_VERSION: u32 = 0;
 
 /// The append-only session log under construction.
 #[derive(CopyGetters)]
