@@ -75,9 +75,8 @@
 //! }
 //! ```
 
-#[cfg(feature = "dsh-export")]
-use std::fmt::Write as _;
 use std::{
+    fmt::Write as _,
     io::{
         self,
         Write,
@@ -289,7 +288,6 @@ pub fn write_dsh_session<W: Write>(
 /// # Errors
 ///
 /// Returns the directory-creation, serialization and write errors.
-#[cfg(feature = "dsh-export")]
 pub fn export_dsh_session(
     trace: &EvolutionTrace,
     session: &DshSession<'_>,
@@ -323,7 +321,6 @@ pub fn export_dsh_session(
 
 /// Compress `input` into one complete, checksummed zstd frame — the unit the
 /// harness's container is built from.
-#[cfg(feature = "dsh-export")]
 fn zstd_frame(input: &[u8]) -> io::Result<Vec<u8>> {
     let mut encoder = zstd::stream::raw::Encoder::new(ZSTD_LEVEL)?;
     // The harness compresses every frame with `ZSTD_c_checksumFlag` set, and
@@ -339,13 +336,11 @@ fn zstd_frame(input: &[u8]) -> io::Result<Vec<u8>> {
 
 /// Compression level for a session artifact. Traces are text and write once,
 /// so the default level is the right trade.
-#[cfg(feature = "dsh-export")]
 const ZSTD_LEVEL: i32 = zstd::DEFAULT_COMPRESSION_LEVEL;
 
 /// The harness's project-directory name for `cwd`: separator runs collapse to
 /// `-`, anything outside `[A-Za-z0-9._-]` becomes `~XXXX` over UTF-16 code
 /// units, and the result is wrapped in `--`.
-#[cfg(feature = "dsh-export")]
 fn project_key(cwd: Option<&str>) -> String {
     let Some(cwd) = cwd.filter(|cwd| !cwd.is_empty()) else {
         return "_no-cwd".to_string();
@@ -385,7 +380,6 @@ fn project_key(cwd: Option<&str>) -> String {
 }
 
 /// The harness's injective single-path-segment encoding of a session id.
-#[cfg(feature = "dsh-export")]
 fn encode_segment(raw: &str) -> String {
     match raw {
         "" => "_".to_string(),
@@ -403,7 +397,6 @@ fn encode_segment(raw: &str) -> String {
 
 /// The harness's literal-in-a-path-segment character class. `~` is excluded:
 /// it introduces an escape.
-#[cfg(feature = "dsh-export")]
 fn is_safe_segment_char(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-')
 }
@@ -1651,7 +1644,6 @@ mod tests {
     /// and still stops `dsh` from booting, because the listing walks the whole
     /// sessions root. Decoding the whole file is exactly the check that misses
     /// it, so this one decodes the first frame alone.
-    #[cfg(feature = "dsh-export")]
     #[test]
     fn the_first_zstd_frame_holds_only_the_header() {
         use std::io::Read as _;
@@ -1700,7 +1692,6 @@ mod tests {
 
     /// The project directory and the session directory follow the harness's
     /// own encoding, or the picker files the session somewhere it never looks.
-    #[cfg(feature = "dsh-export")]
     #[test]
     fn paths_match_the_harness_encoding() {
         assert_eq!(
