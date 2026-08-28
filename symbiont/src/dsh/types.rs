@@ -1129,43 +1129,6 @@ pub(super) enum SourceMarker {
     Delegation,
 }
 
-// =============================================================================
-// Reader helpers
-// =============================================================================
-
-/// Decode a whole `session.jsonl.zstd` file.
-///
-/// The zstd `Decoder` transparently consumes the file's independent frames
-/// (one checksummed header frame + one frame per durable append batch) as a
-/// single stream. Returns the header and the remaining records in log order.
-pub(super) fn load_session_log(
-    path: &std::path::Path,
-) -> Result<(SessionHeaderLine, Vec<LogLine>), Box<dyn std::error::Error>> {
-    use std::io::Read;
-    let raw = std::fs::read(path)?;
-    let mut jsonl = Vec::new();
-    zstd::Decoder::new(&raw[..])?.read_to_end(&mut jsonl)?;
-    let text = String::from_utf8(jsonl)?;
-
-    let mut records: Vec<LogLine> = Vec::new();
-    for (i, line) in text.lines().enumerate() {
-        let line = line.trim_end();
-        if line.is_empty() {
-            continue;
-        }
-        let rec = serde_json::from_str::<LogLine>(line).map_err(|e| format!("line {i}: {e}"))?;
-        records.push(rec);
-    }
-    let (first, rest) = records
-        .split_first()
-        .ok_or_else(|| "empty log".to_string())?;
-    let header = match first {
-        LogLine::Session(h) => h.clone(),
-        _ => return Err("first line is not a `session` header".into()),
-    };
-    Ok((header, rest.to_vec()))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
