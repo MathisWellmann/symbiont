@@ -364,70 +364,7 @@ pub struct ToolCallRunData {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     /// Per-member raw arguments fragments, in order.
-    pub args: Vec<String>,
-}
-
-impl ChunkRow<TextRunData> {
-    /// Expand to the exact original `assistant/chunk` events.
-    ///
-    /// The payload shape is shared by `text-chunks` and `reasoning-chunks`
-    /// rows; pass `true` for the latter to reconstruct `reasoning-delta`
-    /// chunks. Validates member/gap counts and returns `Err` for corrupt rows.
-    pub fn expand(&self, reasoning: bool) -> Result<Vec<(u64, i64, StreamChunk)>, &'static str> {
-        let members = self.data.texts.len();
-        if members < 3 || self.data.dt.len() != members - 1 {
-            return Err("invalid chunk row: dt length must be members - 1 (min 3 members)");
-        }
-        let mut out = Vec::with_capacity(members);
-        let mut time = self.time0;
-        for (k, text) in self.data.texts.iter().enumerate() {
-            if k > 0 {
-                time = time.wrapping_add(self.data.dt[k - 1]);
-            }
-            let chunk = if reasoning {
-                StreamChunk::ReasoningDelta {
-                    index: self.data.index,
-                    text: text.clone(),
-                }
-            } else {
-                StreamChunk::TextDelta {
-                    index: self.data.index,
-                    text: text.clone(),
-                }
-            };
-            out.push((self.seq0 + k as u64, time, chunk));
-        }
-        Ok(out)
-    }
-}
-
-impl ChunkRow<ToolCallRunData> {
-    /// Expand to the exact original `assistant/chunk` events.
-    /// Validates member/gap counts and returns `Err` for corrupt rows.
-    pub fn expand(&self) -> Result<Vec<(u64, i64, StreamChunk)>, &'static str> {
-        let members = self.data.args.len();
-        if members < 3 || self.data.dt.len() != members - 1 {
-            return Err("invalid chunk row: dt length must be members - 1 (min 3 members)");
-        }
-        let mut out = Vec::with_capacity(members);
-        let mut time = self.time0;
-        for (k, fragment) in self.data.args.iter().enumerate() {
-            if k > 0 {
-                time = time.wrapping_add(self.data.dt[k - 1]);
-            }
-            out.push((
-                self.seq0 + k as u64,
-                time,
-                StreamChunk::ToolCallDelta {
-                    index: self.data.index,
-                    id: self.data.id.clone(),
-                    name: self.data.name.clone(),
-                    arguments_delta: fragment.clone(),
-                },
-            ));
-        }
-        Ok(out)
-    }
+    pub(super) args: Vec<String>,
 }
 
 // =============================================================================
@@ -1508,22 +1445,5 @@ mod tests {
             serde_json::to_string(&r).expect("a surface op serializes"),
             r#"{"op":"replace","start":3,"end":7}"#
         );
-    }
-
-    #[test]
-    fn chunk_row_expands() {
-        let row: ChunkRow<TextRunData> = serde_json::from_str(
-            r#"{"type":"text-chunks","seq0":100,"time0":1000,"data":{"turn":1,"step":1,"index":1,"dt":[2,3],"texts":["a","b","c"]}}"#,
-        )
-        .expect("a packed text run parses");
-        let members = row.expand(false).expect("a well-formed run expands");
-        assert_eq!(members.len(), 3);
-        assert_eq!(members[0].0, 100);
-        assert_eq!(members[1].1, 1002);
-        assert_eq!(members[2].1, 1005);
-        assert!(matches!(
-            members[2].2,
-            StreamChunk::TextDelta { index: 1, .. }
-        ));
     }
 }
