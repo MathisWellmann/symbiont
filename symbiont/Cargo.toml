@@ -50,8 +50,7 @@ tracing-test = "0.2"
 
 [features]
 default = []
-# `symbiont::export_dsh_session`: write an `EvolutionTrace` straight into
-# `~/.dsh/sessions` as a DeepSeek Harness session log.
+# Used to write the agent traces into a `deepseek-harness` compatible file.
 dsh-export = ["dep:zstd"]
 # Prometheus exporter for long-running host binaries; pull this in and call
 # `symbiont::observability::init_observability()` at startup.
