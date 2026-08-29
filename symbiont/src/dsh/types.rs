@@ -134,12 +134,6 @@ pub enum LogLine {
     #[serde(rename = "llm/retry-started")]
     /// The retry announced by the matching `llm/retry` started.
     LlmRetryStarted(Event<LlmRetryStartedData>),
-    #[serde(rename = "agent-preset/selected")]
-    /// The agent preset the session runs under was chosen.
-    AgentPresetSelected(Event<AgentPresetSelectedData>),
-    #[serde(rename = "web/deepseek-search-llm-request")]
-    /// A provider-side web search was requested.
-    WebSearchLlmRequest(Event<WebSearchLlmRequestData>),
 }
 
 /// Immutable session header — the first JSONL line of every log.
@@ -1348,28 +1342,6 @@ pub struct LlmRetryStartedData {
     pub step: u64,
     /// Which retry this is, counting from one.
     pub retry: u64,
-}
-
-/// `agent-preset/selected` — the session's agent preset was chosen after
-/// creation, while the session was still blank.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentPresetSelectedData {
-    /// The chosen preset id.
-    pub agent_preset: String,
-}
-
-/// `web/deepseek-search-llm-request` — secret-free auxiliary DeepSeek search
-/// request. `body` is the provider's exact wire body (kept opaque).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WebSearchLlmRequestData {
-    /// The endpoint the search was sent to.
-    pub endpoint: String,
-    /// `anthropic-version` header value.
-    pub api_version: String,
-    /// Exact JSON body sent to the provider.
-    pub body: Value,
 }
 
 /// Marks an override seeded into a child at delegation (`"delegation"`).
