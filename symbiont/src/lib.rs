@@ -16,7 +16,6 @@ mod decl;
 mod doc_index;
 mod doc_string;
 mod doc_tools;
-#[cfg(feature = "dsh-export")]
 pub mod dsh;
 mod dylib_config;
 mod dylib_dependency;
@@ -54,10 +53,10 @@ pub use doc_tools::{
     ApiIndexTool,
 };
 #[cfg(feature = "dsh-export")]
+pub use dsh::export_dsh_session;
 pub use dsh::{
     DshSession,
     dsh_lines,
-    export_dsh_session,
     write_dsh_session,
 };
 pub use dylib_config::DylibConfig;

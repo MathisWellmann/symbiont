@@ -6,7 +6,6 @@
 //! [module docs](crate::dsh) of `dsh`.
 
 use std::{
-    fmt::Write as _,
     io::{
         self,
         Write,
@@ -190,153 +189,6 @@ pub fn write_dsh_session<W: Write>(
     Ok(())
 }
 
-/// Write `trace` into `sessions_root` as a zstd session artifact, under the
-/// directory layout the harness's JSONL backend expects
-/// (`<root>/<project-key>/<session-id>/session.jsonl.zstd`), and return the
-/// path written.
-///
-/// `sessions_root` is `$DSH_HOME/sessions`, which is `~/.dsh/sessions` by
-/// default.
-///
-/// # The artifact is a frame container, not a compressed file
-///
-/// A `.jsonl.zstd` session is a **concatenation of independently decodable
-/// zstd frames**, which is what lets the harness append a batch without
-/// rewriting the file. The layout is load-bearing in one specific way: the
-/// session picker reads only the *first frame* of every artifact it lists and
-/// requires it to decompress to exactly one newline-terminated line — the
-/// header. It never decodes the rest.
-///
-/// So this writes the header as its own frame and the events as a second one.
-/// Compressing the whole log as a single frame produces a file that
-/// round-trips perfectly through `zstd -d` and still takes `dsh` down at
-/// startup with `corrupt Zstandard session log: first frame is not exactly
-/// one header line` — the listing walks every session, so one bad artifact
-/// stops the app from booting at all.
-///
-/// # Compression is not optional either
-///
-/// The backend refuses to load a root that mixes encodings: it walks every
-/// session directory and errors out if it finds an artifact with the suffix
-/// it is not configured for. Dropping a plain `session.jsonl` into a
-/// zstd-configured root breaks the same listing.
-///
-/// # Errors
-///
-/// Returns the directory-creation, serialization and write errors.
-pub fn export_dsh_session(
-    trace: &EvolutionTrace,
-    session: &DshSession<'_>,
-    sessions_root: &std::path::Path,
-) -> io::Result<std::path::PathBuf> {
-    let dir = sessions_root
-        .join(project_key(session.cwd))
-        .join(encode_segment(&session.resolved_id(trace)));
-    std::fs::create_dir_all(&dir)?;
-
-    let mut jsonl = Vec::new();
-    write_dsh_session(trace, session, &mut jsonl)?;
-
-    // The header is the first line and JSON, so it holds no raw newline: the
-    // first `\n` in the stream always ends it.
-    let header_end = jsonl
-        .iter()
-        .position(|byte| *byte == b'\n')
-        .map_or(jsonl.len(), |index| index + 1);
-    let (header, events) = jsonl.split_at(header_end);
-
-    let mut artifact = zstd_frame(header)?;
-    if !events.is_empty() {
-        artifact.extend_from_slice(&zstd_frame(events)?);
-    }
-
-    let path = dir.join("session.jsonl.zstd");
-    std::fs::write(&path, artifact)?;
-    Ok(path)
-}
-
-/// Compress `input` into one complete, checksummed zstd frame — the unit the
-/// harness's container is built from.
-fn zstd_frame(input: &[u8]) -> io::Result<Vec<u8>> {
-    let mut encoder = zstd::stream::raw::Encoder::new(ZSTD_LEVEL)?;
-    // The harness compresses every frame with `ZSTD_c_checksumFlag` set, and
-    // its frame scanner reads the flag out of each frame header to find the
-    // next boundary. Matching it keeps a written frame byte-comparable with a
-    // harness-written one.
-    encoder.set_parameter(zstd::zstd_safe::CParameter::ChecksumFlag(true))?;
-
-    let mut writer = zstd::stream::write::Encoder::with_encoder(Vec::new(), encoder);
-    writer.write_all(input)?;
-    writer.finish()
-}
-
-/// Compression level for a session artifact. Traces are text and write once,
-/// so the default level is the right trade.
-const ZSTD_LEVEL: i32 = zstd::DEFAULT_COMPRESSION_LEVEL;
-
-/// The harness's project-directory name for `cwd`: separator runs collapse to
-/// `-`, anything outside `[A-Za-z0-9._-]` becomes `~XXXX` over UTF-16 code
-/// units, and the result is wrapped in `--`.
-fn project_key(cwd: Option<&str>) -> String {
-    let Some(cwd) = cwd.filter(|cwd| !cwd.is_empty()) else {
-        return "_no-cwd".to_string();
-    };
-
-    let mut readable = String::new();
-    let mut separator_run = false;
-    for unit in cwd.encode_utf16() {
-        match char::from_u32(u32::from(unit)) {
-            Some('/' | '\\' | ':') => {
-                if !separator_run {
-                    readable.push('-');
-                }
-                separator_run = true;
-            }
-            Some(ch) if is_safe_segment_char(ch) => {
-                readable.push(ch);
-                separator_run = false;
-            }
-            _ => {
-                let _ = write!(readable, "~{unit:04X}");
-                separator_run = false;
-            }
-        }
-    }
-
-    let trimmed: String = readable
-        .trim_start_matches('-')
-        .encode_utf16()
-        .take(251)
-        .collect::<Vec<u16>>()
-        .iter()
-        .filter_map(|unit| char::from_u32(u32::from(*unit)))
-        .collect();
-    let body = if trimmed.is_empty() { "root" } else { &trimmed };
-    format!("--{body}--")
-}
-
-/// The harness's injective single-path-segment encoding of a session id.
-fn encode_segment(raw: &str) -> String {
-    match raw {
-        "" => "_".to_string(),
-        "." => "~002E".to_string(),
-        ".." => "~002E~002E".to_string(),
-        _ => raw
-            .encode_utf16()
-            .map(|unit| match char::from_u32(u32::from(unit)) {
-                Some(ch) if is_safe_segment_char(ch) => ch.to_string(),
-                _ => format!("~{unit:04X}"),
-            })
-            .collect(),
-    }
-}
-
-/// The harness's literal-in-a-path-segment character class. `~` is excluded:
-/// it introduces an escape.
-fn is_safe_segment_char(ch: char) -> bool {
-    ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-')
-}
-
 /// Milliseconds since the Unix epoch, saturating at `0` for a pre-epoch time.
 fn epoch_millis(time: SystemTime) -> u64 {
     time.duration_since(UNIX_EPOCH).map_or(0, |since| {
@@ -351,150 +203,27 @@ mod tests {
     use rig_agent::agent::CompletionCall;
     use rig_core::{
         completion::Usage,
-        message::{
-            AssistantContent,
-            Message,
-            Text,
-            ToolCall,
-            ToolCallId,
-            ToolFunction,
-            ToolResult,
-            ToolResultContent,
-            UserContent,
-        },
+        message::Message,
     };
-    use serde_json::{
-        Value,
-        json,
-    };
+    use serde_json::Value;
 
     use super::*;
     use crate::{
         LadderEvent,
         TraceOutcome,
-        dsh::tests::usage_of,
+        dsh::tests::{
+            export,
+            sample_session,
+            sample_trace,
+            usage_of,
+        },
         evolution_trace::{
-            BuildRecord,
             RunTrace,
             StageTimings,
         },
         evolve_info::Lane,
         revision::Revision,
     };
-
-    /// The stage timings of an attempt that got all the way through a build.
-    fn built_stages() -> StageTimings {
-        let mut stages = StageTimings::default();
-        stages.set_llm(Some(Duration::from_millis(900)));
-        stages.set_parse_validate(Some(Duration::from_micros(80)));
-        stages.set_build(Some(BuildRecord::Built {
-            slot_wait: Duration::from_millis(2),
-            compile: Duration::from_secs(3),
-            load: Duration::from_millis(1),
-        }));
-        stages
-    }
-
-    /// A lane that called a tool, failed to compile, self-healed and then
-    /// registered — the shape every field of the exporter has to survive.
-    fn sample_trace() -> EvolutionTrace {
-        let call_id = ToolCallId::new("call_1").expect("a non-empty id");
-        let history = vec![
-            Message::user("write a sort"),
-            Message::Assistant {
-                id: None,
-                content: vec![AssistantContent::ToolCall(ToolCall {
-                    id: call_id.clone(),
-                    provider: None,
-                    function: ToolFunction {
-                        name: "api_index".to_string(),
-                        arguments: json!({ "path": "prelude" }),
-                    },
-                    signature: None,
-                    additional_params: None,
-                })],
-            },
-            Message::User {
-                content: vec![UserContent::ToolResult(ToolResult {
-                    call: call_id,
-                    provider: None,
-                    name: "api_index".to_string(),
-                    content: vec![ToolResultContent::Text(Text::from(
-                        "pub fn sort(..)".to_string(),
-                    ))],
-                })],
-            },
-            Message::assistant("```rust\nfn sort() {}\n```"),
-            Message::user("it did not compile: E0277"),
-            Message::assistant("```rust\nfn sort() { /* fixed */ }\n```"),
-        ];
-
-        let mut trace = EvolutionTrace::new(Lane::from(3), "write a sort".to_string());
-        trace.push_attempt(
-            1,
-            "write a sort".to_string(),
-            Some(
-                RunTrace::builder()
-                    .produced(0..4)
-                    .response("```rust\nfn sort() {}\n```".to_string())
-                    .usage(Usage::new())
-                    .completion_calls(Vec::new())
-                    .build(),
-            ),
-            StageTimings::default(),
-            LadderEvent::SelfHeal {
-                kind: "compile".to_string(),
-                diagnostics: "E0277: the trait bound is not satisfied".to_string(),
-            },
-            Duration::from_secs(4),
-        );
-        trace.push_attempt(
-            2,
-            "it did not compile: E0277".to_string(),
-            Some(
-                RunTrace::builder()
-                    .produced(4..6)
-                    .response("```rust\nfn sort() { /* fixed */ }\n```".to_string())
-                    .usage(Usage::new())
-                    .completion_calls(Vec::new())
-                    .build(),
-            ),
-            built_stages(),
-            LadderEvent::Registered {
-                revision: Revision::new(1),
-            },
-            Duration::from_secs(5),
-        );
-        trace.set_history(history);
-        trace.set_outcome(TraceOutcome::Registered {
-            revision: Revision::new(1),
-        });
-        trace.set_duration(Duration::from_secs(9));
-        trace
-    }
-
-    fn sample_session() -> DshSession<'static> {
-        DshSession::builder()
-            .system_prompt("you write rust")
-            .provider("local")
-            .model("kimi")
-            .cwd("/tmp/project")
-            .started_at(UNIX_EPOCH + Duration::from_millis(1_700_000_000_000))
-            .context_window(131_072)
-            .build()
-    }
-
-    fn export(trace: &EvolutionTrace) -> Vec<Value> {
-        let session = sample_session();
-
-        let mut buffer = Vec::new();
-        write_dsh_session(trace, &session, &mut buffer).expect("writing to a Vec");
-        String::from_utf8(buffer)
-            .expect("valid utf-8")
-            .lines()
-            .map(|line| serde_json::from_str(line).expect("each line is its own JSON document"))
-            .collect()
-    }
 
     /// The first line is the `session` header the harness's shape guard
     /// accepts: a numeric `version` it reads, a string `id`, an epoch
@@ -934,61 +663,6 @@ mod tests {
         assert!(lines.iter().any(|event| event["type"] == "turn/end"));
     }
 
-    /// The artifact is a frame container, and the harness's session listing
-    /// decodes only the **first** frame of every session it finds, demanding
-    /// exactly one header line from it.
-    ///
-    /// This is a regression test with teeth: a log compressed as one frame
-    /// round-trips perfectly through `zstd -d`, passes every other check here,
-    /// and still stops `dsh` from booting, because the listing walks the whole
-    /// sessions root. Decoding the whole file is exactly the check that misses
-    /// it, so this one decodes the first frame alone.
-    #[test]
-    fn the_first_zstd_frame_holds_only_the_header() {
-        use std::io::Read as _;
-
-        let root =
-            std::env::temp_dir().join(format!("symbiont-dsh-export-frames-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-
-        let session = DshSession::builder()
-            .system_prompt("you write rust")
-            .cwd("/tmp/project")
-            .build();
-        let path = export_dsh_session(&sample_trace(), &session, &root).expect("the export writes");
-        let artifact = std::fs::read(&path).expect("the artifact is readable");
-
-        let mut first_frame = Vec::new();
-        zstd::stream::read::Decoder::new(artifact.as_slice())
-            .expect("a zstd stream")
-            .single_frame()
-            .read_to_end(&mut first_frame)
-            .expect("the first frame decodes on its own");
-        let first_frame = String::from_utf8(first_frame).expect("valid utf-8");
-
-        assert!(
-            first_frame.ends_with('\n') && first_frame.matches('\n').count() == 1,
-            "the first frame must be exactly the header line, got {} line(s)",
-            first_frame.lines().count(),
-        );
-        let header: Value =
-            serde_json::from_str(first_frame.trim_end()).expect("the header line is JSON");
-        assert_eq!(header["type"], "session");
-
-        // The events follow in their own frame, and the container still reads
-        // back as one contiguous JSONL stream.
-        let whole = zstd::decode_all(artifact.as_slice()).expect("the container decodes");
-        let whole = String::from_utf8(whole).expect("valid utf-8");
-        assert!(
-            whole.lines().count() > 1,
-            "the events must follow the header",
-        );
-        assert!(whole.starts_with(&first_frame), "the header comes first");
-        assert!(whole.ends_with('\n'), "every record is newline-terminated");
-
-        std::fs::remove_dir_all(&root).expect("the test cleans up after itself");
-    }
-
     /// [`write_dsh_session`] is a serializer over [`dsh_lines`] and nothing
     /// more: line `i` of the file is the serialized form of record `i`.
     ///
@@ -1025,26 +699,5 @@ mod tests {
                 "record {index} round-trips without loss",
             );
         }
-    }
-
-    /// The project directory and the session directory follow the harness's
-    /// own encoding, or the picker files the session somewhere it never looks.
-    #[test]
-    fn paths_match_the_harness_encoding() {
-        assert_eq!(
-            project_key(Some("/home/m/MathisWellmann/symbiont")),
-            "--home-m-MathisWellmann-symbiont--",
-        );
-        assert_eq!(project_key(None), "_no-cwd");
-        assert_eq!(project_key(Some("/")), "--root--");
-        // A space is not in the literal class, so it escapes to its UTF-16
-        // code unit.
-        assert_eq!(
-            project_key(Some("/tmp/my project")),
-            "--tmp-my~0020project--"
-        );
-        assert_eq!(encode_segment("session-abc_1.2"), "session-abc_1.2");
-        assert_eq!(encode_segment("a/b"), "a~002Fb");
-        assert_eq!(encode_segment(".."), "~002E~002E");
     }
 }

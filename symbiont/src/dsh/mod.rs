@@ -79,16 +79,19 @@
 mod export;
 mod log;
 pub mod types;
+#[cfg(feature = "dsh-export")]
+mod zstd;
 
 use std::time::Duration;
 
 pub use export::{
     DshSession,
     dsh_lines,
-    export_dsh_session,
     write_dsh_session,
 };
 use rig_core::completion::Usage;
+#[cfg(feature = "dsh-export")]
+pub use zstd::export_dsh_session;
 
 use crate::dsh::types::TokenUsage;
 
@@ -126,7 +129,154 @@ fn token_usage(usage: &Usage) -> Option<TokenUsage> {
 
 #[cfg(test)]
 pub(super) mod tests {
+    use std::time::UNIX_EPOCH;
+
+    use rig_core::{
+        completion::Usage,
+        message::{
+            AssistantContent,
+            Message,
+            Text,
+            ToolCall,
+            ToolCallId,
+            ToolFunction,
+            ToolResult,
+            ToolResultContent,
+            UserContent,
+        },
+    };
+    use serde_json::{
+        Value,
+        json,
+    };
+
     use super::*;
+    use crate::{
+        EvolutionTrace,
+        LadderEvent,
+        TraceOutcome,
+        evolution_trace::{
+            BuildRecord,
+            RunTrace,
+            StageTimings,
+        },
+        evolve_info::Lane,
+        revision::Revision,
+    };
+
+    /// The stage timings of an attempt that got all the way through a build.
+    pub(super) fn built_stages() -> StageTimings {
+        let mut stages = StageTimings::default();
+        stages.set_llm(Some(Duration::from_millis(900)));
+        stages.set_parse_validate(Some(Duration::from_micros(80)));
+        stages.set_build(Some(BuildRecord::Built {
+            slot_wait: Duration::from_millis(2),
+            compile: Duration::from_secs(3),
+            load: Duration::from_millis(1),
+        }));
+        stages
+    }
+
+    /// A lane that called a tool, failed to compile, self-healed and then
+    /// registered — the shape every field of the exporter has to survive.
+    pub(super) fn sample_trace() -> EvolutionTrace {
+        let call_id = ToolCallId::new("call_1").expect("a non-empty id");
+        let history = vec![
+            Message::user("write a sort"),
+            Message::Assistant {
+                id: None,
+                content: vec![AssistantContent::ToolCall(ToolCall {
+                    id: call_id.clone(),
+                    provider: None,
+                    function: ToolFunction {
+                        name: "api_index".to_string(),
+                        arguments: json!({ "path": "prelude" }),
+                    },
+                    signature: None,
+                    additional_params: None,
+                })],
+            },
+            Message::User {
+                content: vec![UserContent::ToolResult(ToolResult {
+                    call: call_id,
+                    provider: None,
+                    name: "api_index".to_string(),
+                    content: vec![ToolResultContent::Text(Text::from(
+                        "pub fn sort(..)".to_string(),
+                    ))],
+                })],
+            },
+            Message::assistant("```rust\nfn sort() {}\n```"),
+            Message::user("it did not compile: E0277"),
+            Message::assistant("```rust\nfn sort() { /* fixed */ }\n```"),
+        ];
+
+        let mut trace = EvolutionTrace::new(Lane::from(3), "write a sort".to_string());
+        trace.push_attempt(
+            1,
+            "write a sort".to_string(),
+            Some(
+                RunTrace::builder()
+                    .produced(0..4)
+                    .response("```rust\nfn sort() {}\n```".to_string())
+                    .usage(Usage::new())
+                    .completion_calls(Vec::new())
+                    .build(),
+            ),
+            StageTimings::default(),
+            LadderEvent::SelfHeal {
+                kind: "compile".to_string(),
+                diagnostics: "E0277: the trait bound is not satisfied".to_string(),
+            },
+            Duration::from_secs(4),
+        );
+        trace.push_attempt(
+            2,
+            "it did not compile: E0277".to_string(),
+            Some(
+                RunTrace::builder()
+                    .produced(4..6)
+                    .response("```rust\nfn sort() { /* fixed */ }\n```".to_string())
+                    .usage(Usage::new())
+                    .completion_calls(Vec::new())
+                    .build(),
+            ),
+            built_stages(),
+            LadderEvent::Registered {
+                revision: Revision::new(1),
+            },
+            Duration::from_secs(5),
+        );
+        trace.set_history(history);
+        trace.set_outcome(TraceOutcome::Registered {
+            revision: Revision::new(1),
+        });
+        trace.set_duration(Duration::from_secs(9));
+        trace
+    }
+
+    pub(super) fn sample_session() -> DshSession<'static> {
+        DshSession::builder()
+            .system_prompt("you write rust")
+            .provider("local")
+            .model("kimi")
+            .cwd("/tmp/project")
+            .started_at(UNIX_EPOCH + Duration::from_millis(1_700_000_000_000))
+            .context_window(131_072)
+            .build()
+    }
+
+    pub(super) fn export(trace: &EvolutionTrace) -> Vec<Value> {
+        let session = sample_session();
+
+        let mut buffer = Vec::new();
+        write_dsh_session(trace, &session, &mut buffer).expect("writing to a Vec");
+        String::from_utf8(buffer)
+            .expect("valid utf-8")
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("each line is its own JSON document"))
+            .collect()
+    }
 
     /// A `Usage` that reports `input` prompt and `output` completion tokens.
     pub(crate) fn usage_of(input: u64, output: u64) -> Usage {
