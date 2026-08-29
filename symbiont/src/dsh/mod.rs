@@ -2,15 +2,7 @@
 //! (`dsh`) session log.
 //!
 //! The harness stores one session as a JSON Lines file: a `session` header
-//! record, then one session event record per line. `seq` is dense and
-//! zero-based, `time` is Unix epoch milliseconds, and the message-producing
-//! events (`user/message`, `assistant/message`, `tool/result`) carry a
-//! `surfaceOp` that places them on the ordered transcript the UI shows.
-//!
-//! [`types`] is the Rust mirror of that format. [`dsh_lines`] projects a
-//! trace onto [`types::LogLine`] records, [`write_dsh_session`] serializes
-//! them, and [`export_dsh_session`] writes the zstd artifact the harness
-//! reads.
+//! record, then one session event record per line.
 //!
 //! The harness itself: <https://github.com/deepseek-ai/deepseek-harness>
 //!
@@ -32,16 +24,6 @@
 //! reaction ladder or a build breakdown, so those travel as prose a human
 //! reads. The [`EvolutionTrace`] stays the machine-readable record of a lane;
 //! this format is how a human looks at it.
-//!
-//! [`EvolutionTrace`]: crate::EvolutionTrace
-//! [`EvolutionTrace::history`]: crate::EvolutionTrace::history
-//! [`EvolutionTrace::outcome`]: crate::EvolutionTrace::outcome
-//! [`AttemptTrace`]: crate::AttemptTrace
-//! [`AttemptTrace::ladder`]: crate::AttemptTrace::ladder
-//! [`AttemptTrace::stages`]: crate::AttemptTrace::stages
-//! [`AttemptTrace::duration`]: crate::AttemptTrace::duration
-//! [`AssistantContent::ToolCall`]: rig_core::message::AssistantContent::ToolCall
-//! [`UserContent::ToolResult`]: rig_core::message::UserContent::ToolResult
 //!
 //! # What the trace does not hold
 //!

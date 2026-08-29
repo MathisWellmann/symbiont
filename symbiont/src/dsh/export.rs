@@ -73,9 +73,7 @@ pub struct DshSession<'a> {
     /// its project directory.** The harness's session listing collects every
     /// id from every project directory into one set and throws on the first
     /// repeat — at startup, so a repeat stops `dsh` from booting rather than
-    /// hiding one session behind another. A fixed id is therefore only safe
-    /// while the run's working directory never changes: the same id written
-    /// from two directories lands in two project directories and collides.
+    /// hiding one session behind another.
     ///
     /// `None` derives a unique id, which is what you want unless you are
     /// deliberately overwriting one specific session.
