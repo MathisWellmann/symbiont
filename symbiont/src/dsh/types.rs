@@ -21,28 +21,14 @@ use serde_json::{
 
 /// One JSONL record of a session trajectory log.
 ///
-/// Line 1 is always the [`SessionHeaderLine`] (`type: "session"`). Every later
-/// line is either a session event (envelope `seq`/`time`/`data`) or a packed
-/// chunk row (a storage-side compression of runs of `assistant/chunk` delta
-/// events — expand it with [`ChunkRow::expand`] before treating it as an
-/// event).
+/// Line 1 is always the [`SessionHeaderLine`] (`type: "session"`). Every
+/// later line is a session event (envelope `seq`/`time`/`data`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum LogLine {
     /// Immutable session header (first line only).
     #[serde(rename = "session")]
     Session(SessionHeaderLine),
-
-    // ---- packed chunk rows (storage-only; NOT session events) ----
-    /// Run of ≥3 consecutive `text-delta` chunks of one stream block.
-    #[serde(rename = "text-chunks")]
-    TextChunks(ChunkRow<TextRunData>),
-    /// Run of ≥3 consecutive `reasoning-delta` chunks of one stream block.
-    #[serde(rename = "reasoning-chunks")]
-    ReasoningChunks(ChunkRow<TextRunData>),
-    /// Run of ≥3 consecutive `tool-call-delta` chunks of one stream block.
-    #[serde(rename = "tool-call-chunks")]
-    ToolCallChunks(ChunkRow<ToolCallRunData>),
 
     // ---- core session events (dsh-session) ----
     #[serde(rename = "turn/start")]
@@ -60,9 +46,6 @@ pub enum LogLine {
     /// The `data` payload is the whole user-role message.
     #[serde(rename = "user/message")]
     UserMessage(Event<Message>),
-    #[serde(rename = "assistant/chunk")]
-    /// One raw stream chunk of a live assistant turn.
-    AssistantChunk(Event<AssistantChunkData>),
     #[serde(rename = "assistant/message")]
     /// The assembled assistant message of one step.
     AssistantMessage(Event<AssistantMessageData>),
@@ -72,44 +55,17 @@ pub enum LogLine {
     #[serde(rename = "tool/result")]
     /// One tool call answered.
     ToolResult(Event<ToolResultData>),
-    #[serde(rename = "todo/write")]
-    /// A whole-list snapshot of the todo list.
-    TodoWrite(Event<TodoWriteData>),
     #[serde(rename = "request/header")]
     /// The full header of the next model request.
     RequestHeader(Event<RequestHeaderData>),
     #[serde(rename = "request/context")]
     /// Route metadata of the next model request.
     RequestContext(Event<RequestContextData>),
-    /// Empty payload (`data: {}`); marks the end of seed history.
-    #[serde(rename = "session/end-seed")]
-    EndSeed(Event<Value>),
 
     // ---- plugin-merged events (observed on disk, v0) ----
-    #[serde(rename = "permission/preset")]
-    /// The selected permission preset.
-    PermissionPreset(Event<PermissionPresetData>),
-    #[serde(rename = "sandbox/mode")]
-    /// A session sandbox-mode override.
-    SandboxMode(Event<SandboxModeData>),
-    #[serde(rename = "approval/policy")]
-    /// A session approval-policy override.
-    ApprovalPolicy(Event<ApprovalPolicyData>),
-    #[serde(rename = "approval/asked")]
-    /// An approval question was put to the answerer chain.
-    ApprovalAsked(Event<ApprovalAskedData>),
-    #[serde(rename = "approval/decided")]
-    /// The outcome of an earlier `approval/asked`.
-    ApprovalDecided(Event<ApprovalDecidedData>),
-    #[serde(rename = "agent/inbox/spliced")]
-    /// One mutation of an agent's durable pending-message lists.
-    InboxSpliced(Event<InboxSplicedData>),
     #[serde(rename = "session/title")]
     /// A session title snapshot.
     SessionTitle(Event<SessionTitleData>),
-    #[serde(rename = "session/title-llm-request")]
-    /// The request a title provider was asked to answer.
-    TitleLlmRequest(Event<TitleLlmRequestData>),
     #[serde(rename = "compaction/start")]
     /// A compaction run began.
     CompactionStart(Event<CompactionStartData>),
@@ -122,12 +78,6 @@ pub enum LogLine {
     #[serde(rename = "compaction/prune")]
     /// A compaction dropped the events its summary shadows.
     CompactionPrune(Event<CompactionPruneData>),
-    #[serde(rename = "command/run")]
-    /// A slash command was invoked.
-    CommandRun(Event<CommandRunData>),
-    #[serde(rename = "command/done")]
-    /// A slash command finished.
-    CommandDone(Event<CommandDoneData>),
     #[serde(rename = "llm/retry")]
     /// A model call failed and will be retried.
     LlmRetry(Event<LlmRetryData>),
@@ -436,18 +386,6 @@ pub struct StepStartData {
     pub step: u64,
 }
 
-/// `assistant/chunk` — raw stream chunk, token-level replay fidelity.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AssistantChunkData {
-    /// The turn this belongs to.
-    pub turn: u64,
-    /// The step within the turn.
-    pub step: u64,
-    /// The adapter's raw stream chunk.
-    pub chunk: StreamChunk,
-}
-
 /// `assistant/message` — assembled assistant message for one step.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -507,36 +445,6 @@ pub struct ToolResultError {
     pub name: String,
     /// Stable machine-routing code.
     pub code: String,
-}
-
-/// `todo/write` — whole-list snapshot; latest write wins on replay.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TodoWriteData {
-    /// The whole list, in display order.
-    pub todos: Vec<TodoItem>,
-}
-
-/// One entry of the todo list.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TodoItem {
-    /// What the entry asks for.
-    pub content: String,
-    /// How far the entry got.
-    pub status: TodoStatus,
-}
-
-/// How far one todo entry got.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TodoStatus {
-    /// Not started.
-    Pending,
-    /// Being worked on right now.
-    InProgress,
-    /// Done.
-    Completed,
 }
 
 /// `request/header` — full header for the next request (log-only; the latest
@@ -1030,82 +938,6 @@ pub struct TokenUsage {
 // Plugin-merged event payloads
 // =============================================================================
 
-/// `permission/preset` — durable, log-only user intent (the selected preset).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PermissionPresetData {
-    /// The preset id.
-    pub preset: String,
-}
-
-/// `sandbox/mode` — session sandbox-mode override; last event wins.
-/// `mode` ∈ `read-only` | `workspace-write` | `danger-full-access`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SandboxModeData {
-    /// The sandbox mode to run under.
-    pub mode: String,
-    /// Present only when the override was seeded into a child at delegation.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source: Option<SourceMarker>,
-}
-
-/// `approval/policy` — session approval-policy override; last event wins.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ApprovalPolicyData {
-    /// `ask` (default) or `never`.
-    pub policy: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    /// Present only when the override was seeded into a child at delegation.
-    pub source: Option<SourceMarker>,
-}
-
-/// `approval/asked` — an approval question was put to the answerer chain.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ApprovalAskedData {
-    /// Pairs with the `approval/decided` that always follows.
-    pub id: String,
-    /// The tool the question is about.
-    pub tool_name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    /// The call the question is about, when there is one.
-    pub call_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    /// Why the approval was needed.
-    pub reason: Option<String>,
-}
-
-/// `approval/decided` — outcome of a prior `approval/asked` (same `id`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ApprovalDecidedData {
-    /// The `approval/asked` this decides.
-    pub id: String,
-    /// `allowed-once` | `rejected` | `cancelled` | `unavailable`.
-    pub outcome: String,
-}
-
-/// `agent/inbox/spliced` — one normalized mutation of an agent's durable
-/// pending-message lists.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InboxSplicedData {
-    /// `next-turn` | `next-step`.
-    pub target: String,
-    /// Index the splice starts at.
-    pub start: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    /// How many entries the splice removed.
-    pub removed_count: Option<u64>,
-    /// The entries the splice inserted.
-    pub inserted: Vec<Message>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    /// How the splice ended, when the backend reported it.
-    pub outcome: Option<String>,
-}
-
 /// `session/title` — latest-wins session title snapshot.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1119,8 +951,7 @@ pub struct SessionTitleData {
     pub source: TitleSource,
 }
 
-/// Whether the built-in fallback, a registered provider, or the user supplied
-/// the title.
+/// Who supplied the title.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum TitleSource {
@@ -1148,25 +979,6 @@ pub struct ModelProvenance {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     /// Context window of the route, in tokens, when it is known.
     pub context_window: Option<u64>,
-}
-
-/// `session/title-llm-request` — exact auxiliary title request, pre-dispatch.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TitleLlmRequestData {
-    /// Registered title-provider identity.
-    pub title_provider: String,
-    /// Exact human `user/message` seqs the title was derived from; empty for
-    /// an explicit user rename.
-    pub message_seqs: Vec<u64>,
-    /// Exact auxiliary LLM route.
-    pub route: ModelProvenance,
-    /// Exact auxiliary system prompt.
-    pub system: String,
-    /// Exact auxiliary message list.
-    pub messages: Vec<Message>,
-    /// Exact auxiliary output-token cap.
-    pub max_tokens: u64,
 }
 
 /// `compaction/start` — marks the start of a compaction (log-only lock).
@@ -1259,45 +1071,6 @@ pub struct RangeSpan {
     pub start: u64,
     /// Last node, inclusive.
     pub end: u64,
-}
-
-/// `command/run` — a command started.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CommandRunData {
-    /// Pairs this with its `command/done`.
-    pub command_id: String,
-    /// The command's name, without the leading slash.
-    pub name: String,
-    /// Absent when the command definition sets `recordInput: false`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub args: Option<String>,
-    /// Currently only `{ kind: "user" }`.
-    pub source: CommandSource,
-}
-
-/// `command/done` — the paired command settled.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CommandDoneData {
-    /// The `command/run` this closes.
-    pub command_id: String,
-    /// `success` | `error` (a thrown/aborted handler settles as `error`).
-    pub kind: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    /// What the command reported, when it reported anything.
-    pub text: Option<String>,
-    /// A successful command may identify the authoritative domain event.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source_event_seq: Option<u64>,
-}
-
-/// Who issued a command line.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "lowercase")]
-pub enum CommandSource {
-    /// The person at the keyboard invoked it.
-    User,
 }
 
 /// `llm/retry` — one provider-routed retry scheduled after a failed attempt.
@@ -1406,16 +1179,11 @@ mod tests {
 
     #[test]
     fn surface_op_roundtrip() {
-        assert!(matches!(
-            serde_json::from_str::<SurfaceOp>("\"append\"").expect("`append` parses"),
-            SurfaceOp::Append
-        ));
-        let r: SurfaceOp = serde_json::from_str(r#"{"op":"replace","start":3,"end":7}"#)
-            .expect("a replace op parses");
-        assert!(matches!(r, SurfaceOp::Replace { start: 3, end: 7 }));
+        let op: SurfaceOp = serde_json::from_str("\"append\"").expect("`append` parses");
+        assert!(matches!(op, SurfaceOp::Append));
         assert_eq!(
-            serde_json::to_string(&r).expect("a surface op serializes"),
-            r#"{"op":"replace","start":3,"end":7}"#
+            serde_json::to_string(&op).expect("a surface op serializes"),
+            "\"append\""
         );
     }
 }
