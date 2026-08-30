@@ -179,6 +179,40 @@ pub struct StageTimings {
     build: Option<BuildRecord>,
 }
 
+impl StageTimings {
+    /// Show the stage breakdown of one attempt.
+    pub(crate) fn render_stages(&self, out: &mut String) {
+        let mut parts: Vec<String> = Vec::new();
+        if let Some(llm) = self.llm {
+            parts.push(format!("llm {llm:?}"));
+        }
+        if let Some(parse_validate) = self.parse_validate {
+            parts.push(format!("parse/validate {parse_validate:?}"));
+        }
+        match &self.build {
+            Some(BuildRecord::Built {
+                slot_wait,
+                compile,
+                load,
+            }) => {
+                parts.push(format!(
+                    "build slot {slot_wait:?}, compile {compile:?}, load {load:?}"
+                ));
+            }
+            Some(BuildRecord::Deduped {
+                slot_wait,
+                revision,
+            }) => parts.push(format!(
+                "build slot {slot_wait:?}, deduped onto revision {revision}"
+            )),
+            None => {}
+        }
+        if !parts.is_empty() {
+            writeln!(out, "stages: {}", parts.join(", ")).expect(EXPECT_WRITE);
+        }
+    }
+}
+
 /// What the build stage did with a validated candidate.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -267,6 +301,29 @@ pub enum LadderEvent {
     },
 }
 
+impl LadderEvent {
+    /// A one-line summary of a ladder decision.
+    pub(crate) fn render_ladder(&self) -> String {
+        use LadderEvent::*;
+        match self {
+            Registered { revision } => format!("registered revision {revision}"),
+            SelfHeal { kind, diagnostics } => {
+                format!("self-heal ({kind}): {}", first_line(diagnostics))
+            }
+            TransientRetry { backoff, cause } => {
+                format!("transient retry in {backoff:?}: {}", first_line(cause))
+            }
+            ContextReset {
+                messages_dropped, ..
+            } => format!("context reset, dropped {messages_dropped} message(s)"),
+            RepeatReset {
+                messages_dropped, ..
+            } => format!("repeat reset, dropped {messages_dropped} message(s)"),
+            Terminal { reason } => format!("terminal: {}", first_line(reason)),
+        }
+    }
+}
+
 /// How a lane ended.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -353,59 +410,6 @@ impl EvolutionTrace {
             .filter_map(|attempt| attempt.run.as_ref())
             .map(|run| run.completion_calls.len())
             .sum()
-    }
-}
-
-/// Show the stage breakdown of one attempt.
-pub(crate) fn render_stages(out: &mut String, stages: &StageTimings) {
-    let mut parts: Vec<String> = Vec::new();
-    if let Some(llm) = stages.llm {
-        parts.push(format!("llm {llm:?}"));
-    }
-    if let Some(parse_validate) = stages.parse_validate {
-        parts.push(format!("parse/validate {parse_validate:?}"));
-    }
-    match &stages.build {
-        Some(BuildRecord::Built {
-            slot_wait,
-            compile,
-            load,
-        }) => {
-            parts.push(format!(
-                "build slot {slot_wait:?}, compile {compile:?}, load {load:?}"
-            ));
-        }
-        Some(BuildRecord::Deduped {
-            slot_wait,
-            revision,
-        }) => parts.push(format!(
-            "build slot {slot_wait:?}, deduped onto revision {revision}"
-        )),
-        None => {}
-    }
-    if !parts.is_empty() {
-        writeln!(out, "stages: {}", parts.join(", ")).expect(EXPECT_WRITE);
-    }
-}
-
-/// A one-line summary of a ladder decision.
-pub(crate) fn render_ladder(ladder: &LadderEvent) -> String {
-    use LadderEvent::*;
-    match ladder {
-        Registered { revision } => format!("registered revision {revision}"),
-        SelfHeal { kind, diagnostics } => {
-            format!("self-heal ({kind}): {}", first_line(diagnostics))
-        }
-        TransientRetry { backoff, cause } => {
-            format!("transient retry in {backoff:?}: {}", first_line(cause))
-        }
-        ContextReset {
-            messages_dropped, ..
-        } => format!("context reset, dropped {messages_dropped} message(s)"),
-        RepeatReset {
-            messages_dropped, ..
-        } => format!("repeat reset, dropped {messages_dropped} message(s)"),
-        Terminal { reason } => format!("terminal: {}", first_line(reason)),
     }
 }
 

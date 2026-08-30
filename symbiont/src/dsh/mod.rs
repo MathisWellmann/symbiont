@@ -10,7 +10,7 @@
 //!
 //! | symbiont                                              | dsh                                  |
 //! | ------------------------------------------------------| -------------------------------------|
-//! | [`DshSession`]'s system prompt                        | `request/header` → `header.system`   |
+//! | [`EvolutionTrace`]'s system prompt                        | `request/header` → `header.system`   |
 //! | [`AttemptTrace`]                                      | one turn (`turn/start` … `turn/end`) |
 //! | one assistant message plus the tool calls it made     | one step                             |
 //! | [`EvolutionTrace::history`] user text                 | `user/message`                       |
@@ -61,12 +61,10 @@
 //! };
 //!
 //! async fn save(trace: &EvolutionTrace) -> Result<(), Box<dyn std::error::Error>> {
-//!     let prompt = symbiont::system_prompt(None, DocMode::Inline).await?;
 //!     let cwd = std::env::current_dir()?;
 //!     let cwd = cwd.to_string_lossy();
 //!
 //!     let session = DshSession::builder()
-//!         .system_prompt(&prompt)
 //!         .provider("openrouter")
 //!         .model("moonshotai/kimi-k3")
 //!         .cwd(&cwd)

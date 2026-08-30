@@ -1037,8 +1037,7 @@ impl Runtime {
         async move {
             let t_start = Instant::now();
             let mut prompt = base_prompt.to_string();
-            // Scoped to this call; see the doc comment above.
-            let mut history: Vec<Message> = Vec::new();
+            let mut history: Vec<Message> = Vec::with_capacity(32);
             // A context or repeat reset retires everything before this index.
             // Those messages stay in the transcript of the trace, but leave
             // the request. A reset advances this index instead of truncating,
