@@ -503,7 +503,7 @@ mod tests {
     /// off this event, so without it a session reports no tokens at all.
     #[test]
     fn each_assistant_turn_carries_its_own_token_usage() {
-        let mut trace = EvolutionTrace::new(Lane::from(0), "p".to_string());
+        let mut trace = EvolutionTrace::new(Lane::from(0), "s".to_string(), "p".to_string());
         trace.set_history(vec![
             Message::user("p"),
             Message::assistant("first"),
@@ -582,7 +582,8 @@ mod tests {
     /// A lane that gave up says so, and one attempt is not "1 attempts".
     #[test]
     fn a_failed_lane_is_titled_as_failed() {
-        let mut trace = EvolutionTrace::new(Lane::from(0), "base".to_string());
+        let mut trace =
+            EvolutionTrace::new(Lane::from(0), "system".to_string(), "base".to_string());
         trace.push_attempt(
             1,
             "base".to_string(),
@@ -612,7 +613,8 @@ mod tests {
     /// a turn, so the retry is visible instead of silently missing.
     #[test]
     fn an_attempt_without_a_run_still_gets_a_turn() {
-        let mut trace = EvolutionTrace::new(Lane::from(0), "base".to_string());
+        let mut trace =
+            EvolutionTrace::new(Lane::from(0), "system".to_string(), "base".to_string());
         trace.push_attempt(
             1,
             "base".to_string(),
@@ -651,7 +653,7 @@ mod tests {
     /// one turn that reports why.
     #[test]
     fn a_trace_without_attempts_is_still_a_session() {
-        let mut trace = EvolutionTrace::new(Lane::from(0), String::new());
+        let mut trace = EvolutionTrace::new(Lane::from(0), String::new(), String::new());
         trace.set_outcome(TraceOutcome::Failed {
             reason: "failed before the lane started".to_string(),
         });

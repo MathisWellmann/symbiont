@@ -79,4 +79,8 @@ impl EvolutionAgent for MockAgent {
             completion_calls: vec![CompletionCall::new(0, Usage::new())],
         })
     }
+
+    fn system_prompt(&self) -> String {
+        String::new()
+    }
 }

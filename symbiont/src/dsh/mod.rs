@@ -25,13 +25,13 @@
 //! reads. The [`EvolutionTrace`] stays the machine-readable record of a lane;
 //! this format is how a human looks at it.
 //!
-//! # What the trace does not hold
+//! # Fields the session takes from the caller
 //!
-//! Three fields the harness header wants are not in an [`EvolutionTrace`], so
-//! [`DshSession`] takes them from the caller:
+//! The harness header wants these fields, so [`DshSession`] takes them from
+//! the caller:
 //!
-//! - the **system prompt**, which the trace omits by design (see the
-//!   [`crate::EvolutionTrace`] module docs) — pass [`crate::system_prompt`];
+//! - the **system prompt** — pass what [`crate::system_prompt`] returned for
+//!   the run;
 //! - the **provider and model names**, which rig's [`CompletionCall`] does not
 //!   record;
 //! - an **absolute start time**, because a trace holds only [`Duration`]s.
@@ -50,6 +50,8 @@
 //! # Example
 //!
 //! ```no_run
+//! # #[cfg(feature = "dsh-export")]
+//! # {
 //! use std::path::Path;
 //!
 //! use symbiont::{
@@ -75,6 +77,7 @@
 //!     println!("wrote {}", path.display());
 //!     Ok(())
 //! }
+//! # }
 //! ```
 mod export;
 mod log;
@@ -210,7 +213,11 @@ pub(super) mod tests {
             Message::assistant("```rust\nfn sort() { /* fixed */ }\n```"),
         ];
 
-        let mut trace = EvolutionTrace::new(Lane::from(3), "write a sort".to_string());
+        let mut trace = EvolutionTrace::new(
+            Lane::from(3),
+            "system".to_string(),
+            "write a sort".to_string(),
+        );
         trace.push_attempt(
             1,
             "write a sort".to_string(),
