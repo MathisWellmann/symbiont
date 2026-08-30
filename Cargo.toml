@@ -18,7 +18,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.34.0"
+version = "0.35.0"
 
 [workspace.lints.rust]
 # checks for cases that are confusing between a negative literal and a negation that's not part of the literal.
@@ -203,8 +203,10 @@ rc_mutex = "warn"
 ref_option_ref = "warn"
 
 [workspace.dependencies]
-rig-agent = "0.42"
-rig-core = "0.42"
+# TODO: once 0.43 is published, use from crates.io. only needed here to get access to the system prompt and the transport that moved out of `rig-core` into `rig-reqwest`.
+rig-agent = { git = "https://github.com/0xPlaygrounds/rig", version = "0.42" }
+rig-core = { git = "https://github.com/0xPlaygrounds/rig", version = "0.42" }
+rig-reqwest = { git = "https://github.com/0xPlaygrounds/rig", version = "0.42" }
 romu = "0.8"
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1.0", features = ["full"] }

@@ -12,11 +12,6 @@
 //! of [`EvolutionTrace::history`] that it produced instead of its own copy.
 //! As a result, memory stays linear in the transcript, not quadratic in the
 //! attempt count.
-//!
-//! The system prompt is absent by design. It is the same for every attempt of
-//! a lane and every lane of a batch, and it embeds the generated host-API
-//! documentation. Call [`crate::system_prompt`] once and store it beside the
-//! traces.
 
 use std::{
     fmt::Write as _,
@@ -57,6 +52,10 @@ pub struct EvolutionTrace {
     /// Lane index. It is `0` for single-prompt [`crate::Runtime::evolve`].
     #[getset(get_copy = "pub")]
     lane: Lane,
+
+    /// The system prompt of the agent.
+    #[getset(get = "pub")]
+    system_prompt: String,
 
     /// The prompt the lane started with, before any corrective nudge.
     #[getset(get = "pub")]
@@ -289,9 +288,10 @@ pub enum TraceOutcome {
 
 impl EvolutionTrace {
     /// Start a trace for `lane`, which begins from `base_prompt`.
-    pub(crate) fn new(lane: Lane, base_prompt: String) -> Self {
+    pub(crate) fn new(lane: Lane, system_prompt: String, base_prompt: String) -> Self {
         Self {
             lane,
+            system_prompt,
             base_prompt,
             history: Vec::new(),
             attempts: Vec::new(),
@@ -311,7 +311,7 @@ impl EvolutionTrace {
             outcome: TraceOutcome::Failed {
                 reason: "failed before the lane started".to_string(),
             },
-            ..Self::new(Lane::from(0), String::new())
+            ..Self::new(Lane::from(0), String::new(), String::new())
         }
     }
 
@@ -511,6 +511,7 @@ mod tests {
     fn trace_with(attempts: Vec<AttemptTrace>, outcome: TraceOutcome) -> EvolutionTrace {
         EvolutionTrace {
             lane: Lane::from(0),
+            system_prompt: String::new(),
             base_prompt: "write a sort".to_string(),
             history: Vec::new(),
             attempts,
@@ -576,7 +577,8 @@ mod tests {
     /// `attempt` counter repeats across a transient retry.
     #[test]
     fn seq_is_dense_while_attempt_may_repeat() {
-        let mut trace = EvolutionTrace::new(Lane::from(2), "base".to_string());
+        let mut trace =
+            EvolutionTrace::new(Lane::from(2), "system".to_string(), "base".to_string());
         for attempt_number in [1, 1, 2] {
             trace.push_attempt(
                 attempt_number,

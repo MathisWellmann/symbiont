@@ -62,6 +62,13 @@ pub trait EvolutionAgent {
         prompt: &str,
         history: Vec<Message>,
     ) -> impl Future<Output = Result<AgentRun, PromptError>> + Send;
+
+    /// The agent's system prompt (preamble).
+    ///
+    /// The runtime records it in the [`EvolutionTrace`](crate::EvolutionTrace)
+    /// of every lane it runs, so an exported session shows which prompt drove
+    /// it.
+    fn system_prompt(&self) -> String;
 }
 
 /// Clear the `raw` wire body of a completion call.
@@ -100,6 +107,10 @@ impl EvolutionAgent for Agent {
                     .collect(),
             })
         }
+    }
+
+    fn system_prompt(&self) -> String {
+        self.run_spec().preamble.clone().unwrap_or_default()
     }
 }
 

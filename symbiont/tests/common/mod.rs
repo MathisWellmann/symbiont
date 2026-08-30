@@ -122,6 +122,10 @@ impl EvolutionAgent for ScriptedAgent {
             completion_calls: vec![CompletionCall::new(0, usage)],
         })
     }
+
+    fn system_prompt(&self) -> String {
+        String::new()
+    }
 }
 
 /// An [`EvolutionAgent`] that answers by matching the prompt against a routing
@@ -210,5 +214,9 @@ impl EvolutionAgent for RoutedAgent {
             usage: Usage::new(),
             completion_calls: vec![CompletionCall::new(0, Usage::new())],
         })
+    }
+
+    fn system_prompt(&self) -> String {
+        String::new()
     }
 }

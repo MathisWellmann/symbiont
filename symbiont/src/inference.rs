@@ -14,9 +14,10 @@ use std::{
 };
 
 use rig_agent::client::AgentClientExt;
-use rig_core::{
-    http_client::ReqwestClient,
-    providers::openrouter,
+use rig_core::providers::openrouter;
+use rig_reqwest::{
+    ReqwestClient,
+    reqwest,
 };
 
 use crate::{
@@ -140,12 +141,12 @@ pub async fn agent_builder(
         // Replaces rig's default backend with the same `reqwest::Client`,
         // wrapped so every outbound prompt payload is measured
         // (`observability::REQUEST_BODY_BYTES`).
-        .http_client(MeteredHttpClient::new(
-            ReqwestClient::builder()
+        .http_client(MeteredHttpClient::new(ReqwestClient(
+            reqwest::Client::builder()
                 .timeout(INFERENCE_REQUEST_TIMEOUT)
                 .build()
                 .map_err(std::io::Error::other)?,
-        ))
+        )))
         .build()?;
 
     let system_prompt = crate::system_prompt::system_prompt(opt_crate_name, doc_mode).await?;

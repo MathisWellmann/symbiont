@@ -28,7 +28,6 @@ use rig_core::{
         LazyBody,
         MultipartForm,
         Request,
-        ReqwestClient,
         Response,
         Result,
         StreamingResponse,
@@ -36,6 +35,7 @@ use rig_core::{
     },
     wasm_compat::WasmCompatSend,
 };
+use rig_reqwest::ReqwestClient;
 
 use crate::{
     inference_gate::{
@@ -54,10 +54,8 @@ use crate::{
 /// in by passing it to rig's builder:
 ///
 /// ```no_run
-/// use rig_core::{
-///     providers::openrouter,
-///     http_client::ReqwestClient,
-/// };
+/// use rig_core::providers::openrouter;
+/// use rig_reqwest::ReqwestClient;
 /// use rig_agent::client::AgentClientExt;
 /// use symbiont::MeteredHttpClient;
 ///
