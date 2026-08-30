@@ -308,6 +308,7 @@ async fn main() -> symbiont::Result<()> {
             .max_tokens(MAX_OUTPUT_TOKENS)
             .build(),
         base_url,
+        model,
     );
 
     // -- Baseline ---------------------------------------------------------

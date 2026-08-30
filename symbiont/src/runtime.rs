@@ -1040,6 +1040,7 @@ impl Runtime {
             let mut last_failed_code: Option<String> = None;
             let mut trace = EvolutionTrace::new(
                 agent.provider().to_string(),
+                agent.model().to_string(),
                 lane,
                 agent.system_prompt(),
                 base_prompt.to_string(),

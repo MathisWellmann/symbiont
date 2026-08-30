@@ -110,7 +110,7 @@ impl PortableTool for Probe {
 /// provider or the model — see [`symbiont::DshSession`] for why — so those
 /// come from the caller. Exporting is best-effort: a failure here must not
 /// take down a run whose evolution succeeded.
-fn export_trace(trace: &EvolutionTrace, model: &str, round: u32) {
+fn export_trace(trace: &EvolutionTrace, round: u32) {
     let Some(root) = sessions_root() else {
         warn!("no session store to export the round-{round} trajectory to");
         return;
@@ -120,7 +120,6 @@ fn export_trace(trace: &EvolutionTrace, model: &str, round: u32) {
     let cwd = cwd.to_string_lossy();
 
     let session = DshSession::builder()
-        .model(model)
         .cwd(&cwd)
         .session_id(format!("session-tool-calling-round{round}"))
         .build();
@@ -177,6 +176,7 @@ async fn main() -> symbiont::Result<()> {
             .default_max_turns(10)
             .build(),
         base_url,
+        model,
     );
 
     // -- Round 0: run the default (wrong) implementation ----------------
@@ -207,11 +207,11 @@ async fn main() -> symbiont::Result<()> {
                 // The failed lane is the one worth reading, so it is exported
                 // before the panic rather than lost with it.
                 let (error, trace) = error.into_parts();
-                export_trace(&trace, &model, round);
+                export_trace(&trace, round);
                 panic!("evolution failed in round {round}: {error}");
             }
         };
-        export_trace(&trace, &model, round);
+        export_trace(&trace, round);
 
         // Re-run tests with the newly hot-swapped implementation.
         (passed, total) = run_tests();

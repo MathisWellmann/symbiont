@@ -87,4 +87,8 @@ impl EvolutionAgent for MockAgent {
     fn provider(&self) -> &str {
         "mock"
     }
+
+    fn model(&self) -> &str {
+        "model"
+    }
 }

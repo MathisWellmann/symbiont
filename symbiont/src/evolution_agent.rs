@@ -71,6 +71,9 @@ pub trait EvolutionAgent {
 
     /// The base URL of the inference endpoint this agent talks to.
     fn provider(&self) -> &str;
+
+    /// The model the Agent uses.
+    fn model(&self) -> &str;
 }
 
 /// Clear the `raw` wire body of a completion call.
@@ -117,6 +120,10 @@ impl EvolutionAgent for crate::Agent {
 
     fn provider(&self) -> &str {
         &self.provider
+    }
+
+    fn model(&self) -> &str {
+        &self.model
     }
 }
 

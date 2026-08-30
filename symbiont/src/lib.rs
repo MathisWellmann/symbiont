@@ -147,15 +147,21 @@ pub use thinking_level::ThinkingLevel;
 pub struct Agent {
     pub(crate) inner: rig_agent::Agent,
     pub(crate) provider: String,
+    pub(crate) model: String,
 }
 
 impl Agent {
     /// Wrap a built [`rig_agent::Agent`] with the base URL of the provider it
     /// was built for, e.g. `"http://127.0.0.1:8321/v1"`.
-    pub fn new(inner: rig_agent::Agent, provider: impl Into<String>) -> Self {
+    pub fn new(
+        inner: rig_agent::Agent,
+        provider: impl Into<String>,
+        model: impl Into<String>,
+    ) -> Self {
         Self {
             inner,
             provider: provider.into(),
+            model: model.into(),
         }
     }
 }

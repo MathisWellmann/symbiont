@@ -625,6 +625,7 @@ async fn main() -> symbiont::Result<()> {
         .max_tokens(MAX_OUTPUT_TOKENS)
         .build(),
         base_url.clone(),
+        model.clone(),
     );
 
     println!("Sweeping {LANES} lanes at in-flight limits {LEVELS:?} against {base_url} ({model}).");

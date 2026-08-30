@@ -50,6 +50,10 @@ pub struct EvolutionTrace {
     #[getset(get = "pub(super)")]
     provider: String,
 
+    /// The model the Agent uses.
+    #[getset(get = "pub(super)")]
+    model: String,
+
     /// Lane index. It is `0` for single-prompt [`crate::Runtime::evolve`].
     #[getset(get_copy = "pub")]
     lane: Lane,
@@ -348,12 +352,14 @@ impl EvolutionTrace {
     /// Start a trace for `lane`, which begins from `base_prompt`.
     pub(crate) fn new(
         provider: String,
+        model: String,
         lane: Lane,
         system_prompt: String,
         base_prompt: String,
     ) -> Self {
         Self {
             provider,
+            model,
             lane,
             system_prompt,
             base_prompt,
@@ -375,7 +381,13 @@ impl EvolutionTrace {
             outcome: TraceOutcome::Failed {
                 reason: "failed before the lane started".to_string(),
             },
-            ..Self::new(String::new(), Lane::from(0), String::new(), String::new())
+            ..Self::new(
+                String::new(),
+                String::new(),
+                Lane::from(0),
+                String::new(),
+                String::new(),
+            )
         }
     }
 
@@ -435,6 +447,7 @@ mod tests {
     fn trace_with(attempts: Vec<AttemptTrace>, outcome: TraceOutcome) -> EvolutionTrace {
         EvolutionTrace {
             provider: "sglang".to_string(),
+            model: "Qwen/Qwen3.8-27B-FP8".to_string(),
             lane: Lane::from(0),
             system_prompt: String::new(),
             base_prompt: "write a sort".to_string(),
@@ -504,6 +517,7 @@ mod tests {
     fn seq_is_dense_while_attempt_may_repeat() {
         let mut trace = EvolutionTrace::new(
             "sglang".to_string(),
+            "Qwen/Qwen3.8-27B-FP8".to_string(),
             Lane::from(2),
             "system".to_string(),
             "base".to_string(),

@@ -646,7 +646,7 @@ fn buy_hold_curve(candles: &[Candle]) -> Vec<f64> {
 ///
 /// Exporting is best-effort. A round that evolved a better strategy must not
 /// fail because a session file could not be written.
-fn export_trace(trace: &EvolutionTrace, model: &str, round: usize) {
+fn export_trace(trace: &EvolutionTrace, round: usize) {
     let Some(root) = sessions_root() else {
         warn!("no session store to export the round-{round} trajectory to");
         return;
@@ -655,7 +655,7 @@ fn export_trace(trace: &EvolutionTrace, model: &str, round: usize) {
     let cwd = std::env::current_dir().unwrap_or_default();
     let cwd = cwd.to_string_lossy();
 
-    let session = DshSession::builder().model(model).cwd(&cwd).build();
+    let session = DshSession::builder().cwd(&cwd).build();
 
     match symbiont::export_dsh_session(trace, &session, &root) {
         Ok(path) => println!("Round {round} trajectory: {}", path.display()),
@@ -727,6 +727,7 @@ async fn main() -> symbiont::Result<()> {
         .max_tokens(4096)
         .build(),
         base_url,
+        model,
     );
 
     let fn_source = runtime.fn_full_sources();
@@ -771,14 +772,14 @@ async fn main() -> symbiont::Result<()> {
         let prompt = build_prompt(&task, &last_code, &result, top.first());
         let rev = match runtime.evolve(&agent, &prompt).await {
             Ok(info) => {
-                export_trace(info.trace(), &model, round);
+                export_trace(info.trace(), round);
                 info.revision()
             }
             Err(e) => {
                 // The round that failed is the one worth reading, so its lane
                 // is exported before the loop moves on without it.
                 let (e, trace) = e.into_parts();
-                export_trace(&trace, &model, round);
+                export_trace(&trace, round);
                 warn!("Evolution failed: {e} — retrying next round.");
                 continue;
             }
