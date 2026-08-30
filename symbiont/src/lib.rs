@@ -27,7 +27,6 @@ mod evolve_failure;
 mod evolve_info;
 mod inference;
 mod init_tracing;
-mod metered_http;
 pub mod observability;
 mod parser;
 mod profile;
@@ -88,13 +87,13 @@ pub use evolve_info::{
 pub use inference::{
     DOC_TOOLS_MAX_TURNS,
     INFERENCE_REQUEST_TIMEOUT,
+    MeteredHttpClient,
     agent_builder,
     agent_builder_from_env,
     init_agent,
     init_agent_from_env,
 };
 pub use init_tracing::init_tracing;
-pub use metered_http::MeteredHttpClient;
 pub use profile::Profile;
 pub use revision::{
     Revision,
