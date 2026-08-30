@@ -134,7 +134,7 @@ impl Log {
         // The header is log-only and must sit inside an open turn. It does not
         // change across a lane, so the first turn is the only one to carry it.
         if turn == 1 {
-            self.request_header(session);
+            self.request_header(trace, session);
         }
 
         let messages = attempt
@@ -240,7 +240,7 @@ impl Log {
         self.step_start(turn, 1);
         if turn == 1 {
             // A trace with no attempt at all still needs its header.
-            self.request_header(session);
+            self.request_header(trace, session);
         }
         self.session_title(trace);
         self.notice(&outcome_notice(trace));
@@ -288,7 +288,7 @@ impl Log {
     }
 
     /// Write the request header and, when known, the route's context window.
-    fn request_header(&mut self, session: &DshSession<'_>) {
+    fn request_header(&mut self, trace: &EvolutionTrace, session: &DshSession<'_>) {
         let event = self.event(RequestHeaderData {
             header: EpochHeader {
                 config: LlmCallConfig {
@@ -300,7 +300,7 @@ impl Log {
                     stop: None,
                 },
                 adapter_defaults: None,
-                system: Some(session.system_prompt().to_string()),
+                system: Some(trace.system_prompt().to_string()),
                 // The tool schemas live on the caller's agent, not in the
                 // trace, so the header claims none rather than an empty set.
                 tools: None,

@@ -195,10 +195,7 @@ mod tests {
             std::env::temp_dir().join(format!("symbiont-dsh-export-frames-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
 
-        let session = DshSession::builder()
-            .system_prompt("you write rust")
-            .cwd("/tmp/project")
-            .build();
+        let session = DshSession::builder().cwd("/tmp/project").build();
         let path = export_dsh_session(&sample_trace(), &session, &root).expect("the export writes");
         let artifact = std::fs::read(&path).expect("the artifact is readable");
 
