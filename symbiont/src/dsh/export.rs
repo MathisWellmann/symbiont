@@ -135,8 +135,7 @@ fn fresh_nonce() -> u64 {
 /// Project `trace` onto the DeepSeek Harness session records, in log order.
 ///
 /// The first element is always the [`LogLine::Session`] header. This is the
-/// structured form of what [`write_dsh_session`] serializes; take it when you
-/// want to inspect, filter or splice the records rather than write them.
+/// structured form of what [`write_dsh_session`] serializes;
 ///
 /// The projection is **lossy on purpose**. The harness has no vocabulary for
 /// a [`crate::LadderEvent`], a [`crate::StageTimings`] or a
@@ -144,7 +143,7 @@ fn fresh_nonce() -> u64 {
 /// reads. The [`EvolutionTrace`] stays the machine-readable record; see the
 /// [module docs](crate::dsh) for the full mapping.
 #[must_use]
-pub fn dsh_lines(trace: &EvolutionTrace, session: &DshSession<'_>) -> Vec<LogLine> {
+fn dsh_lines(trace: &EvolutionTrace, session: &DshSession<'_>) -> Vec<LogLine> {
     let mut log = Log::new(epoch_millis(session.started_at));
 
     log.header(trace, session);
