@@ -74,11 +74,9 @@ use crate::{
         Error,
         Result,
     },
-    inference_gate::{
+    inference::{
         InferenceGate,
         Priority,
-    },
-    inference_utils::{
         is_context_size_error,
         is_transient_http_error,
     },

@@ -38,7 +38,7 @@ use rig_core::{
 use rig_reqwest::ReqwestClient;
 
 use crate::{
-    inference_gate::{
+    inference::{
         GatePermit,
         GateScope,
     },
@@ -236,7 +236,7 @@ mod tests {
     use rig_core::http_client::NoBody;
 
     use super::*;
-    use crate::inference_gate::{
+    use crate::inference::{
         InferenceGate,
         Priority,
     };
