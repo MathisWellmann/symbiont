@@ -27,6 +27,7 @@ mod evolve_failure;
 mod evolve_info;
 mod inference;
 mod inference_gate;
+mod inference_utils;
 mod init_tracing;
 mod metered_http;
 pub mod observability;
@@ -165,6 +166,8 @@ pub type Agent = rig_agent::Agent;
 ///   for a tool [`DocMode`](crate::DocMode), [`ApiIndexTool`] and
 ///   [`ApiDocTool`] over a [`DocIndex`] on its own tool server.
 pub type AgentBuilder = rig_agent::AgentBuilder<rig_agent::agent::WithBuilderTools>;
+
+pub(crate) const EXPECT_WRITE: &str = "Can always write to a String";
 
 /// Internal module for macro-generated dispatch code.
 ///
