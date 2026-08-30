@@ -195,7 +195,7 @@ impl Log {
                             .and_then(|run| run.completion_calls().get(call_index))
                             .and_then(|call| token_usage(&call.usage));
                         call_index += 1;
-                        self.assistant_message(turn, step, session, blocks, usage);
+                        self.assistant_message(turn, step, trace, session, blocks, usage);
 
                         for item in content.iter() {
                             if let AssistantContent::ToolCall(call) = item {
@@ -288,7 +288,7 @@ impl Log {
         let event = self.event(RequestHeaderData {
             header: EpochHeader {
                 config: LlmCallConfig {
-                    provider: session.provider().to_string(),
+                    provider: trace.provider().to_string(),
                     model: session.model().to_string(),
                     reasoning_effort: None,
                     temperature: None,
@@ -307,7 +307,7 @@ impl Log {
 
         if let Some(window) = session.context_window() {
             let event = self.event(RequestContextData {
-                provider: session.provider().to_string(),
+                provider: trace.provider().to_string(),
                 model: session.model().to_string(),
                 context_window: Some(window),
             });
@@ -353,6 +353,7 @@ impl Log {
         &mut self,
         turn: u64,
         step: u64,
+        trace: &EvolutionTrace,
         session: &DshSession<'_>,
         content: Vec<ContentBlock>,
         usage: Option<TokenUsage>,
@@ -360,7 +361,7 @@ impl Log {
         let message = self.message(
             Role::Assistant,
             content,
-            MessageSource::model(session.provider(), session.model()),
+            MessageSource::model(&trace.provider(), session.model()),
         );
         // `usage` is absent, not zeroed, when the provider reported no
         // accounting: the harness reads a missing `usage` as "unreported" and

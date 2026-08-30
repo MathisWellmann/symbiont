@@ -46,6 +46,10 @@ use crate::{
 /// [`crate::Runtime::evolve`]).
 #[derive(Debug, Clone, Serialize, Deserialize, Getters, CopyGetters, Setters)]
 pub struct EvolutionTrace {
+    /// Provider route id, for the header's call config.
+    #[getset(get = "pub(super)")]
+    provider: String,
+
     /// Lane index. It is `0` for single-prompt [`crate::Runtime::evolve`].
     #[getset(get_copy = "pub")]
     lane: Lane,
@@ -342,8 +346,14 @@ pub enum TraceOutcome {
 
 impl EvolutionTrace {
     /// Start a trace for `lane`, which begins from `base_prompt`.
-    pub(crate) fn new(lane: Lane, system_prompt: String, base_prompt: String) -> Self {
+    pub(crate) fn new(
+        provider: String,
+        lane: Lane,
+        system_prompt: String,
+        base_prompt: String,
+    ) -> Self {
         Self {
+            provider,
             lane,
             system_prompt,
             base_prompt,
@@ -365,7 +375,7 @@ impl EvolutionTrace {
             outcome: TraceOutcome::Failed {
                 reason: "failed before the lane started".to_string(),
             },
-            ..Self::new(Lane::from(0), String::new(), String::new())
+            ..Self::new(String::new(), Lane::from(0), String::new(), String::new())
         }
     }
 
@@ -424,6 +434,7 @@ mod tests {
 
     fn trace_with(attempts: Vec<AttemptTrace>, outcome: TraceOutcome) -> EvolutionTrace {
         EvolutionTrace {
+            provider: "sglang".to_string(),
             lane: Lane::from(0),
             system_prompt: String::new(),
             base_prompt: "write a sort".to_string(),
@@ -491,8 +502,12 @@ mod tests {
     /// `attempt` counter repeats across a transient retry.
     #[test]
     fn seq_is_dense_while_attempt_may_repeat() {
-        let mut trace =
-            EvolutionTrace::new(Lane::from(2), "system".to_string(), "base".to_string());
+        let mut trace = EvolutionTrace::new(
+            "sglang".to_string(),
+            Lane::from(2),
+            "system".to_string(),
+            "base".to_string(),
+        );
         for attempt_number in [1, 1, 2] {
             trace.push_attempt(
                 attempt_number,

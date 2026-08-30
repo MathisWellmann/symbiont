@@ -1038,8 +1038,12 @@ impl Runtime {
             // Code of the most recent rejected attempt, used to detect an
             // agent that echoes the same broken code back verbatim.
             let mut last_failed_code: Option<String> = None;
-            let mut trace =
-                EvolutionTrace::new(lane, agent.system_prompt(), base_prompt.to_string());
+            let mut trace = EvolutionTrace::new(
+                agent.provider(),
+                lane,
+                agent.system_prompt(),
+                base_prompt.to_string(),
+            );
 
             // Finish the lane. Move the transcript into the trace and set the
             // outcome. Every exit path calls this.

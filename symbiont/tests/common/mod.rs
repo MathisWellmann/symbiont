@@ -126,6 +126,10 @@ impl EvolutionAgent for ScriptedAgent {
     fn system_prompt(&self) -> String {
         String::new()
     }
+
+    fn provider(&self) -> String {
+        "scripted".to_string()
+    }
 }
 
 /// An [`EvolutionAgent`] that answers by matching the prompt against a routing
@@ -218,5 +222,9 @@ impl EvolutionAgent for RoutedAgent {
 
     fn system_prompt(&self) -> String {
         String::new()
+    }
+
+    fn provider(&self) -> String {
+        "routed".to_string()
     }
 }

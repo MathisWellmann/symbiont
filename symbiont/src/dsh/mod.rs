@@ -212,6 +212,7 @@ pub(super) mod tests {
         ];
 
         let mut trace = EvolutionTrace::new(
+            "sglang".to_string(),
             Lane::from(3),
             "you write rust".to_string(),
             "write a sort".to_string(),
@@ -261,7 +262,6 @@ pub(super) mod tests {
 
     pub(super) fn sample_session() -> DshSession<'static> {
         DshSession::builder()
-            .provider("local")
             .model("kimi")
             .cwd("/tmp/project")
             .started_at(UNIX_EPOCH + Duration::from_millis(1_700_000_000_000))

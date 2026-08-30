@@ -297,10 +297,13 @@ async fn main() -> symbiont::Result<()> {
     // model that starts rambling — chat completions generate until the context
     // runs out unless told otherwise — holds up the whole round while its
     // siblings sit finished. Ample for these implementations.
-    let agent = symbiont::agent_builder_from_env(None, DocMode::default(), &model, false)
-        .await?
-        .max_tokens(MAX_OUTPUT_TOKENS)
-        .build();
+    let agent = symbiont::Agent::new(
+        symbiont::agent_builder_from_env(None, DocMode::default(), &model, false)
+            .await?
+            .max_tokens(MAX_OUTPUT_TOKENS)
+            .build(),
+        std::env::var("BASE_URL").unwrap_or_default(),
+    );
 
     // -- Baseline ---------------------------------------------------------
     println!("\n=== Baseline: the default trial-division implementation ===");

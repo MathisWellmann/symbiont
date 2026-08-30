@@ -137,8 +137,37 @@ pub use system_prompt::{
 };
 pub use thinking_level::ThinkingLevel;
 
-/// type alias for the return type of `init_agent`
-pub type Agent = rig_agent::Agent;
+/// The agent the runtime drives: a [`rig_agent::Agent`] plus the base URL of
+/// the provider it talks to, so the runtime can name the provider in the
+/// [`EvolutionTrace`](crate::EvolutionTrace) of every lane.
+///
+/// [`init_agent`] attaches the base URL automatically. A host that
+/// customizes the agent through [`agent_builder`] wraps the built agent:
+/// `Agent::new(builder.tool(..).build(), base_url)`.
+#[derive(Clone)]
+pub struct Agent {
+    pub(crate) inner: rig_agent::Agent,
+    pub(crate) provider: String,
+}
+
+impl Agent {
+    /// Wrap a built [`rig_agent::Agent`] with the base URL of the provider it
+    /// was built for, e.g. `"http://127.0.0.1:8321/v1"`.
+    pub fn new(inner: rig_agent::Agent, provider: impl Into<String>) -> Self {
+        Self {
+            inner,
+            provider: provider.into(),
+        }
+    }
+}
+
+impl std::ops::Deref for Agent {
+    type Target = rig_agent::Agent;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
 
 /// Type alias for the pre-configured agent builder.
 ///
@@ -146,12 +175,13 @@ pub type Agent = rig_agent::Agent;
 /// [`DocMode`](crate::DocMode) with tools registers `api_index` and
 /// `api_doc` on it, and the other modes carry an empty tool set. Register
 /// your own tools on it with rig's builder API before calling `.build()`,
-/// e.g. `.tool(MyTool).default_max_turns(10).build()`.
+/// e.g. `.tool(MyTool).default_max_turns(10).build()`, then wrap the result
+/// with [`Agent::new`](crate::Agent::new), passing the same `base_url`.
 ///
 /// The state cannot depend on the [`DocMode`](crate::DocMode):
 /// [`agent_builder`] has one return type, and registering a tool is a
 /// one-way typestate step in rig. The state is therefore fixed for every
-/// mode. An empty tool set builds the same [`Agent`] that rig's
+/// mode. An empty tool set builds the same rig agent that rig's
 /// `NoToolConfig` state builds, so only the builder API differs:
 ///
 /// - Before 0.29 this alias was `rig_agent::AgentBuilder<NoToolConfig>`. Code

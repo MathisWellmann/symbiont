@@ -113,6 +113,9 @@ pub const DOC_TOOLS_MAX_TURNS: usize = 8;
 /// `0` allows only a single tool round-trip and returns `MaxTurnsError` if
 /// the model chains tool calls.
 ///
+/// The builder builds a bare `rig_agent::Agent`. Before handing it to the
+/// runtime, wrap it with [`crate::Agent::new`], passing the same `base_url`.
+///
 /// # Arguments:
 /// - `opt_crate_name`: The crate whose API the evolved code can use, usually
 ///   `Some(env!("CARGO_PKG_NAME"))`. With `None`, no host API is documented
@@ -217,11 +220,10 @@ pub async fn init_agent(
     model: &str,
     thinking: impl Into<ThinkingLevel>,
 ) -> Result<crate::Agent> {
-    Ok(
-        agent_builder(opt_crate_name, doc_mode, base_url, api_key, model, thinking)
-            .await?
-            .build(),
-    )
+    let agent = agent_builder(opt_crate_name, doc_mode, base_url, api_key, model, thinking)
+        .await?
+        .build();
+    Ok(crate::Agent::new(agent, base_url))
 }
 
 /// [`init_agent`] with the endpoint and credentials read from the
@@ -232,9 +234,30 @@ pub async fn init_agent_from_env(
     model: &str,
     thinking: impl Into<ThinkingLevel>,
 ) -> Result<crate::Agent> {
-    Ok(
-        agent_builder_from_env(opt_crate_name, doc_mode, model, thinking)
-            .await?
-            .build(),
-    )
+    let base_url = var("BASE_URL").unwrap_or_default();
+    let agent = agent_builder_from_env(opt_crate_name, doc_mode, model, thinking)
+        .await?
+        .build();
+    Ok(crate::Agent::new(agent, base_url))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::EvolutionAgent;
+
+    #[tokio::test]
+    async fn init_agent_carries_the_base_url_as_provider() {
+        let agent = init_agent(
+            None,
+            DocMode::default(),
+            "http://127.0.0.1:8321/v1",
+            "",
+            "model",
+            ThinkingLevel::Disabled,
+        )
+        .await
+        .expect("building a local agent needs no network");
+        assert_eq!(agent.provider(), "http://127.0.0.1:8321/v1");
+    }
 }
