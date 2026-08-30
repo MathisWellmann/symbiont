@@ -54,10 +54,6 @@ use crate::{
             TurnStartData,
         },
     },
-    evolution_trace::{
-        render_ladder,
-        render_stages,
-    },
 };
 
 /// The plugin name that every harness note of this crate is attributed to.
@@ -556,9 +552,9 @@ fn attempt_notice(attempt: &AttemptTrace) -> String {
         attempt.attempt(),
         attempt.seq(),
         attempt.duration(),
-        render_ladder(attempt.ladder()),
+        attempt.ladder().render_ladder(),
     );
-    render_stages(&mut out, attempt.stages());
+    attempt.stages().render_stages(&mut out);
     out
 }
 
