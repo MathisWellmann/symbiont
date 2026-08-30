@@ -62,7 +62,7 @@ async fn evolve_reports_usage_including_rejected_attempts() {
     assert_eq!(agent.calls(), 2, "one rejected attempt before the winner");
     assert_eq!(
         info.usage(),
-        &usage(2_500, 250),
+        usage(2_500, 250),
         "usage must cover the rejected attempt as well as the winner"
     );
 }
