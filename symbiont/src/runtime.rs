@@ -44,10 +44,7 @@ use metrics::{
 use minstant::Instant;
 use owo_colors::OwoColorize;
 use prettyplease::unparse;
-use rig_core::{
-    completion::Usage,
-    message::Message,
-};
+use rig_core::message::Message;
 use tracing::{
     debug,
     info,
@@ -374,8 +371,6 @@ impl Runtime {
     /// On success, returns the [`Revision`] the new implementation was
     /// registered under. The dispatch pointers are left alone: publishing is
     /// the caller's decision, because batch lanes register without activating.
-    /// The run's token usage is added to `usage` either way, so a lane's
-    /// total includes attempts that were later rejected.
     ///
     /// `history` is the whole transcript of the lane. Only
     /// `history[history_base..]` goes to the agent. A context or repeat reset
@@ -397,7 +392,6 @@ impl Runtime {
         prompt: &str,
         history: &mut Vec<Message>,
         history_base: usize,
-        usage: &mut Usage,
         run_out: &mut Option<AgentRun>,
         stages: &mut StageTimings,
     ) -> Result<Revision>
@@ -425,9 +419,6 @@ impl Runtime {
                 return Err(err);
             }
         };
-        // Counted even if a later step rejects the result: a rejected
-        // attempt is still a paid-for LLM run.
-        *usage += run.usage;
         counter!(LLM_RUNS, "outcome" => "ok").increment(1);
         counter!(LLM_TOKENS, "kind" => "input").increment(run.usage.input_tokens);
         counter!(LLM_TOKENS, "kind" => "output").increment(run.usage.output_tokens);
@@ -1045,7 +1036,6 @@ impl Runtime {
             let mut history_base: usize = 0;
             let mut attempts: usize = 0;
             let mut context_resets: usize = 0;
-            let mut usage = Usage::new();
             let mut transient_attempts: usize = 0;
             // Code of the most recent rejected attempt, used to detect an
             // agent that echoes the same broken code back verbatim.
@@ -1105,7 +1095,6 @@ impl Runtime {
                             &prompt,
                             &mut history,
                             history_base,
-                            &mut usage,
                             &mut run_out,
                             &mut stages,
                         ),
@@ -1148,7 +1137,6 @@ impl Runtime {
                         );
                         return Ok(EvolveInfo::new(
                             revision,
-                            usage,
                             finish!(TraceOutcome::Registered { revision }),
                         ));
                     }

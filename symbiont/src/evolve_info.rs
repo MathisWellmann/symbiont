@@ -51,10 +51,6 @@ pub struct EvolveInfo {
     #[getset(get_copy = "pub")]
     revision: Revision,
 
-    /// The token usage of the LLM requests of the call.
-    #[getset(get = "pub")]
-    usage: Usage,
-
     /// The full trajectory of the lane that produced this revision. It holds
     /// every prompt and nudge, every response and tool exchange, every
     /// recovery decision of the harness, and the timings of each stage.
@@ -64,12 +60,8 @@ pub struct EvolveInfo {
 
 impl EvolveInfo {
     /// Create a new instance.
-    pub(crate) fn new(revision: Revision, usage: Usage, trace: EvolutionTrace) -> Self {
-        Self {
-            revision,
-            usage,
-            trace,
-        }
+    pub(crate) fn new(revision: Revision, trace: EvolutionTrace) -> Self {
+        Self { revision, trace }
     }
 
     /// Take the trajectory. This consumes the info.
@@ -82,5 +74,10 @@ impl EvolveInfo {
     #[inline(always)]
     pub fn lane(&self) -> Lane {
         self.trace.lane()
+    }
+
+    /// The token usage information.
+    pub fn usage(&self) -> Usage {
+        self.trace.usage()
     }
 }
