@@ -215,7 +215,7 @@ pub(super) mod tests {
 
         let mut trace = EvolutionTrace::new(
             Lane::from(3),
-            "system".to_string(),
+            "you write rust".to_string(),
             "write a sort".to_string(),
         );
         trace.push_attempt(
@@ -263,7 +263,6 @@ pub(super) mod tests {
 
     pub(super) fn sample_session() -> DshSession<'static> {
         DshSession::builder()
-            .system_prompt("you write rust")
             .provider("local")
             .model("kimi")
             .cwd("/tmp/project")

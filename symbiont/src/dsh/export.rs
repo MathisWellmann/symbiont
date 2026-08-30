@@ -39,11 +39,6 @@ use crate::{
 /// does not carry. See the [module docs](crate::dsh) for why each one is here.
 #[derive(Debug, Clone, TypedBuilder, Getters, CopyGetters)]
 pub struct DshSession<'a> {
-    /// The rendered system prompt, shown in the session's request header.
-    /// Pass what [`crate::system_prompt`] returned for the run.
-    #[getset(get_copy = "pub(super)")]
-    system_prompt: &'a str,
-
     /// Provider route id, for the header's call config.
     #[builder(default = "symbiont")]
     #[getset(get_copy = "pub(super)")]

@@ -645,7 +645,7 @@ fn buy_hold_curve(candles: &[Candle]) -> Vec<f64> {
 ///
 /// Exporting is best-effort. A round that evolved a better strategy must not
 /// fail because a session file could not be written.
-fn export_trace(trace: &EvolutionTrace, system_prompt: &str, model: &str, round: usize) {
+fn export_trace(trace: &EvolutionTrace, model: &str, round: usize) {
     let Some(root) = sessions_root() else {
         warn!("no session store to export the round-{round} trajectory to");
         return;
@@ -655,7 +655,6 @@ fn export_trace(trace: &EvolutionTrace, system_prompt: &str, model: &str, round:
     let cwd = cwd.to_string_lossy();
 
     let session = DshSession::builder()
-        .system_prompt(system_prompt)
         .provider("openrouter")
         .model(model)
         .cwd(&cwd)
@@ -722,12 +721,6 @@ async fn main() -> symbiont::Result<()> {
             .max_tokens(4096)
             .build();
 
-    // The same preamble `agent_builder_from_env` put on the agent, built from
-    // the same crate and doc mode. A trace omits it by design — it is
-    // identical for every attempt of every round — so the exporter takes it
-    // from here.
-    let system_prompt = symbiont::system_prompt(Some(host_crate), DocMode::default()).await?;
-
     let fn_source = runtime.fn_full_sources();
     let fn_prelude = runtime.fn_prelude();
     let task = format!(
@@ -770,14 +763,14 @@ async fn main() -> symbiont::Result<()> {
         let prompt = build_prompt(&task, &last_code, &result, top.first());
         let rev = match runtime.evolve(&agent, &prompt).await {
             Ok(info) => {
-                export_trace(info.trace(), &system_prompt, &model, round);
+                export_trace(info.trace(), &model, round);
                 info.revision()
             }
             Err(e) => {
                 // The round that failed is the one worth reading, so its lane
                 // is exported before the loop moves on without it.
                 let (e, trace) = e.into_parts();
-                export_trace(&trace, &system_prompt, &model, round);
+                export_trace(&trace, &model, round);
                 warn!("Evolution failed: {e} — retrying next round.");
                 continue;
             }

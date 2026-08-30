@@ -107,7 +107,7 @@ impl PortableTool for Probe {
 /// provider or the model — see [`symbiont::DshSession`] for why — so those
 /// come from the caller. Exporting is best-effort: a failure here must not
 /// take down a run whose evolution succeeded.
-fn export_trace(trace: &EvolutionTrace, system_prompt: &str, model: &str, round: u32) {
+fn export_trace(trace: &EvolutionTrace, model: &str, round: u32) {
     let Some(root) = sessions_root() else {
         warn!("no session store to export the round-{round} trajectory to");
         return;
@@ -117,7 +117,6 @@ fn export_trace(trace: &EvolutionTrace, system_prompt: &str, model: &str, round:
     let cwd = cwd.to_string_lossy();
 
     let session = DshSession::builder()
-        .system_prompt(system_prompt)
         .provider("local")
         .model(model)
         .cwd(&cwd)
@@ -173,11 +172,6 @@ async fn main() -> symbiont::Result<()> {
         .default_max_turns(10)
         .build();
 
-    // The same preamble `agent_builder_from_env` put on the agent. A trace
-    // omits it by design — it is identical for every attempt of every round —
-    // so the exporter takes it from here.
-    let system_prompt = symbiont::system_prompt(None, DocMode::default()).await?;
-
     // -- Round 0: run the default (wrong) implementation ----------------
     println!("\n=== Round 0: default implementation ===");
     let (mut passed, mut total) = run_tests();
@@ -206,11 +200,11 @@ async fn main() -> symbiont::Result<()> {
                 // The failed lane is the one worth reading, so it is exported
                 // before the panic rather than lost with it.
                 let (error, trace) = error.into_parts();
-                export_trace(&trace, &system_prompt, &model, round);
+                export_trace(&trace, &model, round);
                 panic!("evolution failed in round {round}: {error}");
             }
         };
-        export_trace(&trace, &system_prompt, &model, round);
+        export_trace(&trace, &model, round);
 
         // Re-run tests with the newly hot-swapped implementation.
         (passed, total) = run_tests();
