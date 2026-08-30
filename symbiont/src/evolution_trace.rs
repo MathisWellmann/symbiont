@@ -28,11 +28,7 @@ use getset::{
 use rig_agent::agent::CompletionCall;
 use rig_core::{
     completion::Usage,
-    message::{
-        AssistantContent,
-        Message,
-        UserContent,
-    },
+    message::Message,
 };
 use serde::{
     Deserialize,
@@ -357,93 +353,6 @@ impl EvolutionTrace {
             .map(|run| run.completion_calls.len())
             .sum()
     }
-
-    /// A transcript for a human reader. It gives one block per attempt with
-    /// the prompt, the tool exchanges, the response, the ladder decision, the
-    /// token usage and the stage timings.
-    ///
-    /// For a machine reader, use [`Self::to_json_pretty`] or
-    /// [`Self::write_jsonl`].
-    #[must_use]
-    pub fn render(&self) -> String {
-        let mut out = String::new();
-        let _ = writeln!(
-            out,
-            "lane {} — {} attempt(s), {:?}",
-            self.lane,
-            self.attempts.len(),
-            self.duration,
-        );
-        let _ = writeln!(out, "base prompt:\n{}\n", self.base_prompt);
-
-        for attempt in &self.attempts {
-            let _ = writeln!(
-                out,
-                "── attempt {} (seq {}, {:?}) ──",
-                attempt.attempt, attempt.seq, attempt.duration,
-            );
-            let _ = writeln!(out, "prompt:\n{}", attempt.prompt);
-
-            if let Some(run) = &attempt.run {
-                for message in self
-                    .history
-                    .get(run.produced.clone())
-                    .unwrap_or_default()
-                    .iter()
-                {
-                    render_tool_activity(&mut out, message);
-                }
-                let _ = writeln!(out, "response:\n{}", run.response);
-                let _ = writeln!(
-                    out,
-                    "usage: {} in / {} out over {} request(s)",
-                    run.usage.input_tokens,
-                    run.usage.output_tokens,
-                    run.completion_calls.len(),
-                );
-            } else {
-                let _ = writeln!(out, "(no agent run: the inference call itself failed)");
-            }
-
-            render_stages(&mut out, &attempt.stages);
-            let _ = writeln!(out, "ladder: {}\n", render_ladder(&attempt.ladder));
-        }
-
-        let _ = match &self.outcome {
-            TraceOutcome::Registered { revision } => {
-                writeln!(out, "outcome: registered revision {revision}")
-            }
-            TraceOutcome::Failed { reason } => writeln!(out, "outcome: failed — {reason}"),
-        };
-        out
-    }
-}
-
-/// Show the tool calls and tool results that one transcript message carries.
-fn render_tool_activity(out: &mut String, message: &Message) {
-    match message {
-        Message::Assistant { content, .. } => {
-            for item in content.iter() {
-                if let AssistantContent::ToolCall(call) = item {
-                    let _ = writeln!(
-                        out,
-                        "  → tool call {}({})",
-                        call.function.name, call.function.arguments,
-                    );
-                }
-            }
-        }
-        Message::User { content } => {
-            for item in content.iter() {
-                if let UserContent::ToolResult(result) = item {
-                    let _ = writeln!(out, "  ← tool result from {}", result.name);
-                }
-            }
-        }
-        // The preamble travels as the agent's own configuration, not as a
-        // transcript turn. The module docs give the reason it is not traced.
-        Message::System { .. } => {}
-    }
 }
 
 /// Show the stage breakdown of one attempt.
@@ -597,29 +506,5 @@ mod tests {
         let attempts: Vec<usize> = trace.attempts.iter().map(|a| a.attempt).collect();
         assert_eq!(seqs, vec![0, 1, 2]);
         assert_eq!(attempts, vec![1, 1, 2]);
-    }
-
-    /// `render` reports an attempt that never got to the model. It does not
-    /// show an empty block for it.
-    #[test]
-    fn render_marks_attempts_without_a_run() {
-        let trace = trace_with(
-            vec![AttemptTrace {
-                ladder: LadderEvent::TransientRetry {
-                    backoff: Duration::from_secs(2),
-                    cause: "503 Service Unavailable\nretry later".to_string(),
-                },
-                ..attempt(0, 1, None)
-            }],
-            TraceOutcome::Failed {
-                reason: "gave up".to_string(),
-            },
-        );
-
-        let rendered = trace.render();
-        assert!(rendered.contains("no agent run"));
-        assert!(rendered.contains("transient retry"));
-        // Multi-line causes collapse to their first line in the summary.
-        assert!(!rendered.contains("retry later"));
     }
 }
