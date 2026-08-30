@@ -56,7 +56,6 @@ pub use doc_tools::{
 pub use dsh::export_dsh_session;
 pub use dsh::{
     DshSession,
-    dsh_lines,
     write_dsh_session,
 };
 pub use dylib_config::DylibConfig;

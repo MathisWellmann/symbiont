@@ -86,7 +86,6 @@ use std::time::Duration;
 
 pub use export::{
     DshSession,
-    dsh_lines,
     write_dsh_session,
 };
 use rig_core::completion::Usage;
