@@ -231,7 +231,6 @@ pub async fn init_agent(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::EvolutionAgent;
 
     #[tokio::test]
     async fn init_agent_carries_the_base_url_as_provider() {

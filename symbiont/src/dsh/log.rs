@@ -288,15 +288,15 @@ impl Log {
         let event = self.event(RequestHeaderData {
             header: EpochHeader {
                 config: LlmCallConfig {
-                    provider: trace.provider().to_string(),
-                    model: trace.model().to_string(),
+                    provider: trace.provider().clone(),
+                    model: trace.model().clone(),
                     reasoning_effort: None,
                     temperature: None,
                     max_tokens: None,
                     stop: None,
                 },
                 adapter_defaults: None,
-                system: Some(trace.system_prompt().to_string()),
+                system: Some(trace.system_prompt().clone()),
                 // The tool schemas live on the caller's agent, not in the
                 // trace, so the header claims none rather than an empty set.
                 tools: None,
@@ -307,8 +307,8 @@ impl Log {
 
         if let Some(window) = session.context_window() {
             let event = self.event(RequestContextData {
-                provider: trace.provider().to_string(),
-                model: trace.model().to_string(),
+                provider: trace.provider().clone(),
+                model: trace.model().clone(),
                 context_window: Some(window),
             });
             self.lines.push(LogLine::RequestContext(event));
@@ -360,7 +360,7 @@ impl Log {
         let message = self.message(
             Role::Assistant,
             content,
-            MessageSource::model(&trace.provider(), trace.model()),
+            MessageSource::model(trace.provider(), trace.model()),
         );
         // `usage` is absent, not zeroed, when the provider reported no
         // accounting: the harness reads a missing `usage` as "unreported" and

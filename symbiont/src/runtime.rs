@@ -380,10 +380,6 @@ impl Runtime {
     /// keeps what it recorded before a failure. `run_out` stays `None` only
     /// when the agent run itself failed. That is how the caller separates an
     /// attempt that never got to the model from one the pipeline rejected.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "One attempt's inputs, its two accumulators and its two trace out-params; bundling them would only move the same fields behind a single-use struct"
-    )]
     async fn evolve_no_backpressure<AgentT>(
         &self,
         agent: &AgentT,
