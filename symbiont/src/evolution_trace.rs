@@ -417,47 +417,6 @@ impl EvolutionTrace {
         };
         out
     }
-
-    /// Write the trace as JSON Lines.
-    ///
-    /// The first line is a `trace` header. It carries the lane metadata, the
-    /// full transcript and the outcome. Each line after it is one `attempt`
-    /// object that points into the transcript by index range. You can append
-    /// more traces to the same file and the file stays valid JSONL. Session
-    /// logs of other agent harnesses use this shape.
-    ///
-    /// # Errors
-    ///
-    /// Returns the write errors of `w`. Also returns serialization errors,
-    /// which indicate a bug, because every field is plain data.
-    pub fn write_jsonl<W: std::io::Write>(&self, mut w: W) -> Result<(), std::io::Error> {
-        let header = serde_json::json!({
-            "type": "trace",
-            "lane": self.lane,
-            "base_prompt": self.base_prompt,
-            "history": self.history,
-            "outcome": self.outcome,
-            "duration": self.duration,
-        });
-        writeln!(w, "{}", serde_json::to_string(&header)?)?;
-
-        for attempt in &self.attempts {
-            let mut line = serde_json::to_value(attempt).map_err(std::io::Error::other)?;
-            if let Some(object) = line.as_object_mut() {
-                object.insert("type".to_string(), serde_json::json!("attempt"));
-                object.insert("lane".to_string(), serde_json::json!(self.lane));
-            }
-            writeln!(w, "{}", serde_json::to_string(&line)?)?;
-        }
-        Ok(())
-    }
-
-    /// The whole trace as one JSON document, in the indented form.
-    #[must_use]
-    pub fn to_json_pretty(&self) -> String {
-        serde_json::to_string_pretty(self)
-            .expect("an `EvolutionTrace` is plain data and always serializes")
-    }
 }
 
 /// Show the tool calls and tool results that one transcript message carries.
@@ -636,76 +595,6 @@ mod tests {
         let attempts: Vec<usize> = trace.attempts.iter().map(|a| a.attempt).collect();
         assert_eq!(seqs, vec![0, 1, 2]);
         assert_eq!(attempts, vec![1, 1, 2]);
-    }
-
-    /// The trace goes through serde and comes back unchanged. A host can thus
-    /// read a persisted trace back for offline analysis.
-    #[test]
-    fn serde_round_trip() {
-        let mut trace = trace_with(
-            vec![AttemptTrace {
-                stages: StageTimings {
-                    llm: Some(Duration::from_millis(120)),
-                    parse_validate: Some(Duration::from_micros(90)),
-                    build: Some(BuildRecord::Deduped {
-                        slot_wait: Duration::from_millis(3),
-                        revision: Revision::new(7),
-                    }),
-                },
-                ladder: LadderEvent::SelfHeal {
-                    kind: "compile".to_string(),
-                    diagnostics: "E0277\nsecond line".to_string(),
-                },
-                ..attempt(0, 1, Some(run_with(usage_of(1, 1), 1)))
-            }],
-            TraceOutcome::Registered {
-                revision: Revision::new(7),
-            },
-        );
-        trace.history = vec![Message::user("hi")];
-
-        let json = trace.to_json_pretty();
-        let back: EvolutionTrace =
-            serde_json::from_str(&json).expect("a serialized trace deserializes");
-
-        assert_eq!(back.attempts.len(), 1);
-        assert_eq!(back.attempts[0].stages, trace.attempts[0].stages);
-        assert_eq!(back.history.len(), 1);
-        assert!(matches!(
-            back.outcome,
-            TraceOutcome::Registered { revision } if revision == Revision::new(7)
-        ));
-    }
-
-    /// JSONL gives one header line and one line per attempt. Each line carries
-    /// a tag, so a file that holds more than one lane stays readable.
-    #[test]
-    fn jsonl_is_header_plus_one_line_per_attempt() {
-        let trace = trace_with(
-            vec![attempt(0, 1, None), attempt(1, 2, None)],
-            TraceOutcome::Failed {
-                reason: "gave up".to_string(),
-            },
-        );
-
-        let mut buffer = Vec::new();
-        trace.write_jsonl(&mut buffer).expect("writing to a Vec");
-        let text = String::from_utf8(buffer).expect("valid utf-8");
-        let lines: Vec<&str> = text.lines().collect();
-
-        assert_eq!(lines.len(), 3);
-        for line in &lines {
-            let value: serde_json::Value =
-                serde_json::from_str(line).expect("each line is its own JSON document");
-            assert_eq!(value["lane"], 0);
-        }
-        let header: serde_json::Value =
-            serde_json::from_str(lines[0]).expect("the header line is JSON");
-        assert_eq!(header["type"], "trace");
-        let second: serde_json::Value =
-            serde_json::from_str(lines[2]).expect("the second attempt line is JSON");
-        assert_eq!(second["seq"], 1);
-        assert_eq!(second["type"], "attempt");
     }
 
     /// `render` reports an attempt that never got to the model. It does not
