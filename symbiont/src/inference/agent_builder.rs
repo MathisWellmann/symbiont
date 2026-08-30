@@ -232,6 +232,9 @@ pub async fn init_agent(
 mod tests {
     use super::*;
 
+    // ponytail: building the real reqwest client initializes aws-lc-rs via FFI,
+    // which Miri cannot execute; runs fine under a normal test.
+    #[cfg_attr(miri, ignore)]
     #[tokio::test]
     async fn init_agent_carries_the_base_url_as_provider() {
         let agent = init_agent(
