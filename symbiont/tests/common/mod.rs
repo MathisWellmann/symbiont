@@ -130,6 +130,10 @@ impl EvolutionAgent for ScriptedAgent {
     fn provider(&self) -> &str {
         "scripted"
     }
+
+    fn model(&self) -> &str {
+        "model"
+    }
 }
 
 /// An [`EvolutionAgent`] that answers by matching the prompt against a routing
@@ -226,5 +230,9 @@ impl EvolutionAgent for RoutedAgent {
 
     fn provider(&self) -> &str {
         "routed"
+    }
+
+    fn model(&self) -> &str {
+        "model"
     }
 }

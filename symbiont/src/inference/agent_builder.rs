@@ -195,7 +195,7 @@ pub async fn agent_from_env(
         thinking,
     )
     .await
-    .map(|v| Agent::new(v.build(), base_url))
+    .map(|v| Agent::new(v.build(), base_url, model))
 }
 
 /// Initialize the agent for `model`.
@@ -225,7 +225,7 @@ pub async fn init_agent(
     let agent = agent_builder(opt_crate_name, doc_mode, base_url, api_key, model, thinking)
         .await?
         .build();
-    Ok(Agent::new(agent, base_url))
+    Ok(Agent::new(agent, base_url, model))
 }
 
 #[cfg(test)]
