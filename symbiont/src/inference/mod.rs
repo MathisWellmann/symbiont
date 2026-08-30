@@ -1,6 +1,7 @@
 mod agent_builder;
 mod inference_gate;
 mod inference_utils;
+mod metered_http;
 
 pub use agent_builder::{
     DOC_TOOLS_MAX_TURNS,
@@ -21,3 +22,4 @@ pub(crate) use inference_utils::{
     is_transient_http_error,
     provider_status_of,
 };
+pub use metered_http::MeteredHttpClient;
