@@ -47,10 +47,12 @@ use crate::{
 #[derive(Debug, Clone, Serialize, Deserialize, Getters, CopyGetters, Setters)]
 pub struct EvolutionTrace {
     /// Provider route id, for the header's call config.
+    #[serde(default)]
     #[getset(get = "pub(super)")]
     provider: String,
 
     /// The model the Agent uses.
+    #[serde(default)]
     #[getset(get = "pub(super)")]
     model: String,
 
@@ -59,6 +61,7 @@ pub struct EvolutionTrace {
     lane: Lane,
 
     /// The system prompt of the agent.
+    #[serde(default)]
     #[getset(get = "pub")]
     system_prompt: String,
 
@@ -509,6 +512,47 @@ mod tests {
         assert_eq!(trace.usage().input_tokens, 13);
         assert_eq!(trace.usage().output_tokens, 7);
         assert_eq!(trace.completion_calls(), 3);
+    }
+
+    /// The trace round-trips through serde, so a persisted trace can be read
+    /// back for offline analysis. A trace persisted before the `provider`,
+    /// `model` and `system_prompt` fields existed (0.33/0.34) deserializes
+    /// too, with the fields defaulting to empty.
+    #[test]
+    fn serde_round_trip() {
+        let mut trace = trace_with(
+            vec![attempt(0, 1, Some(run_with(usage_of(1, 1), 1)))],
+            TraceOutcome::Registered {
+                revision: Revision::new(7),
+            },
+        );
+        trace.history = vec![Message::user("hi")];
+
+        let json = serde_json::to_string(&trace).expect("a trace serializes");
+        let back: EvolutionTrace =
+            serde_json::from_str(&json).expect("a serialized trace deserializes");
+
+        assert_eq!(back.provider(), trace.provider());
+        assert_eq!(back.model(), trace.model());
+        assert_eq!(back.system_prompt(), trace.system_prompt());
+        assert_eq!(back.attempts.len(), 1);
+        assert_eq!(back.history.len(), 1);
+        assert!(matches!(
+            back.outcome(),
+            TraceOutcome::Registered { revision } if revision == &Revision::new(7)
+        ));
+
+        // Strip the fields to reproduce a 0.33/0.34 persisted trace.
+        let mut value: serde_json::Value = serde_json::from_str(&json).expect("valid json");
+        let object = value.as_object_mut().expect("a trace is an object");
+        assert!(object.remove("provider").is_some());
+        assert!(object.remove("model").is_some());
+        assert!(object.remove("system_prompt").is_some());
+
+        let old: EvolutionTrace = serde_json::from_value(value).expect("an old trace deserializes");
+        assert_eq!(old.provider(), "");
+        assert_eq!(old.model(), "");
+        assert_eq!(old.system_prompt(), "");
     }
 
     /// `push_attempt` assigns a dense `seq` even when `attempt` repeats. The

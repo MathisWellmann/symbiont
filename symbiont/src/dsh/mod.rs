@@ -27,13 +27,10 @@
 //!
 //! # Fields the session takes from the caller
 //!
-//! The harness header wants these fields, so [`DshSession`] takes them from
-//! the caller:
+//! The system prompt and the provider and model names the harness header
+//! wants are recorded on the [`EvolutionTrace`] at run time, so the session
+//! takes them from the trace. The caller supplies only
 //!
-//! - the **system prompt** — pass what [`crate::system_prompt`] returned for
-//!   the run;
-//! - the **provider and model names**, which rig's [`CompletionCall`] does not
-//!   record;
 //! - an **absolute start time**, because a trace holds only [`Duration`]s.
 //!   Events are laid out from `DshSession::started_at` forward, spaced by
 //!   the trace's own measurements: an attempt spans
@@ -45,7 +42,6 @@
 //!
 //! [`StageTimings::llm`]: crate::StageTimings::llm
 //! [`EvolutionTrace::duration`]: crate::EvolutionTrace::duration
-//! [`CompletionCall`]: crate::CompletionCall
 //!
 //! # Example
 //!
@@ -65,8 +61,6 @@
 //!     let cwd = cwd.to_string_lossy();
 //!
 //!     let session = DshSession::builder()
-//!         .provider("openrouter")
-//!         .model("moonshotai/kimi-k3")
 //!         .cwd(&cwd)
 //!         .build();
 //!
