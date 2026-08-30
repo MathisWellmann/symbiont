@@ -127,8 +127,8 @@ impl EvolutionAgent for ScriptedAgent {
         String::new()
     }
 
-    fn provider(&self) -> String {
-        "scripted".to_string()
+    fn provider(&self) -> &str {
+        "scripted"
     }
 }
 
@@ -224,7 +224,7 @@ impl EvolutionAgent for RoutedAgent {
         String::new()
     }
 
-    fn provider(&self) -> String {
-        "routed".to_string()
+    fn provider(&self) -> &str {
+        "routed"
     }
 }

@@ -75,7 +75,7 @@
 )]
 
 use std::{
-    env,
+    env::var,
     net::{
         SocketAddr,
         TcpStream,
@@ -586,8 +586,9 @@ async fn main() -> symbiont::Result<()> {
         STRATEGIES.len()
     );
 
-    let base_url = env::var("BASE_URL").unwrap_or_default();
-    let model = env::var("MODEL").unwrap_or_default();
+    let base_url = var("BASE_URL").unwrap_or_default();
+    let api_key = var("API_KEY").unwrap_or_default();
+    let model = var("MODEL").unwrap_or_default();
 
     if base_url.is_empty() || model.is_empty() {
         println!(
@@ -612,10 +613,17 @@ async fn main() -> symbiont::Result<()> {
     let runtime = Runtime::new(SYMBIONT_DECLS, SYMBIONT_PRELUDE, Profile::Debug).await?;
     let signature = runtime.fn_sigs()[0].clone();
     let agent = symbiont::Agent::new(
-        symbiont::agent_from_env(None, symbiont::DocMode::default(), &model, false)
-            .await?
-            .max_tokens(MAX_OUTPUT_TOKENS)
-            .build(),
+        symbiont::agent_builder(
+            None,
+            symbiont::DocMode::default(),
+            &base_url,
+            &api_key,
+            &model,
+            false,
+        )
+        .await?
+        .max_tokens(MAX_OUTPUT_TOKENS)
+        .build(),
         base_url.clone(),
     );
 

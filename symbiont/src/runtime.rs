@@ -1039,7 +1039,7 @@ impl Runtime {
             // agent that echoes the same broken code back verbatim.
             let mut last_failed_code: Option<String> = None;
             let mut trace = EvolutionTrace::new(
-                agent.provider(),
+                agent.provider().to_string(),
                 lane,
                 agent.system_prompt(),
                 base_prompt.to_string(),
