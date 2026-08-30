@@ -612,7 +612,7 @@ async fn main() -> symbiont::Result<()> {
     let runtime = Runtime::new(SYMBIONT_DECLS, SYMBIONT_PRELUDE, Profile::Debug).await?;
     let signature = runtime.fn_sigs()[0].clone();
     let agent = symbiont::Agent::new(
-        symbiont::agent_builder_from_env(None, symbiont::DocMode::default(), &model, false)
+        symbiont::agent_from_env(None, symbiont::DocMode::default(), &model, false)
             .await?
             .max_tokens(MAX_OUTPUT_TOKENS)
             .build(),
