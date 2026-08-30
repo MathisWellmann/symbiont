@@ -84,6 +84,7 @@ pub use evolve_info::{
     EvolveInfo,
     Lane,
 };
+use getset::Getters;
 pub use inference::{
     DOC_TOOLS_MAX_TURNS,
     INFERENCE_REQUEST_TIMEOUT,
@@ -143,11 +144,15 @@ pub use thinking_level::ThinkingLevel;
 /// [`init_agent`] attaches the base URL automatically. A host that
 /// customizes the agent through [`agent_builder`] wraps the built agent:
 /// `Agent::new(builder.tool(..).build(), base_url)`.
-#[derive(Clone)]
+#[derive(Clone, Getters)]
 pub struct Agent {
-    pub(crate) inner: rig_agent::Agent,
-    pub(crate) provider: String,
-    pub(crate) model: String,
+    inner: rig_agent::Agent,
+    /// The inference provider is usually the BASE_URL
+    #[getset(get = "pub")]
+    provider: String,
+    /// The model the agent uses.
+    #[getset(get = "pub")]
+    model: String,
 }
 
 impl Agent {

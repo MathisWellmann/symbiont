@@ -57,6 +57,7 @@ use lfest::prelude::{
 };
 use plotters::prelude::*;
 use symbiont::{
+    Agent,
     DocMode,
     DshSession,
     DylibConfig,
@@ -680,6 +681,33 @@ fn sessions_root() -> Option<PathBuf> {
         .map(|home| Path::new(&home).join(".dsh").join("sessions"))
 }
 
+async fn agent(host_crate: &str) -> symbiont::Result<Agent> {
+    // Document the host crate's API (Candle, AccountState, Action) for the
+    // agent: the prelude index goes into the system prompt, and the `api_doc`
+    // tool gives full definitions on demand. Cap generation so small local
+    // models that fail to stop cannot overflow the inference server's context
+    // window.
+    let base_url = var("BASE_URL").expect("The `BASE_URL` env var must be set");
+    let api_key = var("API_KEY").unwrap_or_default();
+    let model = var("MODEL").expect("the `MODEL` env var names the model slug");
+    let agent = Agent::new(
+        symbiont::agent_builder(
+            Some(host_crate),
+            DocMode::default(),
+            &base_url,
+            &api_key,
+            &model,
+            false,
+        )
+        .await?
+        .max_tokens(4096)
+        .build(),
+        base_url,
+        model,
+    );
+    Ok(agent)
+}
+
 #[tokio::main]
 async fn main() -> symbiont::Result<()> {
     symbiont::init_tracing();
@@ -706,29 +734,7 @@ async fn main() -> symbiont::Result<()> {
         ),
     )
     .await?;
-    // Document the host crate's API (Candle, AccountState, Action) for the
-    // agent: the prelude index goes into the system prompt, and the `api_doc`
-    // tool gives full definitions on demand. Cap generation so small local
-    // models that fail to stop cannot overflow the inference server's context
-    // window.
-    let base_url = var("BASE_URL").expect("The `BASE_URL` env var must be set");
-    let api_key = var("API_KEY").unwrap_or_default();
-    let model = var("MODEL").expect("the `MODEL` env var names the model slug");
-    let agent = symbiont::Agent::new(
-        symbiont::agent_builder(
-            Some(host_crate),
-            DocMode::default(),
-            &base_url,
-            &api_key,
-            &model,
-            false,
-        )
-        .await?
-        .max_tokens(4096)
-        .build(),
-        base_url,
-        model,
-    );
+    let agent = agent(host_crate).await?;
 
     let fn_source = runtime.fn_full_sources();
     let fn_prelude = runtime.fn_prelude();
