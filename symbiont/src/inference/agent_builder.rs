@@ -238,23 +238,3 @@ pub async fn init_agent_from_env(
             .build(),
     )
 }
-
-/* TODO: collect the token usage in the runtime and provide summary stats. This test is used for exploring this path.
-#[cfg(test)]
-mod tests {
-    use rig_agent::completion::Prompt;
-
-    use super::*;
-
-    #[tokio::test]
-    async fn inference_usage() {
-        let agent = init_agent_from_env(None, "test-model").await.unwrap();
-        let resp = agent
-            .prompt("Hello, whats 1+1?")
-            .extended_details()
-            .await
-            .unwrap();
-        dbg!(&resp);
-    }
-}
-*/
