@@ -58,6 +58,7 @@ use crate::{
     AgentRun,
     BuildRecord,
     DylibConfig,
+    EXPECT_WRITE,
     EvolutionAgent,
     EvolutionTrace,
     EvolvableDecl,
@@ -79,6 +80,10 @@ use crate::{
     inference_gate::{
         InferenceGate,
         Priority,
+    },
+    inference_utils::{
+        is_context_size_error,
+        is_transient_http_error,
     },
     observability::{
         BUILD_SLOT_WAIT,
@@ -118,8 +123,6 @@ use crate::{
         find_so,
         generate_cargo_toml,
         generate_lib_rs,
-        is_context_size_error,
-        is_transient_http_error,
         versioned_so_path,
     },
     validation::validate_generated_ast,
@@ -1390,7 +1393,7 @@ impl Runtime {
                                  rejected with the same error, so do NOT repeat it. Respond \
                                  with a different, valid implementation."
                             )
-                            .expect("Can write to prompt");
+                            .expect(EXPECT_WRITE);
                             trace.push_attempt(
                                 attempts,
                                 attempt_prompt,

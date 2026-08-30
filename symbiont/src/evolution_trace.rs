@@ -37,6 +37,7 @@ use serde::{
 use typed_builder::TypedBuilder;
 
 use crate::{
+    EXPECT_WRITE,
     Lane,
     revision::Revision,
 };
@@ -383,7 +384,7 @@ pub(crate) fn render_stages(out: &mut String, stages: &StageTimings) {
         None => {}
     }
     if !parts.is_empty() {
-        let _ = writeln!(out, "stages: {}", parts.join(", "));
+        writeln!(out, "stages: {}", parts.join(", ")).expect(EXPECT_WRITE);
     }
 }
 
