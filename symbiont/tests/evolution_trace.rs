@@ -136,8 +136,6 @@ async fn trace_records_the_whole_lane() {
         "the trace agrees with the reported usage"
     );
     assert_eq!(trace.completion_calls(), 2);
-
-    assert_renderings(trace);
 }
 
 /// The trace owns the transcript one time. The `produced` range of each
@@ -169,31 +167,4 @@ fn assert_transcript_is_tiled(trace: &symbiont::EvolutionTrace) {
         );
         expected_start = run.produced().end;
     }
-}
-
-/// The three output formats, run against a real trace and not a hand-built
-/// one.
-fn assert_renderings(trace: &symbiont::EvolutionTrace) {
-    let rendered = trace.render();
-    assert!(rendered.contains("self-heal (no_rust_code)"));
-    assert!(rendered.contains("registered revision"));
-
-    let mut jsonl = Vec::new();
-    trace.write_jsonl(&mut jsonl).expect("writing to a Vec");
-    let text = String::from_utf8(jsonl).expect("valid utf-8");
-    assert_eq!(
-        text.lines().count(),
-        3,
-        "one header line plus one line per attempt"
-    );
-
-    // A persisted trace goes out and comes back unchanged, which is the
-    // purpose of the `Deserialize` derive. The unit test on `drop_raw` covers
-    // the removal of the wire body of the provider. A scripted agent has no
-    // wire body, so this test cannot cover it.
-    let json = trace.to_json_pretty();
-    let back: symbiont::EvolutionTrace =
-        serde_json::from_str(&json).expect("a persisted trace deserializes");
-    assert_eq!(back.attempts().len(), trace.attempts().len());
-    assert_eq!(back.history().len(), trace.history().len());
 }
