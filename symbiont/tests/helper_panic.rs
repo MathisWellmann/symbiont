@@ -84,7 +84,7 @@ impl EvolutionAgent for MockAgent {
         String::new()
     }
 
-    fn provider(&self) -> String {
-        "mock".to_string()
+    fn provider(&self) -> &str {
+        "mock"
     }
 }

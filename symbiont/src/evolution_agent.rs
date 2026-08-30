@@ -70,7 +70,7 @@ pub trait EvolutionAgent {
     fn system_prompt(&self) -> String;
 
     /// The base URL of the inference endpoint this agent talks to.
-    fn provider(&self) -> String;
+    fn provider(&self) -> &str;
 }
 
 /// Clear the `raw` wire body of a completion call.
@@ -115,8 +115,8 @@ impl EvolutionAgent for crate::Agent {
         self.inner.run_spec().preamble.clone().unwrap_or_default()
     }
 
-    fn provider(&self) -> String {
-        self.provider.clone()
+    fn provider(&self) -> &str {
+        &self.provider
     }
 }
 
