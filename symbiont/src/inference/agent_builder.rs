@@ -21,6 +21,7 @@ use rig_reqwest::{
 };
 
 use crate::{
+    Agent,
     ApiDocTool,
     ApiIndexTool,
     DocIndex,
@@ -175,14 +176,14 @@ pub async fn agent_builder(
     Ok(builder)
 }
 
-/// [`agent_builder`] with the endpoint and credentials read from the
+/// Create an `Agent` with the endpoint and credentials read from the
 /// environment: `BASE_URL` and `API_KEY` (both may be absent or empty).
-pub async fn agent_builder_from_env(
+pub async fn agent_from_env(
     opt_crate_name: Option<&str>,
     doc_mode: DocMode,
     model: &str,
     thinking: impl Into<ThinkingLevel>,
-) -> Result<crate::AgentBuilder> {
+) -> Result<Agent> {
     let base_url = var("BASE_URL").unwrap_or_default();
     let api_key = var("API_KEY").unwrap_or_default();
     agent_builder(
@@ -194,6 +195,7 @@ pub async fn agent_builder_from_env(
         thinking,
     )
     .await
+    .map(|v| Agent::new(v.build(), base_url))
 }
 
 /// Initialize the agent for `model`.
@@ -219,26 +221,11 @@ pub async fn init_agent(
     api_key: &str,
     model: &str,
     thinking: impl Into<ThinkingLevel>,
-) -> Result<crate::Agent> {
+) -> Result<Agent> {
     let agent = agent_builder(opt_crate_name, doc_mode, base_url, api_key, model, thinking)
         .await?
         .build();
-    Ok(crate::Agent::new(agent, base_url))
-}
-
-/// [`init_agent`] with the endpoint and credentials read from the
-/// environment: `BASE_URL` and `API_KEY` (both may be absent or empty).
-pub async fn init_agent_from_env(
-    opt_crate_name: Option<&str>,
-    doc_mode: DocMode,
-    model: &str,
-    thinking: impl Into<ThinkingLevel>,
-) -> Result<crate::Agent> {
-    let base_url = var("BASE_URL").unwrap_or_default();
-    let agent = agent_builder_from_env(opt_crate_name, doc_mode, model, thinking)
-        .await?
-        .build();
-    Ok(crate::Agent::new(agent, base_url))
+    Ok(Agent::new(agent, base_url))
 }
 
 #[cfg(test)]

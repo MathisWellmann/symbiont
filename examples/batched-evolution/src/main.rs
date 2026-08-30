@@ -36,9 +36,12 @@
 //! not of the harness, so a round where every lane fails is reported rather
 //! than fatal. Set `STRICT=1` to require at least one correct implementation.
 
-use std::time::{
-    Duration,
-    Instant,
+use std::{
+    env::var,
+    time::{
+        Duration,
+        Instant,
+    },
 };
 
 use symbiont::{
@@ -292,17 +295,19 @@ async fn main() -> symbiont::Result<()> {
         Runtime::new(SYMBIONT_DECLS, SYMBIONT_PRELUDE, symbiont::Profile::Release).await?;
     let signature = &runtime.fn_sigs()[0];
 
-    let model = std::env::var("MODEL").expect("the MODEL env var names the model slug");
+    let base_url = var("BASE_URL").expect("The `BASE_URL` env var must be set");
+    let api_key = var("API_KEY").unwrap_or_default();
+    let model = var("MODEL").expect("the MODEL env var names the model slug");
     // Bound the output. A batch's wall clock is its *slowest* lane, so one
     // model that starts rambling — chat completions generate until the context
     // runs out unless told otherwise — holds up the whole round while its
     // siblings sit finished. Ample for these implementations.
     let agent = symbiont::Agent::new(
-        symbiont::agent_builder_from_env(None, DocMode::default(), &model, false)
+        symbiont::agent_builder(None, DocMode::default(), &base_url, &api_key, &model, false)
             .await?
             .max_tokens(MAX_OUTPUT_TOKENS)
             .build(),
-        std::env::var("BASE_URL").unwrap_or_default(),
+        base_url,
     );
 
     // -- Baseline ---------------------------------------------------------

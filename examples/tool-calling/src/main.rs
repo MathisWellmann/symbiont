@@ -24,9 +24,12 @@
 //! `~/.dsh/sessions`. Each round owns a fixed session id, so a rerun replaces
 //! its previous export rather than piling up.
 
-use std::path::{
-    Path,
-    PathBuf,
+use std::{
+    env::var,
+    path::{
+        Path,
+        PathBuf,
+    },
 };
 
 use rig_core::tool::PortableTool;
@@ -134,13 +137,13 @@ fn export_trace(trace: &EvolutionTrace, model: &str, round: u32) {
 /// directory instead of the real store. Otherwise it is `$DSH_HOME/sessions`,
 /// and `~/.dsh/sessions` when `DSH_HOME` is unset.
 fn sessions_root() -> Option<PathBuf> {
-    if let Ok(root) = std::env::var("SYMBIONT_DSH_SESSIONS") {
+    if let Ok(root) = var("SYMBIONT_DSH_SESSIONS") {
         return Some(PathBuf::from(root));
     }
-    if let Ok(home) = std::env::var("DSH_HOME") {
+    if let Ok(home) = var("DSH_HOME") {
         return Some(Path::new(&home).join("sessions"));
     }
-    std::env::var("HOME")
+    var("HOME")
         .ok()
         .map(|home| Path::new(&home).join(".dsh").join("sessions"))
 }
@@ -164,14 +167,16 @@ async fn main() -> symbiont::Result<()> {
     // Register the `probe` tool on the pre-configured builder.
     // `default_max_turns` must be >= 1, otherwise rig aborts the run with
     // `MaxTurnsError` as soon as the model chains tool calls.
-    let model = std::env::var("MODEL").expect("the MODEL env var names the model slug");
+    let base_url = var("BASE_URL").expect("The `BASE_URL` env var must be set");
+    let api_key = var("API_KEY").unwrap_or_default();
+    let model = var("MODEL").expect("the `MODEL` env var names the model slug");
     let agent = symbiont::Agent::new(
-        symbiont::agent_builder_from_env(None, DocMode::default(), &model, false)
+        symbiont::agent_builder(None, DocMode::default(), &base_url, &api_key, &model, false)
             .await?
             .tool(Probe)
             .default_max_turns(10)
             .build(),
-        std::env::var("BASE_URL").unwrap_or_default(),
+        base_url,
     );
 
     // -- Round 0: run the default (wrong) implementation ----------------

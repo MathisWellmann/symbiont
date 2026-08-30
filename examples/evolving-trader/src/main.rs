@@ -25,6 +25,7 @@
 //! realistic exchange simulation.
 
 use std::{
+    env::var,
     num::{
         NonZeroU16,
         NonZeroU32,
@@ -195,7 +196,7 @@ struct AggCandle {
 
 /// Load raw trades from disk and aggregate them into volume candles.
 fn load_candles() -> Vec<Candle> {
-    let path = std::env::var("TRADES_CSV").unwrap_or_else(|_| DEFAULT_DATA_PATH.to_string());
+    let path = var("TRADES_CSV").unwrap_or_else(|_| DEFAULT_DATA_PATH.to_string());
     assert!(
         Path::new(&path).exists(),
         "Trade data csv not found at `{path}`. Download it first:\n\
@@ -668,13 +669,13 @@ fn export_trace(trace: &EvolutionTrace, model: &str, round: usize) {
 /// directory instead of the real store. Otherwise it is `$DSH_HOME/sessions`,
 /// and `~/.dsh/sessions` when `DSH_HOME` is unset.
 fn sessions_root() -> Option<PathBuf> {
-    if let Ok(root) = std::env::var("SYMBIONT_DSH_SESSIONS") {
+    if let Ok(root) = var("SYMBIONT_DSH_SESSIONS") {
         return Some(PathBuf::from(root));
     }
-    if let Ok(home) = std::env::var("DSH_HOME") {
+    if let Ok(home) = var("DSH_HOME") {
         return Some(Path::new(&home).join("sessions"));
     }
-    std::env::var("HOME")
+    var("HOME")
         .ok()
         .map(|home| Path::new(&home).join(".dsh").join("sessions"))
 }
@@ -710,13 +711,22 @@ async fn main() -> symbiont::Result<()> {
     // tool gives full definitions on demand. Cap generation so small local
     // models that fail to stop cannot overflow the inference server's context
     // window.
-    let model = std::env::var("MODEL").expect("the MODEL env var names the model slug");
+    let base_url = var("BASE_URL").expect("The `BASE_URL` env var must be set");
+    let api_key = var("API_KEY").unwrap_or_default();
+    let model = var("MODEL").expect("the `MODEL` env var names the model slug");
     let agent = symbiont::Agent::new(
-        symbiont::agent_builder_from_env(Some(host_crate), DocMode::default(), &model, false)
-            .await?
-            .max_tokens(4096)
-            .build(),
-        std::env::var("BASE_URL").unwrap_or_default(),
+        symbiont::agent_builder(
+            Some(host_crate),
+            DocMode::default(),
+            &base_url,
+            &api_key,
+            &model,
+            false,
+        )
+        .await?
+        .max_tokens(4096)
+        .build(),
+        base_url,
     );
 
     let fn_source = runtime.fn_full_sources();
