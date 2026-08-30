@@ -6,6 +6,11 @@
 //! one frame holds the header line only, each later frame holds one append batch of JSONL records.
 //! Each JSONL line decodes to a `LogLine`.
 
+#![expect(
+    clippy::field_scoped_visibility_modifiers,
+    reason = "Internal types only, TypedBuilder would be annoying here."
+)]
+
 use serde::{
     Deserialize,
     Serialize,
@@ -748,93 +753,6 @@ pub(super) struct ImageAttachmentRef {
     pub(super) name: Option<String>,
 }
 
-/// Raw streaming protocol emitted by adapters (the `assistant/chunk` payload).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "kebab-case")]
-pub(super) enum StreamChunk {
-    /// A new stream block opened.
-    BlockStart {
-        /// Index of the block within the stream.
-        index: u64,
-        /// One of `text` | `reasoning` | `image` | `tool-call` | `tool-result`.
-        #[serde(rename = "blockType")]
-        block_type: String,
-    },
-    /// More visible text arrived.
-    TextDelta {
-        /// Index of the block this extends.
-        index: u64,
-        /// The added text.
-        text: String,
-    },
-    /// More reasoning text arrived.
-    ReasoningDelta {
-        /// Index of the block this extends.
-        index: u64,
-        /// The added text.
-        text: String,
-    },
-    /// More of a tool call's argument JSON arrived.
-    ToolCallDelta {
-        /// Index of the block this extends.
-        index: u64,
-        /// Correlates the call with its result.
-        id: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        /// Tool name, once the adapter has resolved it.
-        name: Option<String>,
-        #[serde(rename = "argumentsDelta")]
-        /// The added slice of the raw argument JSON.
-        arguments_delta: String,
-    },
-    /// Carries the assembled block.
-    BlockEnd {
-        /// Index of the block that ended.
-        index: u64,
-        /// The block as assembled.
-        block: ContentBlock,
-    },
-    /// The adapter reported token accounting.
-    Usage {
-        /// What it reported.
-        usage: TokenUsage,
-    },
-    /// Terminal. `replayState` is adapter-private lossless-JSON state.
-    Finish {
-        /// Why the response stopped.
-        reason: FinishReason,
-        #[serde(
-            rename = "replayState",
-            default,
-            skip_serializing_if = "Option::is_none"
-        )]
-        /// Adapter-private lossless-JSON replay state.
-        replay_state: Option<Value>,
-    },
-}
-
-/// Why a model response stopped.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "kebab-case")]
-pub(super) enum FinishReason {
-    /// The model ran out of things to say.
-    Stop,
-    /// The model asked for tools and is waiting on them.
-    ToolCalls,
-    /// The response hit its output-token ceiling.
-    MaxTokens,
-    /// A cancellation cut the response short.
-    Aborted {
-        /// What the adapter reported about the cancellation.
-        failure: LlmFailure,
-    },
-    /// The call failed.
-    Error {
-        /// The provider or transport facts of the failure.
-        failure: LlmFailure,
-    },
-}
-
 /// Serializable provider or transport failure facts.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1056,14 +974,6 @@ pub(super) struct LlmRetryStartedData {
     pub(super) step: u64,
     /// Which retry this is, counting from one.
     pub(super) retry: u64,
-}
-
-/// Marks an override seeded into a child at delegation (`"delegation"`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub(super) enum SourceMarker {
-    /// The value was seeded into a child at delegation.
-    Delegation,
 }
 
 #[cfg(test)]
