@@ -654,11 +654,7 @@ fn export_trace(trace: &EvolutionTrace, model: &str, round: usize) {
     let cwd = std::env::current_dir().unwrap_or_default();
     let cwd = cwd.to_string_lossy();
 
-    let session = DshSession::builder()
-        .provider("openrouter")
-        .model(model)
-        .cwd(&cwd)
-        .build();
+    let session = DshSession::builder().model(model).cwd(&cwd).build();
 
     match symbiont::export_dsh_session(trace, &session, &root) {
         Ok(path) => println!("Round {round} trajectory: {}", path.display()),
@@ -715,11 +711,13 @@ async fn main() -> symbiont::Result<()> {
     // models that fail to stop cannot overflow the inference server's context
     // window.
     let model = std::env::var("MODEL").expect("the MODEL env var names the model slug");
-    let agent =
+    let agent = symbiont::Agent::new(
         symbiont::agent_builder_from_env(Some(host_crate), DocMode::default(), &model, false)
             .await?
             .max_tokens(4096)
-            .build();
+            .build(),
+        std::env::var("BASE_URL").unwrap_or_default(),
+    );
 
     let fn_source = runtime.fn_full_sources();
     let fn_prelude = runtime.fn_prelude();

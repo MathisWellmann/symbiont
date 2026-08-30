@@ -117,7 +117,6 @@ fn export_trace(trace: &EvolutionTrace, model: &str, round: u32) {
     let cwd = cwd.to_string_lossy();
 
     let session = DshSession::builder()
-        .provider("local")
         .model(model)
         .cwd(&cwd)
         .session_id(format!("session-tool-calling-round{round}"))
@@ -166,11 +165,14 @@ async fn main() -> symbiont::Result<()> {
     // `default_max_turns` must be >= 1, otherwise rig aborts the run with
     // `MaxTurnsError` as soon as the model chains tool calls.
     let model = std::env::var("MODEL").expect("the MODEL env var names the model slug");
-    let agent = symbiont::agent_builder_from_env(None, DocMode::default(), &model, false)
-        .await?
-        .tool(Probe)
-        .default_max_turns(10)
-        .build();
+    let agent = symbiont::Agent::new(
+        symbiont::agent_builder_from_env(None, DocMode::default(), &model, false)
+            .await?
+            .tool(Probe)
+            .default_max_turns(10)
+            .build(),
+        std::env::var("BASE_URL").unwrap_or_default(),
+    );
 
     // -- Round 0: run the default (wrong) implementation ----------------
     println!("\n=== Round 0: default implementation ===");

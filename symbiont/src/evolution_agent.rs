@@ -6,13 +6,12 @@
 //! implementation is responsible for any tool-calling turns and returns only
 //! the final text alongside the new messages and token usage.
 //!
-//! A blanket implementation is provided for [`rig_agent::Agent`], which
-//! delegates to rig's `PromptRequest` so rig owns the tool-calling loop
+//! An implementation is provided for [`crate::Agent`], which delegates to
+//! rig's `PromptRequest` so rig owns the tool-calling loop
 //! (multi-turn depth, tool dispatch, invalid-tool-call retries, hooks).
 
 use rig_agent::{
     agent::{
-        Agent,
         CompletionCall,
         PromptRequest,
     },
@@ -69,6 +68,9 @@ pub trait EvolutionAgent {
     /// of every lane it runs, so an exported session shows which prompt drove
     /// it.
     fn system_prompt(&self) -> String;
+
+    /// The base URL of the inference endpoint this agent talks to.
+    fn provider(&self) -> String;
 }
 
 /// Clear the `raw` wire body of a completion call.
@@ -82,7 +84,7 @@ fn drop_raw(call: CompletionCall) -> CompletionCall {
     }
 }
 
-impl EvolutionAgent for Agent {
+impl EvolutionAgent for crate::Agent {
     fn run(
         &self,
         prompt: &str,
@@ -91,7 +93,7 @@ impl EvolutionAgent for Agent {
         // `PromptRequest` clones the agent's internals, so the returned future
         // does not borrow `self`. Rig runs the tool-calling loop inside
         // `send()`, bounded by the agent's `default_max_turns`.
-        let request = PromptRequest::from_agent(self, prompt)
+        let request = PromptRequest::from_agent(&self.inner, prompt)
             .history(history)
             .extended_details();
         async move {
@@ -110,7 +112,11 @@ impl EvolutionAgent for Agent {
     }
 
     fn system_prompt(&self) -> String {
-        self.run_spec().preamble.clone().unwrap_or_default()
+        self.inner.run_spec().preamble.clone().unwrap_or_default()
+    }
+
+    fn provider(&self) -> String {
+        self.provider.clone()
     }
 }
 

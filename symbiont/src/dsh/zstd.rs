@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 //! Everything related to exporting `zstd` compressed `.jsonl` files that `deepseek-harness` expects
 
 use std::{
