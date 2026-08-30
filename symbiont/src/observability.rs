@@ -415,7 +415,7 @@ pub(crate) fn inference_error_reason(e: &crate::Error) -> &'static str {
 
     use crate::{
         Error::*,
-        inference_utils::{
+        inference::{
             is_context_size_error,
             is_transient_http_error,
             provider_status_of,
