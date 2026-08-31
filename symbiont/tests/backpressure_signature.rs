@@ -57,7 +57,7 @@ async fn signature_mismatch_is_fed_back_and_recovered_from() {
         "retry prompt must contain only the correction, got: {retry_prompt}"
     );
     assert!(
-        retry_prompt.contains("Signature mismatch in"),
+        retry_prompt.contains("nudge: Signature mismatch"),
         "retry prompt must contain the signature-mismatch nudge, got: {retry_prompt}"
     );
     assert!(
