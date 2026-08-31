@@ -1160,7 +1160,7 @@ impl Runtime {
                             match self.evolve_failures.write() {
                                 Ok(mut failures) => failures.push(failure),
                                 Err(_) => {
-                                    let reason = MutexPoison.to_string();
+                                    let reason = Error::MutexPoison.to_string();
                                     trace.push_attempt(
                                         attempts,
                                         attempt_prompt,
@@ -1172,7 +1172,7 @@ impl Runtime {
                                         t_attempt.elapsed(),
                                     );
                                     return Err(EvolveError::new(
-                                        MutexPoison,
+                                        Error::MutexPoison,
                                         finish!(TraceOutcome::Failed { reason }),
                                     ));
                                 }
@@ -1228,7 +1228,7 @@ impl Runtime {
                                     t_attempt.elapsed(),
                                 );
                                 return Err(EvolveError::new(
-                                    MaxRetriesExceeded {
+                                    Error::MaxRetriesExceeded {
                                         attempts,
                                         last_error: Box::new(e),
                                     },
@@ -1337,7 +1337,7 @@ impl Runtime {
                                 t_attempt.elapsed(),
                             );
                             return Err(EvolveError::new(
-                                MaxRetriesExceeded {
+                                Error::MaxRetriesExceeded {
                                     attempts,
                                     last_error: Box::new(e),
                                 },
@@ -1399,43 +1399,8 @@ impl Runtime {
                         // the ladder event after the match writes that nudge.
                         let kind = failure_kind_of(&e).to_string();
 
-                        use Error::*;
-                        match e {
-                        NoRustCode => prompt.push_str(
-                            "nudge: Your response did not contain a rust code block. Please try again and make sure its wrapped like this: ```CODE```",
-                        ),
-                        CouldNotParseRust { code, err } => write!(prompt,
-                            "nudge: Your generated code ```{code}``` is not valid Rust. Parse error: ```{err}```. Fix the syntax error and respond with the full corrected code.",
-                        ).expect("Can write to prompt"),
-                        RigPrompt(rig_agent::completion::PromptError::MaxTurnsError { .. }) => prompt.push_str(
-                            "nudge: You exhausted the tool-call turn budget before producing code. Respond with the final Rust code block now.",
-                        ),
-                        WriteLib(_) => todo!(),
-                        SignatureMismatch {
-                            code: _,
-                            expected,
-                            got,
-                        } => write!(prompt,
-                            "nudge: Signature mismatch, got: {got}.\n
-                            Expected `{expected}`.\n
-                            Fix ONLY this function's signature (argument types and return type must match exactly, argument names may differ).",
-                        ).expect("Can write to prompt"),
-                        UnsafeCode { code, construct } => write!(prompt,
-                            "nudge: Your generated code contains {construct}, but unsafe code is forbidden in evolvable code. \
-                            Rewrite it in safe Rust only: no `unsafe` blocks, `unsafe fn`, `unsafe impl`, `unsafe trait`, \
-                            `extern` blocks, unsafe attributes, or `unsafe` tokens inside macros. \
-                            Keep the logic and the function signatures unchanged. Full code: ```{code}```",
-                        ).expect("Can write to prompt"),
-                        ForbiddenConstruct { code: _, construct, reason } => write!(prompt,
-                            "nudge: Your generated code contains {construct}, which is forbidden in evolvable code: {reason}.\n
-                            Rewrite the code without it, keeping the logic and the function signatures unchanged if possible.",
-                        ).expect("Can write to prompt"),
-                        CompilationFailed{code: _, err} => write!(prompt,
-                            "nudge: Your generated code failed to compile. Compiler output:\n```\n{err}\n```\n\
-                            Fix the compilation errors while preserving the existing logic and behaviour if possible.\n
-                            Change only the expressions the compiler diagnostics point at (match the `src/lib.rs:<line>:<col>` markers);",
-                        ).expect("Can write to prompt"),
-                        e => {
+                        // Add a nudge prompt.
+                        if let Err(e) = e.to_nudge(&mut prompt) {
                             warn!("Unhandled error: {e}");
                             let reason = e.to_string();
                             trace.push_attempt(
@@ -1443,12 +1408,16 @@ impl Runtime {
                                 attempt_prompt,
                                 run_trace!(),
                                 stages,
-                                LadderEvent::Terminal { reason: reason.clone() },
+                                LadderEvent::Terminal {
+                                    reason: reason.clone(),
+                                },
                                 t_attempt.elapsed(),
                             );
-                            return Err(EvolveError::new(e, finish!(TraceOutcome::Failed { reason })))
-                        },
-                    }
+                            return Err(EvolveError::new(
+                                e,
+                                finish!(TraceOutcome::Failed { reason }),
+                            ));
+                        }
 
                         trace.push_attempt(
                             attempts,
