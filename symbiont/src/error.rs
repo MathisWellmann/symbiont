@@ -90,6 +90,9 @@ pub enum Error {
 
     #[error(transparent)]
     Fmt(#[from] std::fmt::Error),
+
+    #[error("A DocMode with tools requires an `opt_crate_name` to be set.")]
+    InvalidDocMode,
 }
 
 /// Result type alias for symbiont operations.

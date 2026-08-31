@@ -26,6 +26,7 @@ use crate::{
     ApiIndexTool,
     DocIndex,
     DocMode,
+    Error,
     MeteredHttpClient,
     Result,
     ThinkingLevel,
@@ -171,6 +172,7 @@ pub async fn agent_builder(
                 .tool(ApiDocTool::new(index))
                 .default_max_turns(DOC_TOOLS_MAX_TURNS)
         }
+        (None, true) => return Err(Error::InvalidDocMode),
         _ => builder.dynamic_tools(Vec::new()),
     };
     Ok(builder)
@@ -239,7 +241,7 @@ mod tests {
     async fn init_agent_carries_the_base_url_as_provider() {
         let agent = init_agent(
             None,
-            DocMode::default(),
+            DocMode::Inline,
             "http://127.0.0.1:8321/v1",
             "",
             "model",
