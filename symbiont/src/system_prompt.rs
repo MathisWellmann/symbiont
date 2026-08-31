@@ -47,6 +47,13 @@ If helper logic is needed, prefer local helper functions, closures, constants,
 or inline code inside the required function.
 Avoid extra top-level generic helper functions.
 
+Every required function must be genuinely implemented. A body that is empty,
+only a `todo!()`/`unimplemented!()`/`unreachable!()` placeholder, or a
+verbatim copy of the declared default body counts as unimplemented, and a
+candidate in which every required function is unimplemented is rejected
+before compilation. When you improve only some required functions, the
+others may keep their default bodies.
+
 Do not emit `main`, tests, Cargo metadata, modules, or unrelated items unless
 the user explicitly asks.
 

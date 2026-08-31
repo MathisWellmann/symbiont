@@ -66,8 +66,9 @@
 use metrics::Unit;
 
 /// Total failed evolution attempts, by failure kind (one of
-/// `parse`, `signature`, `compile`, `no_rust_code`, `max_turns`, `llm`,
-/// `dylib_load`, `io`, `other`). Emitted once per failed attempt inside the
+/// `parse`, `signature`, `compile`, `no_rust_code`, `max_turns`,
+/// `unimplemented`, `llm`, `dylib_load`, `io`, `other`). Emitted once per
+/// failed attempt inside the
 /// self-healing loop of `Runtime::evolve`.
 pub const EVOLVE_FAILURES: &str = "symbiont_evolve_failures_total";
 /// Number of attempts a single `Runtime::evolve` call needed. `1` means the
@@ -199,6 +200,7 @@ pub(crate) mod failure_kind {
     pub(crate) const SIGNATURE: &str = "signature";
     pub(crate) const UNSAFE_CODE: &str = "unsafe";
     pub(crate) const FORBIDDEN: &str = "forbidden";
+    pub(crate) const UNIMPLEMENTED: &str = "unimplemented";
     pub(crate) const COMPILE: &str = "compile";
     pub(crate) const NO_RUST_CODE: &str = "no_rust_code";
     pub(crate) const MAX_TURNS: &str = "max_turns";
@@ -387,6 +389,7 @@ pub(crate) fn failure_kind_of(e: &crate::Error) -> &'static str {
         SignatureMismatch { .. } => failure_kind::SIGNATURE,
         UnsafeCode { .. } => failure_kind::UNSAFE_CODE,
         ForbiddenConstruct { .. } => failure_kind::FORBIDDEN,
+        UnimplementedFunction { .. } => failure_kind::UNIMPLEMENTED,
         CompilationFailed { .. } => failure_kind::COMPILE,
         NoRustCode => failure_kind::NO_RUST_CODE,
         RigPrompt(rig_agent::completion::PromptError::MaxTurnsError { .. }) => {
@@ -801,6 +804,14 @@ mod tests {
                 reason: String::new()
             }),
             failure_kind::FORBIDDEN
+        );
+        assert_eq!(
+            failure_kind_of(&UnimplementedFunction {
+                code: String::new(),
+                fn_name: String::new(),
+                reason: String::new()
+            }),
+            failure_kind::UNIMPLEMENTED
         );
         assert_eq!(
             failure_kind_of(&CompilationFailed {

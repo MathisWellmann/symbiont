@@ -55,6 +55,13 @@ pub enum Error {
         reason: String,
     },
 
+    #[error("Function `{fn_name}` is not implemented: {reason}")]
+    UnimplementedFunction {
+        code: String,
+        fn_name: String,
+        reason: String,
+    },
+
     #[error("Compilation failed:\n{err}")]
     CompilationFailed { code: String, err: String },
 
@@ -101,7 +108,7 @@ pub enum Error {
 
 impl Error {
     /// Convert the error into a nudging prompt for the Agent
-    pub(crate) fn to_nudge(self, prompt: &mut String) -> Result<(), Self> {
+    pub(crate) fn nudge(self, prompt: &mut String) -> Result<(), Self> {
         use Error::*;
         match self {
             NoRustCode => prompt.push_str(
@@ -131,6 +138,12 @@ impl Error {
             ForbiddenConstruct { code: _, construct, reason } => write!(prompt,
                 "nudge: Your generated code contains {construct}, which is forbidden in evolvable code: {reason}.\n
                 Rewrite the code without it, keeping the logic and the function signatures unchanged if possible.",
+            ).expect("Can write to prompt"),
+            UnimplementedFunction { code, fn_name, reason } => write!(prompt,
+                "nudge: Your generated code leaves `fn {fn_name}` unimplemented: {reason}.\n
+                A stub or the unchanged default body is not an evolution.\n
+                Respond with a complete, real implementation matching the declared signature.\n
+                Full code: ```{code}```",
             ).expect("Can write to prompt"),
             CompilationFailed{code: _, err} => write!(prompt,
                 "nudge: Your generated code failed to compile. Compiler output:\n```\n{err}\n```\n\
