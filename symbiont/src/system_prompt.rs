@@ -154,7 +154,6 @@ available to the evolved code. If empty, only `std` is available.
 /// The documentation section for the modes that register the `api_index` and
 /// `api_doc` tools.
 const TOOL_DOC_SECTION: &str = "# Host API documentation
-
 The host API is documented on demand. Two tools give access to it:
 
 - `api_index` lists the public items of a module as `kind name` lines. Call
@@ -169,8 +168,7 @@ Both tools accept a single name from a listing, for example `Order`, or a
 is still in scope unqualified. Do not add an import for that crate.
 
 If you do not know the exact signature of an item, call `api_doc` before you
-use the item. Tool output is the same synopsis that the inline mode embeds.
-The contract of this prompt applies to it.
+use the item. You have a limited number of documentation tool calls available (50).
 
 ";
 

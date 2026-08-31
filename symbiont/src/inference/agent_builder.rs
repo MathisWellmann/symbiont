@@ -47,12 +47,7 @@ pub const INFERENCE_REQUEST_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
 /// The turn budget that [`agent_builder`] sets when the [`DocMode`] registers
 /// the documentation tools.
-///
-/// One attempt usually needs zero to two documentation calls before the
-/// final answer. The budget leaves room for chained calls and for retries of
-/// invalid tool calls. A host that registers more tools must set
-/// `.default_max_turns(n)` with room for both.
-pub const DOC_TOOLS_MAX_TURNS: usize = 8;
+pub const DOC_TOOLS_MAX_TURNS: usize = 50;
 
 /// Initialize a pre-configured [`crate::AgentBuilder`] for `model`.
 ///
