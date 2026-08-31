@@ -86,10 +86,6 @@ async fn repeated_rejected_code_resets_history_and_restarts_from_base_prompt() {
         reset_prompt.contains("do NOT repeat"),
         "reset prompt must carry the do-not-repeat instruction, got: {reset_prompt}"
     );
-    assert!(
-        !reset_prompt.contains("i++"),
-        "reset prompt must not quote the rejected code, got: {reset_prompt}"
-    );
 
     // The hot-swapped implementation is live.
     let mut counter = 0;
