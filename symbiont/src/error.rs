@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 //! Errors of this crate.
 
+use std::fmt::Write;
+
 use crate::Revision;
 
 /// Errors that can occur during symbiont runtime operations.
@@ -93,6 +95,53 @@ pub enum Error {
 
     #[error("A DocMode with tools requires an `opt_crate_name` to be set.")]
     InvalidDocMode,
+}
+
+impl Error {
+    /// Convert the error into a nudging prompt for the Agent
+    pub(crate) fn to_nudge(self, prompt: &mut String) -> Result<(), Self> {
+        use Error::*;
+        match self {
+            NoRustCode => prompt.push_str(
+                "nudge: Your response did not contain a rust code block. Please try again and make sure its wrapped like this: ```CODE```",
+            ),
+            CouldNotParseRust { code, err } => write!(prompt,
+                "nudge: Your generated code ```{code}``` is not valid Rust. Parse error: ```{err}```. Fix the syntax error and respond with the full corrected code.",
+            ).expect("Can write to prompt"),
+            RigPrompt(rig_agent::completion::PromptError::MaxTurnsError { .. }) => prompt.push_str(
+                "nudge: You exhausted the tool-call turn budget before producing code. Respond with the final Rust code block now.",
+            ),
+            WriteLib(_) => todo!(),
+            SignatureMismatch {
+                code: _,
+                expected,
+                got,
+            } => write!(prompt,
+                "nudge: Signature mismatch, got: {got}.\n
+                Expected `{expected}`.\n
+                Fix ONLY this function's signature (argument types and return type must match exactly, argument names may differ).",
+            ).expect("Can write to prompt"),
+            UnsafeCode { code, construct } => write!(prompt,
+                "nudge: Your generated code contains {construct}, but unsafe code is forbidden in evolvable code. \
+                Rewrite it in safe Rust only: no `unsafe` blocks, `unsafe fn`, `unsafe impl`, `unsafe trait`, \
+                `extern` blocks, unsafe attributes, or `unsafe` tokens inside macros. \
+                Keep the logic and the function signatures unchanged. Full code: ```{code}```",
+            ).expect("Can write to prompt"),
+            ForbiddenConstruct { code: _, construct, reason } => write!(prompt,
+                "nudge: Your generated code contains {construct}, which is forbidden in evolvable code: {reason}.\n
+                Rewrite the code without it, keeping the logic and the function signatures unchanged if possible.",
+            ).expect("Can write to prompt"),
+            CompilationFailed{code: _, err} => write!(prompt,
+                "nudge: Your generated code failed to compile. Compiler output:\n```\n{err}\n```\n\
+                Fix the compilation errors while preserving the existing logic and behaviour if possible.\n
+                Change only the expressions the compiler diagnostics point at (match the `src/lib.rs:<line>:<col>` markers);",
+            ).expect("Can write to prompt"),
+            _ => {
+                return Err(self);
+            },
+        };
+        Ok(())
+    }
 }
 
 /// Result type alias for symbiont operations.
