@@ -1402,40 +1402,38 @@ impl Runtime {
                         use Error::*;
                         match e {
                         NoRustCode => prompt.push_str(
-                            "Your response did not contain a rust code block. Please try again and make sure its wrapped like this: ```CODE```",
+                            "nudge: Your response did not contain a rust code block. Please try again and make sure its wrapped like this: ```CODE```",
                         ),
                         CouldNotParseRust { code, err } => write!(prompt,
-                            "Your generated code ```{code}``` is not valid Rust. Parse error: ```{err}```. Fix the syntax error and respond with the full corrected code.",
+                            "nudge: Your generated code ```{code}``` is not valid Rust. Parse error: ```{err}```. Fix the syntax error and respond with the full corrected code.",
                         ).expect("Can write to prompt"),
                         RigPrompt(rig_agent::completion::PromptError::MaxTurnsError { .. }) => prompt.push_str(
-                            "You exhausted the tool-call turn budget before producing code. Respond with the final Rust code block now.",
+                            "nudge: You exhausted the tool-call turn budget before producing code. Respond with the final Rust code block now.",
                         ),
                         WriteLib(_) => todo!(),
                         SignatureMismatch {
-                            code,
+                            code: _,
                             expected,
                             got,
                         } => write!(prompt,
-                            "Signature mismatch in {got}. Expected `{expected}`. Fix ONLY this function's signature (argument types and return type must match exactly; argument names may differ). Full code: ```{code}```",
+                            "nudge: Signature mismatch, got: {got}.\n
+                            Expected `{expected}`.\n
+                            Fix ONLY this function's signature (argument types and return type must match exactly, argument names may differ).",
                         ).expect("Can write to prompt"),
                         UnsafeCode { code, construct } => write!(prompt,
-                            "Your generated code contains {construct}, but unsafe code is forbidden in evolvable code. \
+                            "nudge: Your generated code contains {construct}, but unsafe code is forbidden in evolvable code. \
                             Rewrite it in safe Rust only: no `unsafe` blocks, `unsafe fn`, `unsafe impl`, `unsafe trait`, \
                             `extern` blocks, unsafe attributes, or `unsafe` tokens inside macros. \
                             Keep the logic and the function signatures unchanged. Full code: ```{code}```",
                         ).expect("Can write to prompt"),
-                        ForbiddenConstruct { code, construct, reason } => write!(prompt,
-                            "Your generated code contains {construct}, which is forbidden in evolvable code: {reason}. \
-                            Rewrite the code without it, keeping the logic and the function signatures unchanged. Full code: ```{code}```",
+                        ForbiddenConstruct { code: _, construct, reason } => write!(prompt,
+                            "nudge: Your generated code contains {construct}, which is forbidden in evolvable code: {reason}.\n
+                            Rewrite the code without it, keeping the logic and the function signatures unchanged if possible.",
                         ).expect("Can write to prompt"),
-                        CompilationFailed{code, err} => write!(prompt,
-                            "Your generated code ```{code}``` failed to compile. Compiler output:\n```\n{err}\n```\n\
-                            Fix the compilation errors while preserving the existing logic and behaviour. \
-                            Change only the expressions the compiler diagnostics point at (match the `src/lib.rs:<line>:<col>` markers); \
-                            do not rewrite, restructure, rename, reformat or otherwise alter the rest of the code. \
-                            A trait error (E0277) means you used an operator or conversion the type does not implement: \
-                            consult the documented `impl ... for ...` blocks for that type and use only listed impls, \
-                            adjusting the operand types instead of forcing an unsupported operation.",
+                        CompilationFailed{code: _, err} => write!(prompt,
+                            "nudge: Your generated code failed to compile. Compiler output:\n```\n{err}\n```\n\
+                            Fix the compilation errors while preserving the existing logic and behaviour if possible.\n
+                            Change only the expressions the compiler diagnostics point at (match the `src/lib.rs:<line>:<col>` markers);",
                         ).expect("Can write to prompt"),
                         e => {
                             warn!("Unhandled error: {e}");
