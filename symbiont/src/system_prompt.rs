@@ -182,11 +182,11 @@ pub enum DocMode {
     /// The system prompt contains the full API synopsis. The prompt grows
     /// with the size of the host API, and every inference request sends it
     /// again.
+    #[default]
     Inline,
     /// The system prompt contains the compact index of the prelude. The
     /// `api_index` and `api_doc` tools give the agent the full definitions
     /// on demand.
-    #[default]
     IndexAndTools,
     /// The system prompt contains no API content. The agent explores the API
     /// with the `api_index` and `api_doc` tools.
