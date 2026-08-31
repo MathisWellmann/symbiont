@@ -3,6 +3,8 @@
 
 use std::fmt::Write;
 
+use rig_core::message::Message;
+
 use crate::Revision;
 
 /// Errors that can occur during symbiont runtime operations.
@@ -143,5 +145,132 @@ impl Error {
     }
 }
 
+impl Error {
+    /// The messages an aborted agent run added before it failed, if the
+    /// error carries them.
+    ///
+    /// Rig reports the canonical transcript it reached when a run dies
+    /// inside the tool-calling loop: [`PromptError::MaxTurnsError`],
+    /// [`PromptError::PromptCancelled`] and [`PromptError::UnknownToolCall`]
+    /// all carry `chat_history` — the input history the caller passed in,
+    /// followed by every message the run produced (the prompt, assistant
+    /// turns, and tool results). Skipping the first `input_len` messages
+    /// yields exactly the run's own messages.
+    ///
+    /// A retry that appends these sees the tool exchanges the aborted run
+    /// already made instead of replaying the identical request that just
+    /// exhausted its budget. Errors without a transcript (provider HTTP
+    /// failures, validation errors, ...) return `None`: those runs either
+    /// produced nothing or the pipeline owns what they produced.
+    pub(crate) fn aborted_run_messages(&self, input_len: usize) -> Option<Vec<Message>> {
+        use rig_agent::completion::PromptError;
+
+        let full: &[Message] = match self {
+            Error::RigPrompt(PromptError::MaxTurnsError { chat_history, .. })
+            | Error::RigPrompt(PromptError::UnknownToolCall { chat_history, .. }) => {
+                chat_history.as_slice()
+            }
+            Error::RigPrompt(PromptError::PromptCancelled { chat_history, .. }) => {
+                chat_history.as_slice()
+            }
+            _ => return None,
+        };
+        Some(full.iter().skip(input_len).cloned().collect())
+    }
+}
+
 /// Result type alias for symbiont operations.
 pub type Result<T, E = Error> = std::result::Result<T, E>;
+
+#[cfg(test)]
+mod tests {
+    use rig_agent::completion::PromptError;
+    use rig_core::message::Message;
+
+    use super::*;
+
+    /// The messages the aborted run produced, with the input history the
+    /// caller passed in skipped by count.
+    #[test]
+    fn max_turns_error_yields_the_run_delta() {
+        let input = [Message::user("base prompt")];
+        let run = vec![
+            Message::user("base prompt"),
+            Message::assistant("tool call"),
+            Message::user("tool result"),
+        ];
+        let err = Error::RigPrompt(PromptError::MaxTurnsError {
+            max_turns: 3,
+            chat_history: Box::new(run.clone()),
+            prompt: Box::new(Message::user("base prompt")),
+        });
+
+        let recovered = err
+            .aborted_run_messages(input.len())
+            .expect("MaxTurnsError carries a transcript");
+
+        assert_eq!(recovered, run[1..]);
+    }
+
+    /// The transcript-less shape: when the run reached no state, the
+    /// recovered delta is empty but still `Some`, and the retry proceeds
+    /// exactly as before the fix.
+    #[test]
+    fn max_turns_error_with_empty_transcript_yields_nothing() {
+        let err = Error::RigPrompt(PromptError::MaxTurnsError {
+            max_turns: 3,
+            chat_history: Box::new(Vec::new()),
+            prompt: Box::new(Message::user("base prompt")),
+        });
+
+        let recovered = err
+            .aborted_run_messages(0)
+            .expect("MaxTurnsError carries a transcript");
+
+        assert!(recovered.is_empty());
+    }
+
+    /// The other two abort variants carry the same field, so the same
+    /// recovery applies to them.
+    #[test]
+    fn cancelled_and_unknown_tool_call_errors_are_recovered_too() {
+        let run = vec![Message::user("base prompt"), Message::assistant("partial")];
+
+        let cancelled = Error::RigPrompt(PromptError::PromptCancelled {
+            chat_history: run.clone(),
+            reason: "hook terminated".to_string(),
+        });
+        assert_eq!(
+            cancelled
+                .aborted_run_messages(0)
+                .expect("carries transcript"),
+            run
+        );
+
+        let unknown_tool = Error::RigPrompt(PromptError::UnknownToolCall {
+            tool_name: "nope".to_string(),
+            available_tools: Vec::new(),
+            allowed_tools: Vec::new(),
+            chat_history: Box::new(run.clone()),
+        });
+        assert_eq!(
+            unknown_tool
+                .aborted_run_messages(1)
+                .expect("carries transcript"),
+            run[1..]
+        );
+    }
+
+    /// Errors without a transcript must not fabricate messages.
+    #[test]
+    fn other_errors_carry_no_messages() {
+        assert!(Error::NoRustCode.aborted_run_messages(0).is_none());
+        assert!(
+            Error::RigPrompt(PromptError::CompletionError(
+                rig_core::completion::CompletionError::ProviderError("boom".to_string()),
+            ))
+            .aborted_run_messages(0)
+            .is_none()
+        );
+    }
+}

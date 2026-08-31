@@ -68,7 +68,9 @@ async fn max_turns_error_is_nudged_and_recovered_from() {
         "retry prompt must contain the turn-budget nudge, got: {retry_prompt}"
     );
 
-    // A failed run produces no messages, so the history stays empty.
+    // A run that aborts without producing any messages (rig reported an
+    // empty transcript in the error) recovers nothing, so the history
+    // stays empty.
     assert_eq!(agent.history_len(0), 0);
     assert_eq!(agent.history_len(1), 0);
 
