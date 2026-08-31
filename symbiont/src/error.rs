@@ -111,7 +111,6 @@ impl Error {
             RigPrompt(rig_agent::completion::PromptError::MaxTurnsError { .. }) => prompt.push_str(
                 "nudge: You exhausted the tool-call turn budget before producing code. Respond with the final Rust code block now.",
             ),
-            WriteLib(_) => todo!(),
             SignatureMismatch {
                 code: _,
                 expected,
