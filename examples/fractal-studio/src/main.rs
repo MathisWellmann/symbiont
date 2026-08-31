@@ -48,6 +48,7 @@ use rayon::prelude::*;
 use symbiont::{
     DocMode,
     Runtime,
+    ThinkingLevel,
 };
 use tracing::{
     info,
@@ -770,7 +771,7 @@ fn main() -> eframe::Result<()> {
             None,
             DocMode::default(),
             &model,
-            false,
+            ThinkingLevel::Medium,
         ))
         .expect("can initialize the agent; check the API_KEY and BASE_URL env vars");
     let tokio_handle = tokio_rt.handle().clone();
