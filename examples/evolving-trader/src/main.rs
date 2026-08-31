@@ -693,7 +693,7 @@ async fn agent(host_crate: &str) -> symbiont::Result<Agent> {
     let agent = Agent::new(
         symbiont::agent_builder(
             Some(host_crate),
-            DocMode::default(),
+            DocMode::IndexAndTools,
             &base_url,
             &api_key,
             &model,

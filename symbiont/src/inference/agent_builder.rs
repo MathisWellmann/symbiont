@@ -132,6 +132,12 @@ pub const DOC_TOOLS_MAX_TURNS: usize = 8;
 ///   (vLLM, llama-server, OpenRouter, OpenAI, etc.). Can also be passed as `bool` (`false` -> `Disabled`, `true` -> `Medium`).
 ///   Keep this [`ThinkingLevel::Disabled`] for thinking models (e.g. Qwen3, DeepSeek) in latency-sensitive loops.
 ///
+/// # Errors
+///
+/// Returns [`Error::InvalidDocMode`] if `doc_mode` registers tools but
+/// `opt_crate_name` is `None`. Also returns errors from building the
+/// inference client or the host API documentation.
+///
 pub async fn agent_builder(
     opt_crate_name: Option<&str>,
     doc_mode: DocMode,
@@ -209,12 +215,18 @@ pub async fn agent_from_env(
 /// # Arguments:
 /// - `opt_crate_name`: The crate whose API the evolved code can use, usually
 ///   `Some(env!("CARGO_PKG_NAME"))`. With `None`, no host API is documented
-///   and `doc_mode` has no effect.
+///   and `doc_mode` must be `DocMode::Inline`.
 /// - `doc_mode`: How the agent gets the host API documentation. See [`agent_builder`].
 /// - `base_url`: The inference endpoint for `/v1/chat/completions` based requests.
 /// - `api_key`: The API key for authenticating the requests, if any. Can be empty.
 /// - `model`: The model slug served at `base_url`.
 /// - `thinking`: The [`ThinkingLevel`] configuring reasoning effort. See [`agent_builder`].
+///
+/// # Errors
+///
+/// Returns the errors that [`agent_builder`] returns, in particular
+/// [`Error::InvalidDocMode`] if `doc_mode` registers tools but
+/// `opt_crate_name` is `None`.
 ///
 pub async fn init_agent(
     opt_crate_name: Option<&str>,
@@ -250,5 +262,29 @@ mod tests {
         .await
         .expect("building a local agent needs no network");
         assert_eq!(agent.provider(), "http://127.0.0.1:8321/v1");
+    }
+
+    // ponytail: building the real reqwest client initializes aws-lc-rs via FFI,
+    // which Miri cannot execute; runs fine under a normal test.
+    #[cfg_attr(miri, ignore)]
+    #[tokio::test]
+    async fn agent_builder_rejects_tool_doc_modes_without_crate() {
+        for doc_mode in [DocMode::IndexAndTools, DocMode::Tools] {
+            assert!(
+                matches!(
+                    agent_builder(
+                        None,
+                        doc_mode,
+                        "http://127.0.0.1:8321/v1",
+                        "",
+                        "model",
+                        ThinkingLevel::Disabled,
+                    )
+                    .await,
+                    Err(Error::InvalidDocMode)
+                ),
+                "tool doc modes need a crate, got doc_mode {doc_mode:?}"
+            );
+        }
     }
 }

@@ -4,6 +4,7 @@ use tracing::info;
 use crate::{
     DocIndex,
     DocIndexError,
+    Error,
     Result,
     doc_string::write_prelude_doc_string,
 };
@@ -229,13 +230,14 @@ impl DocMode {
 ///
 /// - `opt_crate_name`: The crate to document, usually
 ///   `Some(env!("CARGO_PKG_NAME"))`. With `None`, no host API is documented
-///   and `doc_mode` has no effect.
+///   and `doc_mode` must be `DocMode::Inline`.
 /// - `doc_mode`: How the prompt carries the host API documentation.
 ///
 /// # Errors
 ///
-/// Returns an error if the runtime cannot build or parse the documentation
-/// of the host crate.
+/// Returns [`Error::InvalidDocMode`] if `doc_mode` registers tools but
+/// `opt_crate_name` is `None`. Otherwise, returns an error if the runtime
+/// cannot build or parse the documentation of the host crate.
 pub async fn system_prompt(opt_crate_name: Option<&str>, doc_mode: DocMode) -> Result<String> {
     let mut prompt = BASE_PROMPT.to_string();
     match (opt_crate_name, doc_mode) {
@@ -256,7 +258,8 @@ pub async fn system_prompt(opt_crate_name: Option<&str>, doc_mode: DocMode) -> R
             }
         }
         (Some(_), DocMode::Tools) => prompt.push_str(TOOL_DOC_SECTION),
-        (None, _) => prompt.push_str(INLINE_DOC_SECTION),
+        (None, DocMode::Inline) => prompt.push_str(INLINE_DOC_SECTION),
+        (None, _) => return Err(Error::InvalidDocMode),
     }
     info!("system_prompt: {}", prompt.green());
 
@@ -277,14 +280,21 @@ mod tests {
     use super::*;
 
     #[tokio::test(flavor = "current_thread")]
-    async fn system_prompt_without_crate_ignores_doc_mode() {
-        for doc_mode in [DocMode::Inline, DocMode::IndexAndTools, DocMode::Tools] {
-            let prompt = system_prompt(None, doc_mode)
-                .await
-                .expect("no docs to build");
-            assert!(prompt.contains("# Host API documentation"));
-            assert!(prompt.contains("only `std` is available"));
-            assert!(!prompt.contains("api_doc"));
+    async fn system_prompt_without_crate_requires_inline() {
+        let prompt = system_prompt(None, DocMode::Inline)
+            .await
+            .expect("no docs to build");
+        assert!(prompt.contains("# Host API documentation"));
+        assert!(prompt.contains("only `std` is available"));
+        assert!(!prompt.contains("api_doc"));
+        for doc_mode in [DocMode::IndexAndTools, DocMode::Tools] {
+            assert!(
+                matches!(
+                    system_prompt(None, doc_mode).await,
+                    Err(Error::InvalidDocMode)
+                ),
+                "tool doc modes need a crate, got doc_mode {doc_mode:?}"
+            );
         }
     }
 
