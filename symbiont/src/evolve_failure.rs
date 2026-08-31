@@ -22,7 +22,7 @@ use crate::{
 /// Captures exactly the failures that are rendered back into the retry
 /// prompt as backpressure: missing code blocks, parse errors, exhausted
 /// tool-call turn budgets, signature mismatches, forbidden unsafe code or
-/// constructs, and compilation failures.
+/// constructs, unimplemented function bodies, and compilation failures.
 /// Hosts can drain these via [`crate::Runtime::take_evolve_failures`] and
 /// persist them for offline analysis of common failure patterns, e.g. to
 /// tune prompts or the documented API surface.
@@ -44,8 +44,8 @@ pub struct EvolveFailure {
     lane: Lane,
     /// Failure kind label; the same values as the `kind` label of
     /// [`crate::observability::EVOLVE_FAILURES`]: one of `no_rust_code`,
-    /// `parse`, `max_turns`, `signature`, `unsafe`, `forbidden` or
-    /// `compile`.
+    /// `parse`, `max_turns`, `signature`, `unsafe`, `forbidden`,
+    /// `unimplemented` or `compile`.
     #[getset(get_copy = "pub")]
     kind: &'static str,
     /// The generated source that failed. Empty when the agent produced no
@@ -86,6 +86,14 @@ impl EvolveFailure {
                 construct,
                 reason,
             } => (code.clone(), format!("{construct} ({reason})")),
+            UnimplementedFunction {
+                code,
+                fn_name,
+                reason,
+            } => (
+                code.clone(),
+                format!("`fn {fn_name}` is not implemented ({reason})"),
+            ),
             CompilationFailed { code, err } => (code.clone(), err.clone()),
             _ => return None,
         };
@@ -172,6 +180,28 @@ mod tests {
         assert_eq!(failure.kind(), "forbidden");
         assert!(failure.diagnostics().contains("a `static` item"));
         assert!(failure.diagnostics().contains("resets on every evolution"));
+    }
+
+    #[test]
+    fn unimplemented_function_is_recorded() {
+        let failure = EvolveFailure::from_error(
+            &Error::UnimplementedFunction {
+                code: "pub fn step(c: &mut usize) {}".to_string(),
+                fn_name: "step".to_string(),
+                reason: "the body is empty".to_string(),
+            },
+            2,
+            Lane::from(0),
+        )
+        .expect("unimplemented bodies feed backpressure");
+
+        assert_eq!(failure.kind(), "unimplemented");
+        assert_eq!(failure.generated_code(), "pub fn step(c: &mut usize) {}");
+        assert!(
+            failure
+                .diagnostics()
+                .contains("`fn step` is not implemented")
+        );
     }
 
     #[test]

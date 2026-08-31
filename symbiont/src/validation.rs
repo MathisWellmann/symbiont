@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use prettyplease::unparse;
 // SPDX-License-Identifier: MPL-2.0
 use quote::ToTokens;
@@ -135,6 +137,154 @@ pub(crate) fn validate_generated_ast(
     Ok(())
 }
 
+/// Reject stub bodies outright, and candidates that implement nothing.
+///
+/// An empty body or a lone placeholder macro (`todo!()`, `unimplemented!()`,
+/// `unreachable!()`) always rejects, even when other declared functions
+/// genuinely evolved: such a body panics at run time or fails to compile. A
+/// verbatim echo of the declared default body only rejects when *no*
+/// declared function changed. A candidate that genuinely evolves one
+/// function while leaving another at its default is a partial evolution and
+/// is accepted; the untouched functions keep their default behaviour.
+///
+/// Runs after [`validate_generated_ast`] succeeds, so argument types already
+/// match the declarations and bodies of declared functions can be compared
+/// positionally. Argument identifiers are rewritten to positional
+/// placeholders before comparison because the signature check deliberately
+/// ignores argument names: an echo that renamed an unused parameter must
+/// still count as an echo.
+///
+/// `default_bodies` maps every declared function name to the normalized
+/// token string of its default body (see [`default_body_tokens`]).
+pub(crate) fn check_implementation_bodies(
+    file: &syn::File,
+    default_bodies: &HashMap<String, String>,
+) -> Result<()> {
+    // First declared function still sitting at its default body, and whether
+    // any declared function genuinely changed.
+    let mut unchanged: Option<String> = None;
+    let mut changed = false;
+    for item in &file.items {
+        let syn::Item::Fn(item_fn) = item else {
+            continue;
+        };
+        let name = item_fn.sig.ident.to_string();
+        let Some(default_body) = default_bodies.get(&name) else {
+            // Helper function, not an evolution target.
+            continue;
+        };
+        let block = &item_fn.block;
+        if block.stmts.is_empty() {
+            return Err(Error::UnimplementedFunction {
+                code: unparse(file),
+                fn_name: name,
+                reason: "the body is empty".to_string(),
+            });
+        }
+        if let Some(placeholder) = placeholder_macro_of(block) {
+            return Err(Error::UnimplementedFunction {
+                code: unparse(file),
+                fn_name: name,
+                reason: format!("the body is only `{placeholder}!()`"),
+            });
+        }
+        let generated = body_tokens(block, &arg_names(&item_fn.sig));
+        if generated == *default_body {
+            unchanged.get_or_insert(name);
+        } else {
+            changed = true;
+        }
+    }
+    // Every declared function still sits at its default body: the candidate
+    // implements nothing.
+    if !changed && let Some(name) = unchanged {
+        return Err(Error::UnimplementedFunction {
+            code: unparse(file),
+            fn_name: name,
+            reason: "the body is identical to the default implementation".to_string(),
+        });
+    }
+    Ok(())
+}
+
+/// The name of the placeholder macro if the whole body is a single
+/// `todo!()`, `unimplemented!()` or `unreachable!()` call, else `None`.
+fn placeholder_macro_of(block: &syn::Block) -> Option<&'static str> {
+    let [stmt] = block.stmts.as_slice() else {
+        return None;
+    };
+    // A macro call parses to `Stmt::Macro` in statement position
+    // (`todo!();`) and to `Expr::Macro` as the body's final expression
+    // (`todo!()`).
+    let mac: &syn::Macro = match stmt {
+        syn::Stmt::Macro(sm) => &sm.mac,
+        syn::Stmt::Expr(syn::Expr::Macro(m), _) => &m.mac,
+        _ => return None,
+    };
+    ["todo", "unimplemented", "unreachable"]
+        .into_iter()
+        .find(|name| mac.path.is_ident(name))
+}
+
+/// Normalized body tokens of a declared function, the echo reference used
+/// by [`check_implementation_bodies`].
+pub(crate) fn default_body_tokens(item_fn: &syn::ItemFn) -> String {
+    body_tokens(&item_fn.block, &arg_names(&item_fn.sig))
+}
+
+/// The body's token stream with argument identifiers rewritten to
+/// positional placeholders, rendered as a string. Comments do not survive
+/// into token streams, so the result is insensitive to both formatting and
+/// comments.
+fn body_tokens(block: &syn::Block, arg_names: &[String]) -> String {
+    normalize_arg_idents(block.to_token_stream(), arg_names).to_string()
+}
+
+/// The argument identifiers of `sig`, positionally. Wildcard parameters
+/// (`_`) carry no identifier and are skipped; an echo that named such a
+/// parameter is then missed rather than misreported.
+fn arg_names(sig: &Signature) -> Vec<String> {
+    sig.inputs
+        .iter()
+        .filter_map(|arg| match arg {
+            FnArg::Typed(pat) => match &*pat.pat {
+                syn::Pat::Ident(p) => Some(p.ident.to_string()),
+                _ => None,
+            },
+            FnArg::Receiver(_) => None,
+        })
+        .collect()
+}
+
+/// Rewrite every identifier matching one of `arg_names` to
+/// `__symbiont_arg_{i}`, positionally, so body comparisons ignore argument
+/// names. Recurses into delimiter groups.
+fn normalize_arg_idents(
+    tokens: proc_macro2::TokenStream,
+    arg_names: &[String],
+) -> proc_macro2::TokenStream {
+    tokens
+        .into_iter()
+        .map(|tt| match tt {
+            proc_macro2::TokenTree::Ident(ident) => {
+                let name = ident.to_string();
+                match arg_names.iter().position(|arg| arg == &name) {
+                    Some(i) => proc_macro2::TokenTree::Ident(proc_macro2::Ident::new(
+                        &format!("__symbiont_arg_{i}"),
+                        ident.span(),
+                    )),
+                    None => proc_macro2::TokenTree::Ident(ident),
+                }
+            }
+            proc_macro2::TokenTree::Group(group) => {
+                let stream = normalize_arg_idents(group.stream(), arg_names);
+                proc_macro2::TokenTree::Group(proc_macro2::Group::new(group.delimiter(), stream))
+            }
+            _ => tt,
+        })
+        .collect()
+}
+
 /// Path prefixes that are always denied, independent of
 /// [`crate::DylibConfig`]: replacing the panic hook would break the
 /// harness's panic-reporting protocol — the injected preamble owns the
@@ -252,7 +402,7 @@ fn snippet(tokens: &dyn ToTokens) -> String {
 #[derive(Default)]
 struct AliasCollector {
     /// Local name -> absolute path segments.
-    aliases: std::collections::HashMap<String, Vec<String>>,
+    aliases: HashMap<String, Vec<String>>,
 }
 
 impl<'ast> Visit<'ast> for AliasCollector {
@@ -265,7 +415,7 @@ impl<'ast> Visit<'ast> for AliasCollector {
 fn collect_use_tree(
     tree: &syn::UseTree,
     prefix: &mut Vec<String>,
-    aliases: &mut std::collections::HashMap<String, Vec<String>>,
+    aliases: &mut HashMap<String, Vec<String>>,
 ) {
     match tree {
         syn::UseTree::Path(path) => {
@@ -303,7 +453,7 @@ struct PolicyScan<'a> {
     /// Denied path prefixes, pre-split into segments.
     denied: &'a [Vec<&'a str>],
     /// `use` aliases of this file, local name -> absolute segments.
-    aliases: std::collections::HashMap<String, Vec<String>>,
+    aliases: HashMap<String, Vec<String>>,
     finding: Option<Finding>,
 }
 
@@ -903,6 +1053,196 @@ pub fn step(counter: &mut usize) -> usize {
         let expected = vec!["fn step(counter: &mut usize) -> usize".to_string()];
         validate_generated_ast(&mut file, &expected, &denied())
             .expect("validation with return type passed");
+    }
+
+    /// A `default_bodies` map holding the one function declared by
+    /// `default_src`.
+    fn bodies_for(default_src: &str) -> HashMap<String, String> {
+        let item: syn::ItemFn = syn::parse_str(default_src).expect("default body parses");
+        let mut bodies = HashMap::new();
+        bodies.insert(item.sig.ident.to_string(), default_body_tokens(&item));
+        bodies
+    }
+    /// A `default_bodies` map for the two declared functions `step_src` and
+    /// `bump_src`.
+    fn two_bodies(step_src: &str, bump_src: &str) -> HashMap<String, String> {
+        let mut bodies = bodies_for(step_src);
+        let bump: syn::ItemFn = syn::parse_str(bump_src).expect("default body parses");
+        bodies.insert(bump.sig.ident.to_string(), default_body_tokens(&bump));
+        bodies
+    }
+    /// Assert `check_implementation_bodies` rejects `code` with
+    /// `fn_name` / `reason`.
+    fn assert_rejects_unimplemented(code: &str, bodies: &HashMap<String, String>, reason: &str) {
+        let file: syn::File = syn::parse_str(code).expect("can parse");
+        let err = check_implementation_bodies(&file, bodies)
+            .expect_err("unimplemented body must be rejected");
+        match err {
+            Error::UnimplementedFunction {
+                fn_name,
+                reason: found,
+                ..
+            } => {
+                assert_eq!(fn_name, "step", "for `{code}`");
+                assert_eq!(found, reason, "for `{code}`");
+            }
+            other => panic!("expected UnimplementedFunction in `{code}`, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn empty_body_is_rejected() {
+        let bodies = bodies_for("pub fn step(counter: &mut usize) { *counter += 1; }");
+        assert_rejects_unimplemented(
+            "pub fn step(counter: &mut usize) {}",
+            &bodies,
+            "the body is empty",
+        );
+        // A body of only comments is empty as far as the token stream is
+        // concerned.
+        assert_rejects_unimplemented(
+            "pub fn step(counter: &mut usize) {\n    // will be implemented\n}",
+            &bodies,
+            "the body is empty",
+        );
+    }
+
+    #[test]
+    fn placeholder_macro_bodies_are_rejected() {
+        let bodies = bodies_for("pub fn step(counter: &mut usize) { *counter += 1; }");
+        for (macro_name, reason) in [
+            ("todo", "the body is only `todo!()`"),
+            ("unimplemented", "the body is only `unimplemented!()`"),
+            ("unreachable", "the body is only `unreachable!()`"),
+        ] {
+            for code in [
+                &format!("pub fn step(counter: &mut usize) {{ {macro_name}!(); }}"),
+                &format!("pub fn step(counter: &mut usize) {{ {macro_name}!() }}"),
+            ] {
+                assert_rejects_unimplemented(code, &bodies, reason);
+            }
+        }
+        // A placeholder next to real work is an implementation, not a stub.
+        let file: syn::File =
+            syn::parse_str("pub fn step(counter: &mut usize) { *counter += 1; todo!(); }")
+                .expect("can parse");
+        check_implementation_bodies(&file, &bodies).expect("placeholder with real work must pass");
+    }
+
+    #[test]
+    fn verbatim_default_echo_is_rejected() {
+        let bodies = bodies_for("pub fn step(counter: &mut usize) { *counter += 1; }");
+        // Formatted differently and carrying a comment: token streams are
+        // insensitive to both, so it still counts as an echo.
+        let code =
+            "pub fn step(counter: &mut usize) {\n    // keeping the default\n    *counter+= 1;\n}";
+        assert_rejects_unimplemented(
+            code,
+            &bodies,
+            "the body is identical to the default implementation",
+        );
+    }
+
+    #[test]
+    fn echo_with_renamed_argument_is_rejected() {
+        // The signature check ignores argument names, so the echo check must
+        // not be evadable by renaming an unused parameter.
+        let bodies = bodies_for("pub fn step(counter: &mut usize) { *counter += 1; }");
+        assert_rejects_unimplemented(
+            "pub fn step(_counter: &mut usize) { *_counter += 1; }",
+            &bodies,
+            "the body is identical to the default implementation",
+        );
+    }
+
+    #[test]
+    fn changed_body_is_accepted() {
+        let bodies = bodies_for("pub fn step(counter: &mut usize) { *counter += 1; }");
+        let file: syn::File = syn::parse_str("pub fn step(counter: &mut usize) { *counter += 7; }")
+            .expect("can parse");
+        check_implementation_bodies(&file, &bodies).expect("a genuine evolution must pass");
+    }
+
+    #[test]
+    fn helper_functions_are_not_checked() {
+        // Only declared (evolvable) functions are checked; a helper with an
+        // empty body is the model's business.
+        let bodies = bodies_for("pub fn step(counter: &mut usize) { *counter += 1; }");
+        let file: syn::File =
+            syn::parse_str("fn helper() {}\npub fn step(counter: &mut usize) { *counter += 7; }")
+                .expect("can parse");
+        check_implementation_bodies(&file, &bodies).expect("helpers must not be checked");
+    }
+
+    #[test]
+    fn partial_evolution_with_one_default_body_is_accepted() {
+        let bodies = two_bodies(
+            "pub fn step(counter: &mut usize) { *counter += 1; }",
+            "pub fn bump(count: usize) -> usize { count + 1 }",
+        );
+        // `step` evolves, `bump` keeps its default body: a partial evolution
+        // must land, or a multi-function host could never improve one
+        // function at a time.
+        let file: syn::File = syn::parse_str(
+            "pub fn step(counter: &mut usize) { *counter += 7; }\n\
+             pub fn bump(count: usize) -> usize { count + 1 }",
+        )
+        .expect("can parse");
+        check_implementation_bodies(&file, &bodies).expect("a partial evolution must pass");
+    }
+
+    #[test]
+    fn all_default_bodies_are_rejected() {
+        let bodies = two_bodies(
+            "pub fn step(counter: &mut usize) { *counter += 1; }",
+            "pub fn bump(count: usize) -> usize { count + 1 }",
+        );
+        let file: syn::File = syn::parse_str(
+            "pub fn step(counter: &mut usize) { *counter += 1; }\n\
+             pub fn bump(count: usize) -> usize { count + 1 }",
+        )
+        .expect("can parse");
+        let err = check_implementation_bodies(&file, &bodies)
+            .expect_err("a candidate with no changed body must be rejected");
+        match err {
+            Error::UnimplementedFunction {
+                fn_name,
+                reason: found,
+                ..
+            } => {
+                assert_eq!(fn_name, "step", "the first unchanged function is named");
+                assert_eq!(found, "the body is identical to the default implementation");
+            }
+            other => panic!("expected UnimplementedFunction, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stub_is_rejected_even_beside_a_genuine_implementation() {
+        let bodies = two_bodies(
+            "pub fn step(counter: &mut usize) { *counter += 1; }",
+            "pub fn bump(count: usize) -> usize { count + 1 }",
+        );
+        // `step` genuinely evolves, but `bump` is a placeholder that would
+        // panic at run time: stubs reject regardless of the other functions.
+        let file: syn::File = syn::parse_str(
+            "pub fn step(counter: &mut usize) { *counter += 7; }\n\
+             pub fn bump(count: usize) -> usize { todo!() }",
+        )
+        .expect("can parse");
+        let err = check_implementation_bodies(&file, &bodies)
+            .expect_err("a stub must be rejected even in a partial evolution");
+        match err {
+            Error::UnimplementedFunction {
+                fn_name,
+                reason: found,
+                ..
+            } => {
+                assert_eq!(fn_name, "bump");
+                assert_eq!(found, "the body is only `todo!()`");
+            }
+            other => panic!("expected UnimplementedFunction, got {other:?}"),
+        }
     }
 
     /// Assert `enforce_code_policy` rejects `code` with an unsafe finding
