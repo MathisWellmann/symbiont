@@ -134,7 +134,7 @@ impl Error {
             CompilationFailed{code: _, err} => write!(prompt,
                 "nudge: Your generated code failed to compile. Compiler output:\n```\n{err}\n```\n\
                 Fix the compilation errors while preserving the existing logic and behaviour if possible.\n
-                Change only the expressions the compiler diagnostics point at (match the `src/lib.rs:<line>:<col>` markers);",
+                Change only the expressions the compiler diagnostics point at.",
             ).expect("Can write to prompt"),
             _ => {
                 return Err(self);
