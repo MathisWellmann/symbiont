@@ -380,6 +380,13 @@ impl Runtime {
     /// keeps what it recorded before a failure. `run_out` stays `None` only
     /// when the agent run itself failed. That is how the caller separates an
     /// attempt that never got to the model from one the pipeline rejected.
+    ///
+    /// A run that fails inside the tool-calling loop (turn budget exhausted,
+    /// cancelled, unknown tool call) has still produced messages before the
+    /// abort. Rig ships that partial transcript out in the error, and the
+    /// failure path appends it to `history`: the retry then sees the tool
+    /// exchanges the aborted run already made instead of replaying the
+    /// identical request that just exhausted its budget.
     async fn evolve_no_backpressure<AgentT>(
         &self,
         agent: &AgentT,
@@ -395,6 +402,7 @@ impl Runtime {
         info!("prompt: {}", prompt.green());
         let t0 = Instant::now();
         let visible = history.get(history_base..).unwrap_or_default().to_vec();
+        let visible_len = visible.len();
         debug!("chat history: {visible:?}");
 
         // The agent implementation drives any tool-calling turns to
@@ -410,6 +418,15 @@ impl Runtime {
                 )
                 .increment(1);
                 stages.set_llm(Some(t0.elapsed()));
+                // A run aborted inside the tool loop still produced
+                // messages, and rig ships them out in the error (input
+                // history included). Append the run's own messages so the
+                // next request extends the conversation it aborted instead
+                // of repeating the one that just exhausted its budget.
+                if let Some(partial) = err.aborted_run_messages(visible_len) {
+                    debug!("Recovered {} messages from the aborted run", partial.len());
+                    history.extend(partial);
+                }
                 return Err(err);
             }
         };

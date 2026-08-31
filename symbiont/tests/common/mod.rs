@@ -63,6 +63,8 @@ pub(crate) struct ScriptedAgent {
     prompts: Mutex<Vec<String>>,
     /// Chat-history length received on each call, in call order.
     history_lens: Mutex<Vec<usize>>,
+    /// Full chat history received on each call, in call order.
+    histories: Mutex<Vec<Vec<Message>>>,
 }
 
 impl ScriptedAgent {
@@ -72,6 +74,7 @@ impl ScriptedAgent {
             script: Mutex::new(VecDeque::from_iter(turns)),
             prompts: Mutex::new(Vec::new()),
             history_lens: Mutex::new(Vec::new()),
+            histories: Mutex::new(Vec::new()),
         }
     }
 
@@ -89,6 +92,11 @@ impl ScriptedAgent {
     pub(crate) fn history_len(&self, idx: usize) -> usize {
         self.history_lens.lock().expect("Mutex is not poisoned")[idx]
     }
+
+    /// The full chat history received on call `idx` (0-based).
+    pub(crate) fn history(&self, idx: usize) -> Vec<Message> {
+        self.histories.lock().expect("Mutex is not poisoned")[idx].clone()
+    }
 }
 
 impl EvolutionAgent for ScriptedAgent {
@@ -101,6 +109,10 @@ impl EvolutionAgent for ScriptedAgent {
             .lock()
             .expect("Mutex is not poisoned")
             .push(history.len());
+        self.histories
+            .lock()
+            .expect("Mutex is not poisoned")
+            .push(history.clone());
 
         let turn = self
             .script
