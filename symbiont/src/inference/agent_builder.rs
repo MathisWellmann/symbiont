@@ -121,7 +121,7 @@ pub const DOC_TOOLS_MAX_TURNS: usize = 8;
 /// # Arguments:
 /// - `opt_crate_name`: The crate whose API the evolved code can use, usually
 ///   `Some(env!("CARGO_PKG_NAME"))`. With `None`, no host API is documented
-///   and `doc_mode` has no effect.
+///   and `doc_mode` must be `DocMode::Inline`.
 /// - `doc_mode`: How the agent gets the host API documentation: inline in
 ///   the system prompt, or on demand through the `api_index` and `api_doc`
 ///   tools.
