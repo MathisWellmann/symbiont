@@ -75,6 +75,13 @@ pub enum Error {
         diagnostics: Vec<crate::Diagnostic>,
     },
 
+    /// The response edited the previous candidate (see [`crate::edit`]) and
+    /// an edit did not apply: its search text was missing or ambiguous, it
+    /// anchored on an error that does not exist, or two edits overlapped.
+    /// `code` is the previous candidate, unchanged.
+    #[error("Edit could not be applied: {err}")]
+    EditFailed { code: String, err: String },
+
     #[error("No evolvable functions found. Use the evolvable! macro to declare at least one.")]
     NoEvolvableFunctions,
 
@@ -154,6 +161,10 @@ impl Error {
                 A stub or the unchanged default body is not an evolution.\n
                 Respond with a complete, real implementation matching the declared signature.\n
                 Full code: ```{code}```",
+            ).expect("Can write to prompt"),
+            EditFailed { code: _, err } => write!(prompt,
+                "nudge: Your edit could not be applied to your previous code: {err}\n\
+                Your previous code is unchanged. Respond with a corrected edit, or with the complete corrected code block.",
             ).expect("Can write to prompt"),
             CompilationFailed{code: _, err, diagnostics: _} => write!(prompt,
                 "nudge: Your generated code failed to compile. Line numbers refer to your code block. Compiler output:\n```\n{err}\n```\n\

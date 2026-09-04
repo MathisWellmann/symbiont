@@ -61,7 +61,7 @@ async fn compiler_locations_point_into_the_agents_own_code_block() {
         "the file name means nothing to the agent, got: {retry_prompt}"
     );
     assert!(
-        retry_prompt.contains("[E1]\nerror[E0308]"),
+        retry_prompt.contains("[E1] replaces `\"not a usize\"` on line 3\nerror[E0308]"),
         "errors are numbered for reference, got: {retry_prompt}"
     );
     assert!(

@@ -76,6 +76,10 @@ use crate::{
         apply_machine_applicable,
         render_fixes_for_prompt,
     },
+    edit::{
+        self,
+        EditBase,
+    },
     error::{
         Error,
         Result,
@@ -102,6 +106,7 @@ use crate::{
         EVOLVE_BATCH_SIZE,
         EVOLVE_CONTEXT_RESETS,
         EVOLVE_DURATION,
+        EVOLVE_EDITS,
         EVOLVE_FAILURES,
         EVOLVE_REPEAT_RESETS,
         INFERENCE_ERRORS,
@@ -120,7 +125,11 @@ use crate::{
         inference_error_reason,
         stage,
     },
-    parser::parse_rust_code,
+    parser::{
+        Candidate,
+        parse_candidate,
+        parse_rust_code,
+    },
     revision::{
         Revision,
         RevisionEntry,
@@ -149,6 +158,19 @@ static RUNTIME: OnceLock<Runtime> = OnceLock::new();
 pub enum Publish {
     Yes,
     No,
+}
+
+/// What one iteration of the ladder sends to the agent, beside the
+/// transcript.
+struct AttemptRequest<'a> {
+    /// The user prompt of this iteration: the base prompt, or the corrective
+    /// nudge built from the previous failure.
+    prompt: &'a str,
+    /// Index into the lane's transcript of the first message the agent still
+    /// sees. A context or repeat reset moves it forward.
+    history_base: usize,
+    /// The previous candidate a response may edit, with its compiler errors.
+    edit_base: Option<&'a EditBase>,
 }
 
 /// What [`Runtime::compile_with_autofix`] ended with.
@@ -423,9 +445,10 @@ impl Runtime {
     /// the caller's decision, because batch lanes register without activating.
     ///
     /// `history` is the whole transcript of the lane. Only
-    /// `history[history_base..]` goes to the agent. A context or repeat reset
-    /// advances `history_base` instead of truncating. The request therefore
-    /// gets smaller, but the transcript keeps everything the lane exchanged.
+    /// `history[request.history_base..]` goes to the agent. A context or
+    /// repeat reset advances `history_base` instead of truncating. The
+    /// request therefore gets smaller, but the transcript keeps everything
+    /// the lane exchanged.
     ///
     /// `run_out` and `stages` hold the trace records. This method writes them
     /// as the attempt progresses instead of returning them, so the caller
@@ -439,18 +462,27 @@ impl Runtime {
     /// failure path appends it to `history`: the retry then sees the tool
     /// exchanges the aborted run already made instead of replaying the
     /// identical request that just exhausted its budget.
+    ///
+    /// `request.edit_base` is the previous attempt's candidate with its
+    /// compiler errors, if there is one. A response may then edit it instead
+    /// of repeating it (see [`crate::edit`]); the edited text is the
+    /// candidate.
     async fn evolve_no_backpressure<AgentT>(
         &self,
         agent: &AgentT,
-        prompt: &str,
+        request: AttemptRequest<'_>,
         history: &mut Vec<Message>,
-        history_base: usize,
         run_out: &mut Option<AgentRun>,
         stages: &mut StageTimings,
     ) -> Result<Revision>
     where
         AgentT: EvolutionAgent,
     {
+        let AttemptRequest {
+            prompt,
+            history_base,
+            edit_base,
+        } = request;
         info!("prompt: {}", prompt.green());
         let t0 = Instant::now();
         let visible = history.get(history_base..).unwrap_or_default().to_vec();
@@ -518,9 +550,11 @@ impl Runtime {
             let t1 = Instant::now();
             // Recorded before `?` propagates. A rejected candidate must still
             // report the time its parse and validation took.
-            let candidate = parse_rust_code(&llm_response).inspect_err(|_| {
-                stages.set_parse_validate(Some(t1.elapsed()));
-            })?;
+            let candidate = self
+                .candidate_of(&llm_response, edit_base)
+                .inspect_err(|_| {
+                    stages.set_parse_validate(Some(t1.elapsed()));
+                })?;
 
             // Validate signatures match declarations
             validate_generated_ast(candidate.ast(), &self.fn_sigs, &self.denied_paths)
@@ -556,6 +590,28 @@ impl Runtime {
         info!("Built revision {revision}. LLM generation: {llm_time}ms.");
 
         Ok(revision)
+    }
+
+    /// The candidate a response describes: the whole code block, or the
+    /// `edit_base` with the response's edits applied.
+    fn candidate_of(&self, response: &str, edit_base: Option<&EditBase>) -> Result<Candidate> {
+        let Some(base) = edit_base else {
+            return parse_rust_code(response);
+        };
+        let fences = crate::parser::fences(response);
+        let declared: Vec<&str> = self.decls.iter().map(|decl| decl.name).collect();
+        match edit::resolve(base, &fences, &declared) {
+            Ok(edit::Resolved::Edited { source, edits }) => {
+                counter!(EVOLVE_EDITS).increment(edits as u64);
+                info!("Applied {edits} edit(s) to the previous candidate.");
+                parse_candidate(source)
+            }
+            Ok(edit::Resolved::Whole) => parse_rust_code(response),
+            Err(error) => Err(Error::EditFailed {
+                code: base.source().to_string(),
+                err: error.to_string(),
+            }),
+        }
     }
 
     /// Compile `candidate`, load the resulting dylib, and retain it in the
@@ -1184,6 +1240,12 @@ impl Runtime {
             // Code of the most recent rejected attempt, used to detect an
             // agent that echoes the same broken code back verbatim.
             let mut last_failed_code: Option<String> = None;
+            // The candidate the next response may edit instead of retyping:
+            // the most recent one that parsed and validated, with the
+            // compiler errors the agent was shown about it. `None` on the
+            // first attempt and after a reset, when the agent no longer sees
+            // the code the base would refer to.
+            let mut edit_base: Option<EditBase> = None;
             let mut trace = EvolutionTrace::new(
                 agent.provider().to_string(),
                 agent.model().to_string(),
@@ -1241,9 +1303,12 @@ impl Runtime {
                         Priority::attempt(attempts),
                         self.evolve_no_backpressure(
                             agent,
-                            &prompt,
+                            AttemptRequest {
+                                prompt: &prompt,
+                                history_base,
+                                edit_base: edit_base.as_ref(),
+                            },
                             &mut history,
-                            history_base,
                             &mut run_out,
                             &mut stages,
                         ),
@@ -1304,9 +1369,15 @@ impl Runtime {
                         let mut repeated = false;
                         if let Some(failure) = EvolveFailure::from_error(&e, attempts, lane) {
                             let code = failure.generated_code();
-                            repeated = !code.is_empty()
-                                && last_failed_code.as_deref() == Some(code.as_str());
-                            last_failed_code = Some(code.clone());
+                            // A failed edit records the base it left
+                            // unchanged, which is the code of the failure
+                            // before it. That is not the agent echoing
+                            // itself; the base stays the reference.
+                            if !matches!(e, Error::EditFailed { .. }) {
+                                repeated = !code.is_empty()
+                                    && last_failed_code.as_deref() == Some(code.as_str());
+                                last_failed_code = Some(code.clone());
+                            }
                             match self.evolve_failures.write() {
                                 Ok(mut failures) => failures.push(failure),
                                 Err(_) => {
@@ -1327,6 +1398,19 @@ impl Runtime {
                                     ));
                                 }
                             }
+                        }
+                        // What the next response may edit. A candidate the
+                        // compiler rejected is a valid edit base: it parsed,
+                        // it validated, and the agent is about to see its
+                        // errors by number. Any other failure keeps the base
+                        // as it was: a response whose edits did not apply
+                        // left the base untouched, and a response without
+                        // valid code gave the agent nothing new to refer to.
+                        if let Error::CompilationFailed {
+                            code, diagnostics, ..
+                        } = &e
+                        {
+                            edit_base = Some(EditBase::new(code.clone(), diagnostics.clone()));
                         }
                         // A request that exceeds the model's context window can
                         // never succeed by resending: shrink it instead.
@@ -1408,6 +1492,9 @@ impl Runtime {
                             history_base = history.len();
                             prompt.clear();
                             prompt.push_str(base_prompt);
+                            // The agent no longer sees the code an edit
+                            // would refer to.
+                            edit_base = None;
                             // The restart consumes this attempt: unlike
                             // transient retries, an overflowing request is
                             // not the LLM's fault but it must not be free.
@@ -1517,6 +1604,7 @@ impl Runtime {
                                  {dropped} history messages and restarting from the base prompt",
                             );
                             history_base = history.len();
+                            edit_base = None;
                             write!(
                                 prompt,
                                 "{base_prompt}\n\nYour previous attempt was rejected: {}\n\

@@ -194,6 +194,11 @@ pub const REVISION_DEDUP_HITS: &str = "symbiont_revision_dedup_hits_total";
 /// make; a high rate per attempt says the model gets the mechanics wrong
 /// (borrows, imports, spellings) while the logic compiles.
 pub const COMPILE_AUTOFIXES: &str = "symbiont_compile_autofixes_total";
+/// Edits a repair round applied to the previous candidate instead of
+/// retyping it: search/replace hunks, `E<n>` anchors and replaced items
+/// (see the `edit` module). Against `symbiont_evolve_attempts` this says
+/// how often the model repairs by editing rather than by rewriting.
+pub const EVOLVE_EDITS: &str = "symbiont_evolve_edits_total";
 /// Size in bytes of each successfully loaded dylib.
 pub const DYLIB_SIZE_BYTES: &str = "symbiont_dylib_size_bytes";
 /// Size in bytes of the generated Rust source per revision. Detects code
@@ -208,6 +213,7 @@ pub(crate) mod failure_kind {
     pub(crate) const FORBIDDEN: &str = "forbidden";
     pub(crate) const UNIMPLEMENTED: &str = "unimplemented";
     pub(crate) const COMPILE: &str = "compile";
+    pub(crate) const EDIT: &str = "edit";
     pub(crate) const NO_RUST_CODE: &str = "no_rust_code";
     pub(crate) const MAX_TURNS: &str = "max_turns";
     pub(crate) const LLM: &str = "llm";
@@ -380,6 +386,11 @@ pub fn describe_metrics() {
         Unit::Count,
         "Machine-applicable compiler suggestions applied to candidates before a rebuild"
     );
+    describe_counter!(
+        EVOLVE_EDITS,
+        Unit::Count,
+        "Edits applied to the previous candidate by repair rounds"
+    );
     describe_histogram!(
         DYLIB_SIZE_BYTES,
         Unit::Bytes,
@@ -402,6 +413,7 @@ pub(crate) fn failure_kind_of(e: &crate::Error) -> &'static str {
         ForbiddenConstruct { .. } => failure_kind::FORBIDDEN,
         UnimplementedFunction { .. } => failure_kind::UNIMPLEMENTED,
         CompilationFailed { .. } => failure_kind::COMPILE,
+        EditFailed { .. } => failure_kind::EDIT,
         NoRustCode => failure_kind::NO_RUST_CODE,
         RigPrompt(rig_agent::completion::PromptError::MaxTurnsError { .. }) => {
             failure_kind::MAX_TURNS

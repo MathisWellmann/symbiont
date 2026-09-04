@@ -20,6 +20,7 @@ mod doc_tools;
 pub mod dsh;
 mod dylib_config;
 mod dylib_dependency;
+mod edit;
 mod error;
 mod evolution_agent;
 mod evolution_trace;

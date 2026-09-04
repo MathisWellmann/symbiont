@@ -23,46 +23,98 @@ use crate::{
     error::Error,
 };
 
-/// Extract every candidate Rust source block from a markdown response, in
-/// source order.
-///
-/// Handles the common pattern where an LLM response wraps code in
-/// ```rust ... ``` fences. An explicit ```rust fence wins outright when one
-/// is present: a response that tags its code also tags its answer, so the
-/// untagged blocks around it are prose or program output. Only when no
-/// tagged fence exists does an untagged ``` fence count.
+/// One fenced block of a markdown response.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Fence {
+    /// The first word of the info string after the opening fence, e.g.
+    /// `rust` for ```` ```rust ````. Empty for a bare ```` ``` ````.
+    tag: String,
+    /// The block's content with outer whitespace trimmed.
+    body: String,
+}
+
+impl Fence {
+    /// The block's content with outer whitespace trimmed.
+    pub(crate) fn body(&self) -> &str {
+        &self.body
+    }
+
+    /// Is this a block of Rust code, tagged as such?
+    pub(crate) fn is_tagged_rust(&self) -> bool {
+        matches!(self.tag.as_str(), "rust" | "rs")
+    }
+
+    /// Is this a block of edits (see [`crate::edit`])? Tagged `rust-edit`
+    /// or `edit`, or any block whose text opens with the `<<<<<<<` marker:
+    /// a model that tags its edits `rust` still means them as edits.
+    pub(crate) fn is_edit(&self) -> bool {
+        matches!(self.tag.as_str(), "rust-edit" | "edit")
+            || self.body.trim_start().starts_with("<<<<<<<")
+    }
+}
+
+/// Every line-anchored fenced block of `input`, in source order.
 ///
 /// Fences only count when they open a line (ignoring leading whitespace),
 /// per CommonMark. This keeps fences embedded in doc comments, such as
 /// `/// ```ignore` examples the LLM re-emits from the function's docs,
 /// from being mistaken for the closing fence and truncating the code.
-fn extract_rust_code_blocks(input: &str) -> Vec<String> {
-    let tagged = fenced_blocks(input, "```rust");
+pub(crate) fn fences(input: &str) -> Vec<Fence> {
+    let mut blocks = Vec::new();
+    let mut from = 0;
+    while let Some(start) = find_line_anchored_fence(input, "```", from) {
+        // The rest of the opening fence line is the info string.
+        let Some(rel_newline) = input[start..].find('\n') else {
+            break;
+        };
+        let info = &input[start + "```".len()..start + rel_newline];
+        let code_start = start + rel_newline + 1;
+        let Some(end) = find_line_anchored_fence(input, "```", code_start) else {
+            break;
+        };
+        blocks.push(Fence {
+            tag: info
+                .split(|c: char| c.is_whitespace() || c == ',')
+                .next()
+                .unwrap_or_default()
+                .to_string(),
+            body: input[code_start..end].trim().to_string(),
+        });
+        from = end + "```".len();
+    }
+    blocks
+}
+
+/// The code blocks among `fences`, in source order.
+///
+/// Handles the common pattern where an LLM response wraps code in
+/// ```rust ... ``` fences. An explicit ```rust fence wins outright when one
+/// is present: a response that tags its code also tags its answer, so the
+/// untagged blocks around it are prose or program output. Only when no
+/// tagged fence exists does an untagged ``` fence count. Edit blocks are
+/// never code blocks.
+pub(crate) fn code_blocks(fences: &[Fence]) -> Vec<&Fence> {
+    let tagged: Vec<&Fence> = fences
+        .iter()
+        .filter(|fence| fence.is_tagged_rust() && !fence.is_edit())
+        .collect();
     if tagged.is_empty() {
-        fenced_blocks(input, "```")
+        fences
+            .iter()
+            .filter(|fence| fence.tag.is_empty() && !fence.is_edit())
+            .collect()
     } else {
         tagged
     }
 }
 
-/// Contents of every line-anchored block opened by `start_marker` and closed
-/// by a line-anchored ``` fence, in source order.
-fn fenced_blocks(input: &str, start_marker: &str) -> Vec<String> {
-    let mut blocks = Vec::new();
-    let mut from = 0;
-    while let Some(start) = find_line_anchored_fence(input, start_marker, from) {
-        // Skip the rest of the opening fence line (language tag, whitespace).
-        let Some(rel_newline) = input[start..].find('\n') else {
-            break;
-        };
-        let code_start = start + rel_newline + 1;
-        let Some(end) = find_line_anchored_fence(input, "```", code_start) else {
-            break;
-        };
-        blocks.push(input[code_start..end].trim().to_string());
-        from = end + "```".len();
-    }
-    blocks
+/// Extract every candidate Rust source block from a markdown response, in
+/// source order. See [`code_blocks`].
+fn extract_rust_code_blocks(input: &str) -> Vec<String> {
+    code_blocks(&fences(input))
+        .into_iter()
+        .map(|fence| fence.body.clone())
+        .collect()
 }
 
 /// Byte offset of the first occurrence of `marker` at or after `from` that
@@ -96,6 +148,14 @@ impl Candidate {
     /// The parsed block.
     pub(crate) fn ast(&self) -> &syn::File {
         &self.ast
+    }
+
+    /// Does the block hold at least one function item?
+    fn has_fn(&self) -> bool {
+        self.ast
+            .items
+            .iter()
+            .any(|item| matches!(item, syn::Item::Fn(_)))
     }
 
     /// Give up the AST and keep the text.
@@ -141,25 +201,33 @@ pub(crate) fn parse_rust_code(input: &str) -> Result<Candidate> {
     let mut function_less: Option<Candidate> = None;
     let mut last_err: Option<Error> = None;
     for code in blocks.into_iter().rev() {
-        match parse_file(&code) {
-            Ok(ast) => {
-                // Reverse iteration means the first candidate to set any of
-                // these is the latest one, so `or` keeps the block closest to
-                // the end of the response.
-                if let Some(tokens) = find_verbatim(&ast) {
-                    last_err = last_err.or_else(|| Some(unprintable_item(&code, &tokens)));
-                } else if ast.items.iter().any(|i| matches!(i, syn::Item::Fn(_))) {
-                    return Ok(Candidate { source: code, ast });
-                } else {
-                    function_less = function_less.or(Some(Candidate { source: code, ast }));
-                }
-            }
-            Err(e) => last_err = last_err.or_else(|| Some(could_not_parse(&code, &e))),
+        match parse_candidate(code) {
+            // Reverse iteration means the first candidate to set any of
+            // these is the latest one, so `or` keeps the block closest to
+            // the end of the response.
+            Ok(candidate) if candidate.has_fn() => return Ok(candidate),
+            Ok(candidate) => function_less = function_less.or(Some(candidate)),
+            Err(e) => last_err = last_err.or(Some(e)),
         }
     }
 
     function_less
         .ok_or_else(|| last_err.expect("a block that neither parses nor errors is impossible"))
+}
+
+/// Parse one block of Rust source into a [`Candidate`].
+///
+/// Rejects a block that `syn` only keeps as raw tokens (see
+/// [`find_verbatim`]) like a parse error, with [`Error::CouldNotParseRust`]
+/// carrying the code and a located diagnostic either way.
+pub(crate) fn parse_candidate(source: String) -> Result<Candidate> {
+    match parse_file(&source) {
+        Ok(ast) => match find_verbatim(&ast) {
+            Some(tokens) => Err(unprintable_item(&source, &tokens)),
+            None => Ok(Candidate { source, ast }),
+        },
+        Err(e) => Err(could_not_parse(&source, &e)),
+    }
 }
 
 /// Build the [`Error::CouldNotParseRust`] backpressure payload for `code`.
