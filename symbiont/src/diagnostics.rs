@@ -199,6 +199,124 @@ pub(crate) fn render_for_prompt(diagnostics: &[Diagnostic], out: &mut String) {
     }
 }
 
+/// One suggestion applied to the candidate by [`apply_machine_applicable`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppliedFix {
+    /// The error code of the diagnostic the fix came from.
+    pub code: Option<String>,
+    /// rustc's message for the suggestion, e.g. `consider borrowing here`.
+    pub message: String,
+    /// 1-based line in the candidate before the fix.
+    pub line: usize,
+    /// The line as the agent wrote it. Suggestions can span several lines;
+    /// this is the first one.
+    pub before: String,
+    /// The same line after the fix.
+    pub after: String,
+}
+
+/// Apply every `MachineApplicable` suggestion of `diagnostics` to
+/// `candidate`, the way `cargo fix` would.
+///
+/// Returns the patched candidate and the fixes, or `None` when no suggestion
+/// applies. Every suggestion's span was computed against `candidate`, so
+/// they are applied from the end of the text towards the start, which keeps
+/// the earlier offsets valid. A suggestion whose span overlaps one already
+/// applied is skipped: rustc sometimes proposes two ways to fix one span,
+/// and applying both would corrupt the text. Overlap detection is what keeps
+/// this pass total; it never produces text that is not a mix of the
+/// candidate and rustc's own replacements.
+///
+/// The result may still fail to compile, either because a suggestion is
+/// wrong in context or because other errors remain. That is fine: the caller
+/// compiles the result and, if it still fails, reports *those* diagnostics
+/// to the model together with the list of fixes applied. It must never
+/// apply fixes twice: the second round's diagnostics are located in the
+/// patched text, not in the original.
+pub(crate) fn apply_machine_applicable(
+    candidate: &str,
+    diagnostics: &[Diagnostic],
+) -> Option<(String, Vec<AppliedFix>)> {
+    let mut suggestions: Vec<(&Diagnostic, &Suggestion)> = diagnostics
+        .iter()
+        .flat_map(|diagnostic| {
+            diagnostic
+                .suggestions
+                .iter()
+                .filter(|suggestion| suggestion.applicability == Applicability::MachineApplicable)
+                .filter(|suggestion| suggestion.span.bytes.end <= candidate.len())
+                .filter(|suggestion| candidate.is_char_boundary(suggestion.span.bytes.start))
+                .filter(|suggestion| candidate.is_char_boundary(suggestion.span.bytes.end))
+                .map(move |suggestion| (diagnostic, suggestion))
+        })
+        .collect();
+    if suggestions.is_empty() {
+        return None;
+    }
+    // Latest span first, so applying one never moves the next.
+    suggestions.sort_by_key(|(_, suggestion)| std::cmp::Reverse(suggestion.span.bytes.start));
+
+    let mut patched = candidate.to_string();
+    let mut fixes = Vec::with_capacity(suggestions.len());
+    // The start of the most recently applied span; anything that reaches
+    // past it overlaps and is skipped.
+    let mut applied_from = candidate.len();
+    for (diagnostic, suggestion) in suggestions {
+        let range = suggestion.span.bytes.clone();
+        if range.end > applied_from {
+            continue;
+        }
+        if candidate[range.clone()] == suggestion.replacement {
+            continue;
+        }
+        let before = line_of(candidate, range.start).to_string();
+        patched.replace_range(range.clone(), &suggestion.replacement);
+        let after = line_of(&patched, range.start).to_string();
+        applied_from = range.start;
+        fixes.push(AppliedFix {
+            code: diagnostic.code.clone(),
+            message: suggestion.message.clone(),
+            line: suggestion.span.line_start,
+            before,
+            after,
+        });
+    }
+    if fixes.is_empty() {
+        return None;
+    }
+    // Restore source order for the report.
+    fixes.reverse();
+    Some((patched, fixes))
+}
+
+/// The line of `text` that contains byte `at`, without its line ending.
+fn line_of(text: &str, at: usize) -> &str {
+    let start = text[..at].rfind('\n').map_or(0, |idx| idx + 1);
+    let end = text[at..].find('\n').map_or(text.len(), |idx| at + idx);
+    text[start..end].trim_end_matches('\r')
+}
+
+/// Tell the model which fixes the harness applied on its behalf, so its
+/// picture of the candidate matches what was compiled.
+pub(crate) fn render_fixes_for_prompt(fixes: &[AppliedFix], out: &mut String) {
+    out.push_str(
+        "The harness already applied these compiler suggestions to your code before compiling it \
+         again (line numbers refer to your code block as you wrote it):\n",
+    );
+    for fix in fixes {
+        let code = fix.code.as_deref().unwrap_or("error");
+        writeln!(
+            out,
+            "- line {} ({} for {code}):\n    - `{}`\n    + `{}`",
+            fix.line,
+            fix.message,
+            fix.before.trim(),
+            fix.after.trim(),
+        )
+        .expect(EXPECT_WRITE);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // The wire format of `cargo --message-format=json`. Only the fields this
 // module reads; everything else is ignored by serde.
@@ -354,5 +472,161 @@ mod tests {
         let json = serde_json::to_string(&diagnostics).expect("serializes");
         let back: Vec<Diagnostic> = serde_json::from_str(&json).expect("deserializes");
         assert_eq!(back, diagnostics);
+    }
+
+    /// A diagnostic with one suggestion for `range`, without any rustc JSON.
+    fn suggesting(
+        candidate: &str,
+        range: Range<usize>,
+        replacement: &str,
+        applicability: Applicability,
+    ) -> Diagnostic {
+        let line_start = candidate[..range.start].matches('\n').count() + 1;
+        let span = DiagnosticSpan {
+            bytes: range,
+            line_start,
+            column_start: 1,
+            line_end: line_start,
+            column_end: 1,
+            is_primary: true,
+            label: None,
+        };
+        Diagnostic {
+            code: Some("E0308".to_string()),
+            message: "mismatched types".to_string(),
+            spans: vec![span.clone()],
+            suggestions: vec![Suggestion {
+                message: "consider borrowing here".to_string(),
+                span,
+                replacement: replacement.to_string(),
+                applicability,
+            }],
+            rendered: String::new(),
+        }
+    }
+
+    #[test]
+    fn machine_applicable_suggestions_are_applied_in_source_order() {
+        let candidate = "fn f(v: &Vec<u8>) {\n    take(v);\n    take(v);\n}";
+        let first = candidate.find("take(v)").expect("first call") + 5;
+        let second = candidate.rfind("take(v)").expect("second call") + 5;
+        let diagnostics = [
+            suggesting(
+                candidate,
+                first..first + 1,
+                "&v",
+                Applicability::MachineApplicable,
+            ),
+            suggesting(
+                candidate,
+                second..second + 1,
+                "&v",
+                Applicability::MachineApplicable,
+            ),
+        ];
+        let (patched, fixes) =
+            apply_machine_applicable(candidate, &diagnostics).expect("two fixes apply");
+        assert_eq!(
+            patched,
+            "fn f(v: &Vec<u8>) {\n    take(&v);\n    take(&v);\n}"
+        );
+        assert_eq!(fixes.len(), 2);
+        assert_eq!(
+            (fixes[0].line, fixes[1].line),
+            (2, 3),
+            "reported in source order"
+        );
+        assert_eq!(fixes[0].before, "    take(v);");
+        assert_eq!(fixes[0].after, "    take(&v);");
+        assert_eq!(fixes[0].message, "consider borrowing here");
+    }
+
+    #[test]
+    fn only_machine_applicable_suggestions_count() {
+        let candidate = "fn f() { let x: usize = 1; }";
+        let at = candidate.find('1').expect("literal");
+        for applicability in [
+            Applicability::MaybeIncorrect,
+            Applicability::HasPlaceholders,
+            Applicability::Unspecified,
+        ] {
+            let diagnostics = [suggesting(candidate, at..at + 1, "2", applicability)];
+            assert!(
+                apply_machine_applicable(candidate, &diagnostics).is_none(),
+                "{applicability:?} must not be applied"
+            );
+        }
+    }
+
+    #[test]
+    fn overlapping_suggestions_apply_only_once() {
+        let candidate = "fn f() { g(a.b) }";
+        let start = candidate.find("a.b").expect("expr");
+        let diagnostics = [
+            suggesting(
+                candidate,
+                start..start + 3,
+                "&a.b",
+                Applicability::MachineApplicable,
+            ),
+            suggesting(
+                candidate,
+                start..start + 1,
+                "&a",
+                Applicability::MachineApplicable,
+            ),
+        ];
+        let (patched, fixes) =
+            apply_machine_applicable(candidate, &diagnostics).expect("one fix applies");
+        assert_eq!(fixes.len(), 1);
+        assert!(
+            patched == "fn f() { g(&a.b) }" || patched == "fn f() { g(&a.b) }",
+            "exactly one of the two replacements landed: {patched}"
+        );
+    }
+
+    #[test]
+    fn a_noop_suggestion_is_not_a_fix() {
+        let candidate = "fn f() { let x = 1; }";
+        let at = candidate.find('1').expect("literal");
+        let diagnostics = [suggesting(
+            candidate,
+            at..at + 1,
+            "1",
+            Applicability::MachineApplicable,
+        )];
+        assert!(apply_machine_applicable(candidate, &diagnostics).is_none());
+    }
+
+    #[test]
+    fn suggestions_outside_the_candidate_are_ignored() {
+        let candidate = "fn f() {}";
+        let diagnostics = [suggesting(
+            "fn f() {}\n// glue\nfn g() {}",
+            12..16,
+            "",
+            Applicability::MachineApplicable,
+        )];
+        assert!(apply_machine_applicable(candidate, &diagnostics).is_none());
+    }
+
+    #[test]
+    fn applied_fixes_render_for_the_model() {
+        let fixes = [AppliedFix {
+            code: Some("E0308".to_string()),
+            message: "consider borrowing here".to_string(),
+            line: 2,
+            before: "    take(v);".to_string(),
+            after: "    take(&v);".to_string(),
+        }];
+        let mut out = String::new();
+        render_fixes_for_prompt(&fixes, &mut out);
+        assert!(out.contains("already applied"), "{out}");
+        assert!(
+            out.contains(
+                "- line 2 (consider borrowing here for E0308):\n    - `take(v);`\n    + `take(&v);`"
+            ),
+            "{out}"
+        );
     }
 }

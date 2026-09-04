@@ -46,6 +46,7 @@ pub use decl::{
 };
 pub use diagnostics::{
     Applicability,
+    AppliedFix,
     Diagnostic,
     DiagnosticSpan,
     Suggestion,

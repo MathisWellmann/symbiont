@@ -188,6 +188,12 @@ pub const REVISION_ACTIVATIONS: &str = "symbiont_revision_activations_total";
 /// are not actually diversifying the output — raise the sampling temperature
 /// or make the per-lane hints more distinct.
 pub const REVISION_DEDUP_HITS: &str = "symbiont_revision_dedup_hits_total";
+/// Compiler suggestions the harness applied to a candidate on the agent's
+/// behalf before compiling it again (`MachineApplicable` only, the ones
+/// `cargo fix` would apply). Each one is a repair the model did not have to
+/// make; a high rate per attempt says the model gets the mechanics wrong
+/// (borrows, imports, spellings) while the logic compiles.
+pub const COMPILE_AUTOFIXES: &str = "symbiont_compile_autofixes_total";
 /// Size in bytes of each successfully loaded dylib.
 pub const DYLIB_SIZE_BYTES: &str = "symbiont_dylib_size_bytes";
 /// Size in bytes of the generated Rust source per revision. Detects code
@@ -368,6 +374,11 @@ pub fn describe_metrics() {
         REVISION_DEDUP_HITS,
         Unit::Count,
         "Candidates that reused an identical registered revision instead of rebuilding"
+    );
+    describe_counter!(
+        COMPILE_AUTOFIXES,
+        Unit::Count,
+        "Machine-applicable compiler suggestions applied to candidates before a rebuild"
     );
     describe_histogram!(
         DYLIB_SIZE_BYTES,
