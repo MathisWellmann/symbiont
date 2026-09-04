@@ -13,6 +13,7 @@ mod compiler;
 #[cfg(debug_assertions)]
 mod debug_call_counter;
 mod decl;
+mod diagnostics;
 mod doc_index;
 mod doc_string;
 mod doc_tools;
@@ -42,6 +43,12 @@ mod validation;
 pub use decl::{
     EvolvableDecl,
     FullSource,
+};
+pub use diagnostics::{
+    Applicability,
+    Diagnostic,
+    DiagnosticSpan,
+    Suggestion,
 };
 pub use doc_index::{
     DocIndex,
