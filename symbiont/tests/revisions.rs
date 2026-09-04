@@ -86,7 +86,7 @@ async fn revisions_are_retained_and_activatable() {
     assert_eq!(counter, 5, "the re-activated revision dispatches again");
     assert_eq!(
         &rt.current_code(),
-        "#[unsafe(no_mangle)]\npub fn rev_step(counter: &mut usize) {\n    *counter += 5;\n}\n",
+        "pub fn rev_step(counter: &mut usize) { *counter += 5; }",
         "current_code follows the activated revision"
     );
 
@@ -94,7 +94,7 @@ async fn revisions_are_retained_and_activatable() {
     assert_eq!(
         rt.revision_code(rev_plus_7)
             .expect("revision 2 is registered"),
-        "#[unsafe(no_mangle)]\npub fn rev_step(counter: &mut usize) {\n    *counter += 7;\n}\n"
+        "pub fn rev_step(counter: &mut usize) { *counter += 7; }"
     );
 
     // The initial build is a revision like any other.

@@ -57,8 +57,10 @@ others may keep their default bodies.
 Do not emit `main`, tests, Cargo metadata, modules, or unrelated items unless
 the user explicitly asks.
 
-Do not add `#[no_mangle]`, `#[unsafe(no_mangle)]`, or `extern` attributes.
-The harness handles dynamic-library exports.
+Do not add `#[no_mangle]`, `#[unsafe(no_mangle)]`, `#[export_name]`, or
+`extern` attributes; they are rejected before compilation. The harness
+handles dynamic-library exports. Visibility does not matter either: a plain
+`fn` is fine.
 
 Unsafe code is forbidden and rejected before compilation: never use `unsafe`
 blocks, `unsafe fn`, `unsafe impl`, `unsafe trait`, `extern` blocks, or unsafe

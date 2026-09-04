@@ -4,7 +4,9 @@ use crate::evolvable::EvolvableFn;
 
 /// Build the `full_source` string for the dylib from a function declaration.
 ///
-/// Forces `pub` visibility and prepends `#[unsafe(no_mangle)]`.
+/// Forces `pub` visibility. No export attribute: the runtime never exports
+/// the agent's functions directly. It appends a generated wrapper per
+/// declared function that carries the export and forwards to this one.
 pub(crate) fn build_full_source(func: &EvolvableFn) -> String {
     let sig = func.sig();
 
@@ -36,7 +38,6 @@ pub(crate) fn build_full_source(func: &EvolvableFn) -> String {
         });
 
     let fn_tokens = quote! {
-        #[unsafe(no_mangle)]
         pub fn #ident(#inputs) #output #body_tokens
     };
 
@@ -80,7 +81,6 @@ mod tests {
         assert_eq!(
             build_full_source(&block.functions[0]),
             "/// Should increment the counter by a value in the range 5..20\n\
-             #[unsafe(no_mangle)]\n\
              pub fn step(counter: &mut usize) {\n    \
                  *counter += 1;\n    \
                  println!(\"doing stuff in iteration {}\", counter);\n\

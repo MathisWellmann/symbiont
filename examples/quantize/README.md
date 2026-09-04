@@ -71,7 +71,6 @@ Laplacian frontier:
 
 Last implementation:
 ```rust
-#[unsafe(no_mangle)]
 pub fn quantize(input: &[f64], len: usize, output: &mut [f64]) {
     if len == 0 {
         return;

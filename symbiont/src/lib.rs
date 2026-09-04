@@ -27,6 +27,7 @@ mod evolve_failure;
 mod evolve_info;
 mod inference;
 mod init_tracing;
+mod layout;
 pub mod observability;
 mod parser;
 mod profile;

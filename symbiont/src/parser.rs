@@ -80,10 +80,40 @@ fn find_line_anchored_fence(input: &str, marker: &str, from: usize) -> Option<us
     None
 }
 
-/// Parse Rust code from a markdown-fenced code block into a `syn::File` AST.
+/// The agent's answer: the text of the chosen code block and its AST.
 ///
-/// This is the public entry point used by main.rs — callers pass the raw
-/// LLM response and this function handles fence extraction + parsing.
+/// `source` is the block as the agent wrote it (outer whitespace trimmed).
+/// It is what the dylib compiles, what the compiler's line numbers refer to
+/// and what the harness quotes back, so it is never re-rendered.
+pub(crate) struct Candidate {
+    /// The chosen code block, verbatim.
+    source: String,
+    /// `source`, parsed.
+    ast: syn::File,
+}
+
+impl Candidate {
+    /// The parsed block.
+    pub(crate) fn ast(&self) -> &syn::File {
+        &self.ast
+    }
+
+    /// Give up the AST and keep the text.
+    pub(crate) fn into_source(self) -> String {
+        self.source
+    }
+
+    /// Split into the text and its AST.
+    #[cfg(test)]
+    pub(crate) fn into_parts(self) -> (String, syn::File) {
+        (self.source, self.ast)
+    }
+}
+
+/// Parse Rust code from a markdown-fenced code block.
+///
+/// Callers pass the raw LLM response and this function handles fence
+/// extraction + parsing.
 ///
 /// A response often carries more than one fenced block: reasoning models
 /// quote scratch snippets while thinking themselves towards an answer, and
@@ -102,29 +132,29 @@ fn find_line_anchored_fence(input: &str, marker: &str, from: usize) -> Option<us
 /// loop can feed a precise nudge back to the LLM. The diagnostic describes
 /// the last block, which is the one the agent meant as its answer — quoting
 /// an earlier scratch snippet back at it only derails the next attempt.
-pub(crate) fn parse_rust_code(input: &str) -> Result<syn::File> {
+pub(crate) fn parse_rust_code(input: &str) -> Result<Candidate> {
     let blocks = extract_rust_code_blocks(input);
     if blocks.is_empty() {
         return Err(Error::NoRustCode);
     }
 
-    let mut function_less: Option<syn::File> = None;
+    let mut function_less: Option<Candidate> = None;
     let mut last_err: Option<Error> = None;
-    for code in blocks.iter().rev() {
-        match parse_file(code) {
-            Ok(file) => {
+    for code in blocks.into_iter().rev() {
+        match parse_file(&code) {
+            Ok(ast) => {
                 // Reverse iteration means the first candidate to set any of
                 // these is the latest one, so `or` keeps the block closest to
                 // the end of the response.
-                if let Some(tokens) = find_verbatim(&file) {
-                    last_err = last_err.or_else(|| Some(unprintable_item(code, &tokens)));
-                } else if file.items.iter().any(|i| matches!(i, syn::Item::Fn(_))) {
-                    return Ok(file);
+                if let Some(tokens) = find_verbatim(&ast) {
+                    last_err = last_err.or_else(|| Some(unprintable_item(&code, &tokens)));
+                } else if ast.items.iter().any(|i| matches!(i, syn::Item::Fn(_))) {
+                    return Ok(Candidate { source: code, ast });
                 } else {
-                    function_less = function_less.or(Some(file));
+                    function_less = function_less.or(Some(Candidate { source: code, ast }));
                 }
             }
-            Err(e) => last_err = last_err.or_else(|| Some(could_not_parse(code, &e))),
+            Err(e) => last_err = last_err.or_else(|| Some(could_not_parse(&code, &e))),
         }
     }
 
@@ -313,13 +343,16 @@ fn no_lang_marker(x: i32) -> i32 { x }
     #[test]
     fn test_parse_rust_code_from_block() {
         let input = "```rust
-#[unsafe(no_mangle)]
 pub fn step(state: &mut usize) {
     *state += 1;
 }
 ```";
-        let file = parse_rust_code(input).expect("can parse");
-        assert_eq!(file.items.len(), 1);
+        let (source, ast) = parse_rust_code(input).expect("can parse").into_parts();
+        assert_eq!(ast.items.len(), 1);
+        assert_eq!(
+            source, "pub fn step(state: &mut usize) {\n    *state += 1;\n}",
+            "the source is the block as written, not a re-rendering"
+        );
     }
 
     /// Regression test: a fence embedded in a doc comment (`/// ```ignore`)
@@ -366,8 +399,8 @@ pub fn step(x: i32) -> i32 {
     x + 1
 }
 ```";
-        let file = parse_rust_code(input).expect("can parse");
-        assert_eq!(file.items.len(), 1);
+        let candidate = parse_rust_code(input).expect("can parse");
+        assert_eq!(candidate.ast().items.len(), 1);
     }
 
     /// A ```rust fence inside prose (e.g. quoted mid-line) must not be taken
@@ -495,11 +528,17 @@ pub fn sort(data: &mut [f64], len: usize) {
     }
 }
 ```";
-        let file = parse_rust_code(input).expect("must recover the final block");
-        assert_eq!(file.items.len(), 1);
+        let (source, ast) = parse_rust_code(input)
+            .expect("must recover the final block")
+            .into_parts();
+        assert_eq!(ast.items.len(), 1);
         assert!(
-            matches!(&file.items[0], syn::Item::Fn(f) if f.sig.ident == "sort"),
+            matches!(&ast.items[0], syn::Item::Fn(f) if f.sig.ident == "sort"),
             "must pick the implementation, not a scratch fragment"
+        );
+        assert!(
+            source.starts_with("pub fn sort"),
+            "the source is the chosen block: {source}"
         );
     }
 
@@ -518,9 +557,9 @@ Example usage:
 let y = double(21);
 assert_eq!(y, 42);
 ```";
-        let file = parse_rust_code(input).expect("must skip the usage block");
+        let candidate = parse_rust_code(input).expect("must skip the usage block");
         assert!(
-            matches!(&file.items[0], syn::Item::Fn(f) if f.sig.ident == "double"),
+            matches!(&candidate.ast().items[0], syn::Item::Fn(f) if f.sig.ident == "double"),
             "must pick the function, not the usage snippet"
         );
     }

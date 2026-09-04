@@ -166,7 +166,7 @@ cargo run -p fractal-studio-example --release
   Only ~1000 LOC for the Agent harness and constrained generation part.
 - **Catches Agent Code Panics**
   Any LLM code that generate a runtime panic will be caught using `catch_unwind`, and the panic message is used
-  to provide backpressure in the prompt. See [unwind.rs](symbiont/src/unwind.rs) for details.
+  to provide backpressure in the prompt. See [layout.rs](symbiont/src/layout.rs) and [unwind.rs](symbiont/src/unwind.rs) for details.
 
 ## When Symbiont wins
 

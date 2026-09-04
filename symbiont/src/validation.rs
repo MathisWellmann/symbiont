@@ -1,35 +1,28 @@
+// SPDX-License-Identifier: MPL-2.0
 use std::collections::HashMap;
 
 use prettyplease::unparse;
-// SPDX-License-Identifier: MPL-2.0
 use quote::ToTokens;
 use syn::{
     FnArg,
     Signature,
     Type,
-    Visibility,
     visit::{
         self,
         Visit,
     },
 };
-use tracing::debug;
 
 use crate::{
     Error,
     Result,
-    utils::{
-        is_no_mangle,
-        is_pub,
-    },
 };
 
-/// Validate that a parsed AST enforces typed generation:
+/// Validate that a parsed candidate enforces typed generation:
 /// - No `unsafe` code and no forbidden constructs (see
 ///   [`enforce_code_policy`])
-/// - Every **declared** function is `pub` and carries `#[unsafe(no_mangle)]`
-/// - Every other (helper) function stays unexported: `#[unsafe(no_mangle)]`
-///   is stripped if the model added one anyway
+/// - Every declared function is present as a free function that the export
+///   wrapper can call: not generic, not `async`, no ABI, no variadics
 /// - All function signatures match the expected signatures from lib.rs.
 ///
 /// Signatures are compared by function name, argument **types**, and return
@@ -37,21 +30,19 @@ use crate::{
 /// boundary (symbol lookup is by function name only), so renaming an unused
 /// parameter (e.g. to `_market_state`) is not a mismatch.
 ///
-/// # Why helpers must not be exported
-///
-/// `#[unsafe(no_mangle)]` in a `dylib` publishes the symbol with default ELF
-/// visibility, which makes it *preemptible*: the compiler routes even the
-/// dylib's own calls to it through the GOT, and the dynamic loader resolves
-/// those against the global scope (the host executable and everything it
-/// pulled in, libc included) **before** the dylib itself. A generated helper
-/// named like a libc function — `qsort`, `random`, `div`, `remove`, … —
-/// therefore silently hijacks the call to libc's version with completely
-/// different arguments, which segfaults the host. Unexported helpers keep
-/// their mangled, crate-hashed names, cannot collide, and can be inlined.
+/// The candidate is read, never rewritten. Visibility is irrelevant: the
+/// export wrappers live in a child module of the crate root and reach a
+/// private `fn` through `super::`. The wrappers are also what carries the
+/// export, so nothing in the candidate needs an attribute. A candidate that
+/// exports a symbol itself is rejected by the policy scan: an exported
+/// symbol in an ELF dylib is preemptible, and a helper named like a libc
+/// function (`qsort`, `random`, `div`, `remove`, …) would silently hijack the
+/// dylib's own call to it with completely different arguments, which
+/// segfaults the host.
 ///
 /// Returns `Err` with a descriptive message if any check fails.
 pub(crate) fn validate_generated_ast(
-    file: &mut syn::File,
+    file: &syn::File,
     expected_sigs: &[String],
     denied_paths: &[String],
 ) -> Result<()> {
@@ -61,45 +52,19 @@ pub(crate) fn validate_generated_ast(
         return Ok(());
     }
 
-    let declared: Vec<&str> = expected_sigs
+    let found_sigs: Vec<(String, String)> = file
+        .items
         .iter()
-        .filter_map(|sig| expected_fn_name(sig))
-        .collect();
-
-    let mut found_sigs: Vec<(String, String)> = Vec::with_capacity(4);
-
-    for item in &mut file.items {
-        if let syn::Item::Fn(item_fn) = item {
-            let name = item_fn.sig.ident.to_string();
-
-            if declared.contains(&name.as_str()) {
-                // Add `pub` visibility if missing
-                if !is_pub(item_fn) {
-                    debug!("Function `{name}` missing `pub` visibility, adding it");
-                    item_fn.vis = Visibility::Public(syn::token::Pub::default());
-                }
-                // Add #[unsafe(no_mangle)] if missing
-                if !is_no_mangle(item_fn) {
-                    debug!("Function `{name}` missing #[unsafe(no_mangle)], adding it");
-                    let attr: syn::Attribute = syn::parse_quote!(#[unsafe(no_mangle)]);
-                    item_fn.attrs.insert(0, attr);
-                }
-            } else if is_no_mangle(item_fn) {
-                // Helper the model exported on its own: unexport it, or its
-                // name may be preempted by a libc symbol at load time.
-                debug!("Helper `{name}` carries #[unsafe(no_mangle)], removing it");
-                item_fn.attrs.retain(|attr| {
-                    !(attr.path().is_ident("unsafe")
-                        && matches!(&attr.meta, syn::Meta::List(list)
-                            if list.tokens.to_string() == "no_mangle"))
-                });
-            }
-
+        .filter_map(|item| match item {
+            syn::Item::Fn(item_fn) => Some(item_fn),
+            _ => None,
+        })
+        .map(|item_fn| {
             let sig = format_signature(&item_fn.sig)
                 .unwrap_or_else(|| normalize_tokens(item_fn.sig.to_token_stream().to_string()));
-            found_sigs.push((name, sig));
-        }
-    }
+            (item_fn.sig.ident.to_string(), sig)
+        })
+        .collect();
 
     // Compare each expected signature against the generated function of the
     // same name, so the error pinpoints the offending function instead of the
@@ -304,24 +269,30 @@ const DENIED_ATTRIBUTES: &[&str] = &[
     "no_main",
 ];
 
+/// Attributes that publish a symbol from the dylib. The harness owns the
+/// export set: it exports exactly the declared functions through generated
+/// wrappers (see [`crate::layout`]). A symbol the candidate exports itself
+/// is preemptible and can hijack a libc call. In edition 2024 these are
+/// unsafe attributes, spelled `#[unsafe(no_mangle)]`; the pre-2024 spelling
+/// is listed so the feedback names the construct instead of a parse error.
+const EXPORT_ATTRIBUTES: &[&str] = &["no_mangle", "export_name", "link_section"];
+
 /// Reject `unsafe` code and forbidden constructs in LLM-generated code.
 ///
 /// Enforced on the parsed AST *before* compilation: the rejection is
 /// cheap (no cargo round-trip), pinpoints the offending construct for the
 /// backpressure prompt, and cannot be evaded with `#[allow(unsafe_code)]`
 /// the way a compiler lint could. A crate-level `#![forbid(unsafe_code)]`
-/// is not an option anyway: the injected panic preamble is legitimately
-/// unsafe, and the `#[unsafe(no_mangle)]` export attribute on every
-/// evolvable function trips the `unsafe_code` lint in edition 2024.
+/// is not an option anyway: the injected panic preamble and the export
+/// wrappers are legitimately unsafe.
 ///
 /// Rejected as **unsafe** ([`Error::UnsafeCode`]):
 /// - `unsafe { .. }` blocks
 /// - `unsafe fn` (free, impl, trait, and foreign)
 /// - `unsafe impl` and `unsafe trait`
 /// - `extern` blocks
-/// - unsafe attributes such as `#[unsafe(export_name = ..)]` — except the
-///   exact `#[unsafe(no_mangle)]` export attribute the harness itself
-///   manages
+/// - unsafe attributes such as `#[unsafe(no_mangle)]` or
+///   `#[unsafe(export_name = ..)]`
 /// - an `unsafe` token anywhere inside a macro definition or invocation,
 ///   which would otherwise smuggle unsafe code past the AST scan
 ///
@@ -332,6 +303,7 @@ const DENIED_ATTRIBUTES: &[&str] = &[
 /// - `macro_rules!` definitions — macro bodies would otherwise be a
 ///   blind spot for every other rule
 /// - [`DENIED_ATTRIBUTES`] — allocator/panic/entry overrides
+/// - [`EXPORT_ATTRIBUTES`] — the harness owns the dylib's export set
 /// - references to [`ALWAYS_DENIED_PATHS`] and the host-configurable
 ///   `denied_paths` prefixes ([`crate::DylibConfig::default_denied_paths`]),
 ///   matched after resolving the file's `use` aliases; glob imports of a
@@ -571,12 +543,20 @@ impl<'ast> Visit<'ast> for PolicyScan<'_> {
     }
 
     fn visit_attribute(&mut self, node: &'ast syn::Attribute) {
-        // The exact export attribute the harness manages is the only
-        // permitted unsafe attribute; see `crate::utils::is_no_mangle`.
-        let is_no_mangle_export = node.path().is_ident("unsafe")
-            && matches!(&node.meta, syn::Meta::List(list) if list.tokens.to_string() == "no_mangle");
-        if node.path().is_ident("unsafe") && !is_no_mangle_export {
+        if node.path().is_ident("unsafe") {
             self.record_unsafe("an unsafe attribute", node);
+        }
+        if let Some(export) = EXPORT_ATTRIBUTES
+            .iter()
+            .find(|attr| node.path().is_ident(attr))
+        {
+            self.record_forbidden(
+                &format!("a `#[{export}]` attribute"),
+                node,
+                "the harness exports the declared functions itself; do not export symbols \
+                 from generated code"
+                    .to_string(),
+            );
         }
         if let Some(denied) = DENIED_ATTRIBUTES
             .iter()
@@ -774,120 +754,92 @@ mod tests {
         crate::DylibConfig::default_denied_paths()
     }
 
+    /// The AST of the code block in `input`.
+    fn parse(input: &str) -> syn::File {
+        parse_rust_code(input).expect("can parse").into_parts().1
+    }
+
     #[test]
     fn test_validate_valid_code() {
         let input = "```rust
-#[unsafe(no_mangle)]
 pub fn step(counter: &mut usize) {
     *counter += 1;
 }
 ```";
-        let mut file = parse_rust_code(input).expect("can parse");
+        let file = parse(input);
         let expected = vec!["fn step(counter: &mut usize)".to_string()];
-        validate_generated_ast(&mut file, &expected, &denied()).expect("validation passed");
+        validate_generated_ast(&file, &expected, &denied()).expect("validation passed");
     }
 
+    /// Visibility is irrelevant to the export wrappers, which reach the
+    /// candidate's functions through `super::`, so a private declared
+    /// function validates as is. The candidate is never rewritten.
     #[test]
-    fn test_validate_missing_no_mangle_gets_added() {
-        let input = "```rust
-pub fn step(counter: &mut usize) {
-    *counter += 1;
-}
-```";
-        let mut file = parse_rust_code(input).expect("can parse");
-        let expected = vec!["fn step(counter: &mut usize)".to_string()];
-        validate_generated_ast(&mut file, &expected, &denied())
-            .expect("should succeed by adding #[unsafe(no_mangle)]");
-
-        // Verify the attribute was actually added
-        let item_fn = match &file.items[0] {
-            syn::Item::Fn(f) => f,
-            _ => panic!("expected fn item"),
-        };
-        assert!(
-            is_no_mangle(item_fn),
-            "expected #[unsafe(no_mangle)] to be present after validation"
-        );
-    }
-
-    #[test]
-    fn test_validate_non_public_gets_pub_added() {
+    fn private_declared_function_validates_unchanged() {
         let input = "```rust
 fn step(counter: &mut usize) {
     *counter += 1;
 }
 ```";
-        let mut file = parse_rust_code(input).expect("can parse");
+        let file = parse(input);
+        let before = unparse(&file);
         let expected = vec!["fn step(counter: &mut usize)".to_string()];
-        validate_generated_ast(&mut file, &expected, &denied())
-            .expect("should succeed by adding `pub` and #[unsafe(no_mangle)]");
-
-        let item_fn = match &file.items[0] {
-            syn::Item::Fn(f) => f,
-            _ => panic!("expected fn item"),
-        };
-        assert!(
-            is_pub(item_fn),
-            "expected `pub` visibility after validation"
-        );
-        assert!(
-            is_no_mangle(item_fn),
-            "expected #[unsafe(no_mangle)] after validation"
+        validate_generated_ast(&file, &expected, &denied()).expect("private fn validates");
+        assert_eq!(
+            unparse(&file),
+            before,
+            "validation must not rewrite the candidate"
         );
     }
 
+    /// The harness exports the declared functions through its own wrappers.
+    /// An export attribute in the candidate would publish a preemptible
+    /// symbol: a helper named like a libc function (`qsort`) would then
+    /// hijack the dylib's own call to it and crash the host.
     #[test]
-    fn helpers_are_not_exported() {
-        // A helper named like a libc function must not become an exported,
-        // preemptible symbol: the dylib's own call to it would otherwise be
-        // resolved to libc's `qsort` and crash the host.
-        let input = "```rust
-fn step(counter: &mut usize) {
-    qsort(counter);
-}
-
-#[unsafe(no_mangle)]
-pub fn qsort(counter: &mut usize) {
-    *counter += 1;
-}
-```";
-        let mut file = parse_rust_code(input).expect("can parse");
-        let expected = vec!["fn step(counter: &mut usize)".to_string()];
-        validate_generated_ast(&mut file, &expected, &denied()).expect("validation passed");
-
-        let fns: Vec<&syn::ItemFn> = file
-            .items
-            .iter()
-            .filter_map(|item| match item {
-                syn::Item::Fn(f) => Some(f),
-                _ => None,
-            })
-            .collect();
-        let declared = fns
-            .iter()
-            .find(|f| f.sig.ident == "step")
-            .expect("declared fn is present");
-        let helper = fns
-            .iter()
-            .find(|f| f.sig.ident == "qsort")
-            .expect("helper fn is present");
-        assert!(is_no_mangle(declared), "declared fn must be exported");
-        assert!(is_pub(declared), "declared fn must be pub");
-        assert!(!is_no_mangle(helper), "helper must not be exported");
+    fn export_attributes_are_rejected() {
+        for (input, construct) in [
+            (
+                "fn step(counter: &mut usize) { qsort(counter); }\n\
+                 #[unsafe(no_mangle)]\n\
+                 pub fn qsort(counter: &mut usize) { *counter += 1; }",
+                "an unsafe attribute",
+            ),
+            (
+                "#[unsafe(export_name = \"step\")]\npub fn step(counter: &mut usize) {}",
+                "an unsafe attribute",
+            ),
+            (
+                "#[no_mangle]\npub fn step(counter: &mut usize) {}",
+                "a `#[no_mangle]` attribute",
+            ),
+        ] {
+            let file: syn::File = syn::parse_str(input).expect("can parse");
+            let expected = vec!["fn step(counter: &mut usize)".to_string()];
+            let err = validate_generated_ast(&file, &expected, &denied())
+                .expect_err("an export attribute must be rejected");
+            let found = match &err {
+                Error::UnsafeCode { construct, .. }
+                | Error::ForbiddenConstruct { construct, .. } => construct,
+                other => panic!("expected a policy error, got {other}"),
+            };
+            assert!(
+                found.contains(construct),
+                "expected `{construct}` in the feedback for {input}, got `{found}`"
+            );
+        }
     }
 
     #[test]
     fn test_validate_signature_mismatch() {
         let input = "```rust
-#[unsafe(no_mangle)]
 pub fn add(a: i32, b: i32) -> i32 {
     a + b
 }
 ```";
-        let mut file = parse_rust_code(input).expect("can parse");
+        let file = parse(input);
         let expected = vec!["fn step(counter: &mut usize)".to_string()];
-        let err =
-            validate_generated_ast(&mut file, &expected, &denied()).expect_err("should error");
+        let err = validate_generated_ast(&file, &expected, &denied()).expect_err("should error");
         dbg!(&err);
         match err {
             Error::SignatureMismatch {
@@ -895,8 +847,6 @@ pub fn add(a: i32, b: i32) -> i32 {
                 expected,
                 got,
             } => {
-                // `add` is not a declared function, so its export attribute
-                // was stripped before the mismatch was reported.
                 assert_eq!(&code, "pub fn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n");
                 assert_eq!(expected, "fn step(counter: &mut usize)");
                 assert_eq!(got, "function `step` not found");
@@ -910,14 +860,13 @@ pub fn add(a: i32, b: i32) -> i32 {
         // Renaming an argument (e.g. marking it unused) is ABI-compatible:
         // dylib dispatch is by function name only.
         let input = "```rust
-#[unsafe(no_mangle)]
 pub fn step(_counter: &mut usize) {
     *_counter += 1;
 }
 ```";
-        let mut file = parse_rust_code(input).expect("can parse");
+        let file = parse(input);
         let expected = vec!["fn step(counter: &mut usize)".to_string()];
-        validate_generated_ast(&mut file, &expected, &denied())
+        validate_generated_ast(&file, &expected, &denied())
             .expect("renamed argument must validate");
     }
 
@@ -928,9 +877,9 @@ pub fn step(_counter: &mut usize) {
             "pub unsafe fn step(counter: &mut usize) {}",
             "pub unsafe extern \"C\" fn step(counter: &mut usize, ...) {}",
         ] {
-            let mut file = syn::parse_str(input).expect("can parse");
+            let file = syn::parse_str(input).expect("can parse");
             let expected = vec!["fn step(counter: &mut usize)".to_string()];
-            let err = validate_generated_ast(&mut file, &expected, &denied())
+            let err = validate_generated_ast(&file, &expected, &denied())
                 .expect_err("unsafe signature must be rejected");
             assert!(
                 matches!(
@@ -949,9 +898,9 @@ pub fn step(_counter: &mut usize) {
                 "extern \"C\"",
             ),
         ] {
-            let mut file = syn::parse_str(input).expect("can parse");
+            let file = syn::parse_str(input).expect("can parse");
             let expected = vec!["fn step(counter: &mut usize)".to_string()];
-            let err = validate_generated_ast(&mut file, &expected, &denied())
+            let err = validate_generated_ast(&file, &expected, &denied())
                 .expect_err("incompatible signature must be rejected");
             assert!(
                 matches!(
@@ -968,22 +917,19 @@ pub fn step(_counter: &mut usize) {
         // `action` matches but `on_order_update` does not; the error must
         // point at `on_order_update`, not at the first expected signature.
         let input = "```rust
-#[unsafe(no_mangle)]
 pub fn action(tick: &Tick) {
     let _ = tick;
 }
-#[unsafe(no_mangle)]
 pub fn on_order_update(update: &Update, extra: bool) {
     let _ = (update, extra);
 }
 ```";
-        let mut file = parse_rust_code(input).expect("can parse");
+        let file = parse(input);
         let expected = vec![
             "fn action(tick: & Tick)".to_string(),
             "fn on_order_update(update: & Update)".to_string(),
         ];
-        let err =
-            validate_generated_ast(&mut file, &expected, &denied()).expect_err("should error");
+        let err = validate_generated_ast(&file, &expected, &denied()).expect_err("should error");
         match err {
             Error::SignatureMismatch { expected, got, .. } => {
                 assert_eq!(expected, "fn on_order_update(update: & Update)");
@@ -994,26 +940,11 @@ pub fn on_order_update(update: &Update, extra: bool) {
     }
 
     #[test]
-    fn test_validate_unsafe_no_mangle() {
-        let input = "```rust
-#[unsafe(no_mangle)]
-pub fn step(counter: &mut usize) {
-    *counter += 1;
-}
-```";
-        let mut file = parse_rust_code(input).expect("can parse");
-        let expected = vec!["fn step(counter: &mut usize)".to_string()];
-        validate_generated_ast(&mut file, &expected, &denied())
-            .expect("#[unsafe(no_mangle)] should be valid");
-    }
-
-    #[test]
     fn multi_fn_with_renamed_unused_argument_validates() {
         // Regression test for a stuck self-healing loop: the generated
         // `on_order_update` renamed the unused `market_state` parameter to
         // `_market_state`, which must not be a signature mismatch.
         let input = "```rust
-#[unsafe(no_mangle)]
 pub fn action(
     step_data: &TickData,
     account: &Account<i64, DECIMALS, Cur, UserOrderId>,
@@ -1022,7 +953,6 @@ pub fn action(
     commands: &mut CommandBuffer<DECIMALS, Cur>,
 ) {
 }
-#[unsafe(no_mangle)]
 pub fn on_order_update(
     order_update: OrderUpdate<DECIMALS, Cur>,
     account: &Account<i64, DECIMALS, Cur, UserOrderId>,
@@ -1031,12 +961,12 @@ pub fn on_order_update(
 ) {
 }
 ```";
-        let mut file = parse_rust_code(input).expect("can parse");
+        let file = parse(input);
         let expected = vec![
             "fn action(step_data: & TickData, account: & Account < i64, DECIMALS, Cur, UserOrderId >, market_state: & MarketState < i64, DECIMALS >, account_tracker: & FullAccountTracker < DECIMALS, Cur >, commands: &mut CommandBuffer < DECIMALS, Cur >)".to_string(),
             "fn on_order_update(order_update: OrderUpdate < DECIMALS, Cur >, account: & Account < i64, DECIMALS, Cur, UserOrderId >, market_state: & MarketState < i64, DECIMALS >, commands: &mut CommandBuffer < DECIMALS, Cur >)".to_string(),
         ];
-        validate_generated_ast(&mut file, &expected, &denied())
+        validate_generated_ast(&file, &expected, &denied())
             .expect("renamed `_market_state` argument must validate");
     }
 
@@ -1044,14 +974,13 @@ pub fn on_order_update(
     #[tracing_test::traced_test]
     fn test_validate_with_return_type() {
         let input = "```rust
-#[unsafe(no_mangle)]
 pub fn step(counter: &mut usize) -> usize {
     *counter
 }
 ```";
-        let mut file = parse_rust_code(input).expect("can parse");
+        let file = parse(input);
         let expected = vec!["fn step(counter: &mut usize) -> usize".to_string()];
-        validate_generated_ast(&mut file, &expected, &denied())
+        validate_generated_ast(&file, &expected, &denied())
             .expect("validation with return type passed");
     }
 
@@ -1296,18 +1225,15 @@ pub fn step(counter: &mut usize) -> usize {
     }
 
     #[test]
-    fn unsafe_attribute_is_rejected_but_no_mangle_is_allowed() {
+    fn unsafe_attributes_are_rejected() {
         assert_rejects_unsafe(
             "#[unsafe(export_name = \"evil\")] pub fn step(counter: &mut usize) {}",
             "an unsafe attribute",
         );
-
-        let file: syn::File = syn::parse_str(
+        assert_rejects_unsafe(
             "#[unsafe(no_mangle)] pub fn step(counter: &mut usize) { *counter += 1; }",
-        )
-        .expect("can parse");
-        enforce_code_policy(&file, &denied())
-            .expect("#[unsafe(no_mangle)] is harness-managed and allowed");
+            "an unsafe attribute",
+        );
     }
 
     #[test]
