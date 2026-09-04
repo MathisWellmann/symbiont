@@ -72,6 +72,10 @@ use crate::{
     StageTimings,
     TraceOutcome,
     compiler::compile_dylib,
+    diagnostics::{
+        apply_machine_applicable,
+        render_fixes_for_prompt,
+    },
     error::{
         Error,
         Result,
@@ -89,6 +93,7 @@ use crate::{
     },
     observability::{
         BUILD_SLOT_WAIT,
+        COMPILE_AUTOFIXES,
         DYLIB_SIZE_BYTES,
         DYLIB_SOURCE_BYTES,
         EVOLVE_ATTEMPTS,
@@ -144,6 +149,16 @@ static RUNTIME: OnceLock<Runtime> = OnceLock::new();
 pub enum Publish {
     Yes,
     No,
+}
+
+/// What [`Runtime::compile_with_autofix`] ended with.
+enum Compiled {
+    /// The dylib was built from this candidate, which is now the artifact at
+    /// the unversioned `so_path`.
+    Fresh(String),
+    /// The autofixed candidate is the source of this revision already;
+    /// nothing was built.
+    Registered(Revision),
 }
 
 /// Cached pointer to the dylib's `__symbiont_take_panic` function.
@@ -588,27 +603,34 @@ impl Runtime {
             return Ok(existing);
         }
 
-        let source_bytes = candidate.len();
         debug!("candidate: {candidate}");
 
         let t_compile = Instant::now();
         // A compile failure is the common self-healing case, and its duration
         // is the most useful number of the whole attempt. Record it before the
         // error propagates.
-        compile_dylib(
-            &self.crate_dir,
-            self.profile,
-            &candidate,
-            &assemble_lib_rs(&candidate, &self.glue),
-        )
-        .await
-        .inspect_err(|_| {
-            *record = Some(BuildRecord::Built {
-                slot_wait: waited,
-                compile: t_compile.elapsed(),
-                load: Duration::ZERO,
-            });
-        })?;
+        let candidate = match self
+            .compile_with_autofix(candidate)
+            .await
+            .inspect_err(|_| {
+                *record = Some(BuildRecord::Built {
+                    slot_wait: waited,
+                    compile: t_compile.elapsed(),
+                    load: Duration::ZERO,
+                });
+            })? {
+            Compiled::Fresh(candidate) => candidate,
+            Compiled::Registered(existing) => {
+                counter!(REVISION_DEDUP_HITS).increment(1);
+                info!("Autofixed candidate is byte-identical to revision {existing}; reusing it.");
+                *record = Some(BuildRecord::Deduped {
+                    slot_wait: waited,
+                    revision: existing,
+                });
+                return Ok(existing);
+            }
+        };
+        let source_bytes = candidate.len();
         let compile_time = t_compile.elapsed();
         histogram!(
             PIPELINE_STAGE_DURATION,
@@ -673,6 +695,81 @@ impl Runtime {
         );
 
         Ok(Revision::new(id))
+    }
+
+    /// Compile `candidate`; when it fails only in ways rustc knows how to
+    /// fix, apply those fixes and compile once more.
+    ///
+    /// Returns the candidate that compiled, which is the input or the
+    /// patched text. A patched candidate is what gets registered: the source
+    /// a revision reports must be the source its dylib was built from. When
+    /// the patched text is a registered revision already (two lanes that made
+    /// the same slip converge on the same fix), that revision is returned
+    /// instead and nothing is built.
+    ///
+    /// The second build is the last: its diagnostics describe the patched
+    /// text and are reported as they are, together with the fixes that were
+    /// applied, so the model's picture of the code matches what the compiler
+    /// saw. Applying fixes a second time would need the diagnostics to be
+    /// relocated first and buys little; a candidate that needs two rounds of
+    /// mechanical fixes has bigger problems the model should look at.
+    async fn compile_with_autofix(&self, candidate: String) -> Result<Compiled> {
+        let first = match compile_dylib(
+            &self.crate_dir,
+            self.profile,
+            &candidate,
+            &assemble_lib_rs(&candidate, &self.glue),
+        )
+        .await
+        {
+            Ok(()) => return Ok(Compiled::Fresh(candidate)),
+            Err(err) => err,
+        };
+        let Error::CompilationFailed {
+            diagnostics: first_diagnostics,
+            ..
+        } = &first
+        else {
+            return Err(first);
+        };
+        let Some((patched, fixes)) = apply_machine_applicable(&candidate, first_diagnostics) else {
+            return Err(first);
+        };
+        counter!(COMPILE_AUTOFIXES).increment(fixes.len() as u64);
+        info!(
+            "Applied {} machine-applicable compiler suggestion(s) to the candidate; compiling again.",
+            fixes.len()
+        );
+        debug!("autofixed candidate: {patched}");
+        if let Some(existing) = self.registered_with_source(&patched)? {
+            return Ok(Compiled::Registered(existing));
+        }
+        match compile_dylib(
+            &self.crate_dir,
+            self.profile,
+            &patched,
+            &assemble_lib_rs(&patched, &self.glue),
+        )
+        .await
+        {
+            Ok(()) => Ok(Compiled::Fresh(patched)),
+            Err(Error::CompilationFailed {
+                code,
+                mut err,
+                diagnostics,
+            }) => {
+                let mut report = String::new();
+                render_fixes_for_prompt(&fixes, &mut report);
+                report.push_str("The code still failed to compile with these fixes applied:\n");
+                err.insert_str(0, &report);
+                Err(Error::CompilationFailed {
+                    code,
+                    err,
+                    diagnostics,
+                })
+            }
+            Err(other) => Err(other),
+        }
     }
 
     /// The revision whose source is exactly `source`, if one is registered.
