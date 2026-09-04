@@ -69,6 +69,8 @@ pub struct DiagnosticSpan {
     pub is_primary: bool,
     /// rustc's label for the span, e.g. `expected \`usize\`, found \`&str\``.
     pub label: Option<String>,
+    /// The candidate text under the span.
+    pub text: String,
 }
 
 /// A replacement rustc proposes for one span.
@@ -108,7 +110,6 @@ pub enum Applicability {
 /// previous errors` summary, which carries no location and only repeats
 /// the count.
 pub(crate) fn parse_cargo_json(stdout: &str, candidate: &str) -> Vec<Diagnostic> {
-    let candidate_len = candidate.len();
     stdout
         .lines()
         .filter_map(|line| serde_json::from_str::<CargoMessage>(line).ok())
@@ -116,7 +117,7 @@ pub(crate) fn parse_cargo_json(stdout: &str, candidate: &str) -> Vec<Diagnostic>
         .filter_map(|message| message.message)
         .filter(|message| message.level == "error")
         .filter(|message| !is_summary(&message.message))
-        .map(|message| locate(message, candidate_len))
+        .map(|message| locate(message, candidate))
         .collect()
 }
 
@@ -128,11 +129,11 @@ fn is_summary(message: &str) -> bool {
 
 /// Turn a raw rustc message into a [`Diagnostic`] whose spans index the
 /// candidate.
-fn locate(message: RustcMessage, candidate_len: usize) -> Diagnostic {
+fn locate(message: RustcMessage, candidate: &str) -> Diagnostic {
     let mut spans: Vec<DiagnosticSpan> = message
         .spans
         .iter()
-        .filter_map(|span| in_candidate(span, candidate_len))
+        .filter_map(|span| in_candidate(span, candidate))
         .collect();
     // The primary span first, so `spans[0]` is where the error is.
     spans.sort_by_key(|span| !span.is_primary);
@@ -145,7 +146,7 @@ fn locate(message: RustcMessage, candidate_len: usize) -> Diagnostic {
                 let replacement = span.suggested_replacement.clone()?;
                 Some(Suggestion {
                     message: child.message.clone(),
-                    span: in_candidate(span, candidate_len)?,
+                    span: in_candidate(span, candidate)?,
                     replacement,
                     applicability: span
                         .suggestion_applicability
@@ -166,8 +167,12 @@ fn locate(message: RustcMessage, candidate_len: usize) -> Diagnostic {
 
 /// The span as a location in the candidate, or `None` if it is in another
 /// file or in the harness glue that follows the candidate.
-fn in_candidate(span: &RustcSpan, candidate_len: usize) -> Option<DiagnosticSpan> {
-    if span.file_name != LIB_RS || span.byte_end > candidate_len {
+fn in_candidate(span: &RustcSpan, candidate: &str) -> Option<DiagnosticSpan> {
+    if span.file_name != LIB_RS
+        || span.byte_start > span.byte_end
+        || !candidate.is_char_boundary(span.byte_start)
+        || !candidate.is_char_boundary(span.byte_end)
+    {
         return None;
     }
     Some(DiagnosticSpan {
@@ -178,6 +183,7 @@ fn in_candidate(span: &RustcSpan, candidate_len: usize) -> Option<DiagnosticSpan
         column_end: span.column_end,
         is_primary: span.is_primary,
         label: span.label.clone(),
+        text: candidate[span.byte_start..span.byte_end].to_string(),
     })
 }
 
@@ -191,9 +197,25 @@ fn remap_rendered(rendered: &str) -> String {
 
 /// Render the diagnostics for the model: every rendered error, numbered
 /// `E1..En` so a repair can refer to one by its number.
+///
+/// The header of each error quotes the text under its primary span. That
+/// is the text an `E<n> =>` edit replaces (see [`crate::edit`]), so the
+/// model sees exactly how much of the line it is rewriting: for `(1.5 * 2)`
+/// rustc underlines only the `*`, and a replacement of the whole expression
+/// would be wrong there.
 pub(crate) fn render_for_prompt(diagnostics: &[Diagnostic], out: &mut String) {
     for (idx, diagnostic) in diagnostics.iter().enumerate() {
-        writeln!(out, "[E{}]", idx + 1).expect(EXPECT_WRITE);
+        match diagnostic.spans.iter().find(|span| span.is_primary) {
+            Some(span) => writeln!(
+                out,
+                "[E{}] replaces `{}` on line {}",
+                idx + 1,
+                span.text,
+                span.line_start
+            )
+            .expect(EXPECT_WRITE),
+            None => writeln!(out, "[E{}]", idx + 1).expect(EXPECT_WRITE),
+        }
         out.push_str(diagnostic.rendered.trim_end());
         out.push('\n');
     }
@@ -460,10 +482,29 @@ mod tests {
         let mut out = String::new();
         render_for_prompt(&diagnostics, &mut out);
         assert!(
-            out.starts_with("[E1]\nerror[E0308]: mismatched types\n"),
+            out.starts_with(
+                "[E1] replaces `\"not a usize\"` on line 3\nerror[E0308]: mismatched types\n"
+            ),
             "{out}"
         );
-        assert!(out.contains("\n[E2]\nerror[E0308]"), "{out}");
+        assert!(
+            out.contains("\n[E2] replaces `\"not a usize\"` on line 3\nerror[E0308]"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn prompt_rendering_without_a_span_has_a_bare_header() {
+        let diagnostics = [Diagnostic {
+            code: None,
+            message: "linking failed".to_string(),
+            spans: Vec::new(),
+            suggestions: Vec::new(),
+            rendered: "error: linking failed\n".to_string(),
+        }];
+        let mut out = String::new();
+        render_for_prompt(&diagnostics, &mut out);
+        assert_eq!(out, "[E1]\nerror: linking failed\n");
     }
 
     #[test]
@@ -483,6 +524,7 @@ mod tests {
     ) -> Diagnostic {
         let line_start = candidate[..range.start].matches('\n').count() + 1;
         let span = DiagnosticSpan {
+            text: candidate[range.clone()].to_string(),
             bytes: range,
             line_start,
             column_start: 1,

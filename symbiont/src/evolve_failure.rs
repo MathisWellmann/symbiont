@@ -45,17 +45,18 @@ pub struct EvolveFailure {
     /// Failure kind label; the same values as the `kind` label of
     /// [`crate::observability::EVOLVE_FAILURES`]: one of `no_rust_code`,
     /// `parse`, `max_turns`, `signature`, `unsafe`, `forbidden`,
-    /// `unimplemented` or `compile`.
+    /// `unimplemented`, `compile` or `edit`.
     #[getset(get_copy = "pub")]
     kind: &'static str,
     /// The generated source that failed. Empty when the agent produced no
     /// code at all (`no_rust_code`, `max_turns`).
     #[getset(get = "pub")]
     generated_code: String,
-    /// The diagnostics fed back to the agent: rustc stderr for `compile`,
+    /// The diagnostics fed back to the agent: rustc's errors for `compile`,
     /// the parse error for `parse`, the mismatch description for
     /// `signature`, the offending construct for `unsafe` and `forbidden`,
-    /// and the corrective nudge otherwise.
+    /// why the edit did not apply for `edit`, and the corrective nudge
+    /// otherwise.
     #[getset(get = "pub")]
     diagnostics: String,
 }
@@ -95,6 +96,7 @@ impl EvolveFailure {
                 format!("`fn {fn_name}` is not implemented ({reason})"),
             ),
             CompilationFailed { code, err, .. } => (code.clone(), err.clone()),
+            EditFailed { code, err } => (code.clone(), err.clone()),
             _ => return None,
         };
         Some(Self {
