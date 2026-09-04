@@ -816,7 +816,8 @@ mod tests {
         assert_eq!(
             failure_kind_of(&CompilationFailed {
                 code: String::new(),
-                err: String::new()
+                err: String::new(),
+                diagnostics: Vec::new(),
             }),
             failure_kind::COMPILE
         );

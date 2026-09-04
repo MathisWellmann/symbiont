@@ -62,8 +62,18 @@ pub enum Error {
         reason: String,
     },
 
+    /// The candidate did not compile. `err` is the text the model reads:
+    /// every error rendered by rustc, numbered `[E1]..[En]`, with locations
+    /// in the candidate's own line numbers. `diagnostics` is the same set,
+    /// structured: spans as byte ranges into `code`, error codes and rustc's
+    /// suggestions. Empty when cargo itself failed before rustc reported
+    /// anything; `err` is cargo's stderr then.
     #[error("Compilation failed:\n{err}")]
-    CompilationFailed { code: String, err: String },
+    CompilationFailed {
+        code: String,
+        err: String,
+        diagnostics: Vec<crate::Diagnostic>,
+    },
 
     #[error("No evolvable functions found. Use the evolvable! macro to declare at least one.")]
     NoEvolvableFunctions,
@@ -145,8 +155,8 @@ impl Error {
                 Respond with a complete, real implementation matching the declared signature.\n
                 Full code: ```{code}```",
             ).expect("Can write to prompt"),
-            CompilationFailed{code: _, err} => write!(prompt,
-                "nudge: Your generated code failed to compile. Compiler output:\n```\n{err}\n```\n\
+            CompilationFailed{code: _, err, diagnostics: _} => write!(prompt,
+                "nudge: Your generated code failed to compile. Line numbers refer to your code block. Compiler output:\n```\n{err}\n```\n\
                 Fix the compilation errors while preserving the existing logic and behaviour if possible.\n
                 Change only the expressions the compiler diagnostics point at.",
             ).expect("Can write to prompt"),

@@ -53,12 +53,24 @@ async fn compiler_locations_point_into_the_agents_own_code_block() {
 
     let retry_prompt = agent.prompt(1);
     assert!(
-        retry_prompt.contains("src/lib.rs:3:24"),
+        retry_prompt.contains("--> line 3:24"),
         "the diagnostic must locate the error on the agent's own line 3, got: {retry_prompt}"
+    );
+    assert!(
+        !retry_prompt.contains("src/lib.rs"),
+        "the file name means nothing to the agent, got: {retry_prompt}"
+    );
+    assert!(
+        retry_prompt.contains("[E1]\nerror[E0308]"),
+        "errors are numbered for reference, got: {retry_prompt}"
     );
     assert!(
         !retry_prompt.contains("__symbiont"),
         "harness glue must not leak into the diagnostics, got: {retry_prompt}"
+    );
+    assert!(
+        !retry_prompt.contains("aborting due to") && !retry_prompt.contains("could not compile"),
+        "cargo's summary lines carry nothing to act on, got: {retry_prompt}"
     );
 
     // The registered source is the block as written, byte for byte.

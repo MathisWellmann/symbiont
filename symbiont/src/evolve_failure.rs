@@ -94,7 +94,7 @@ impl EvolveFailure {
                 code.clone(),
                 format!("`fn {fn_name}` is not implemented ({reason})"),
             ),
-            CompilationFailed { code, err } => (code.clone(), err.clone()),
+            CompilationFailed { code, err, .. } => (code.clone(), err.clone()),
             _ => return None,
         };
         Some(Self {
@@ -117,6 +117,7 @@ mod tests {
             &Error::CompilationFailed {
                 code: "fn f() {}".to_string(),
                 err: "error[E0308]: mismatched types".to_string(),
+                diagnostics: Vec::new(),
             },
             3,
             Lane::from(0),

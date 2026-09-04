@@ -9,6 +9,11 @@ use tokio::process::Command;
 use tracing::info;
 
 use crate::{
+    diagnostics::{
+        Diagnostic,
+        parse_cargo_json,
+        render_for_prompt,
+    },
     error::{
         Error,
         Result,
@@ -40,6 +45,12 @@ use crate::{
 /// overrides a `RUSTFLAGS="-D warnings"` inherited from the environment
 /// (CI sets exactly that), which a crate-level `#![allow(warnings)]` would
 /// not: `-D` on the command line outranks an attribute in the source.
+///
+/// Cargo emits `--message-format=json`, so a failed build returns
+/// [`Error::CompilationFailed`] with one [`Diagnostic`] per error, located
+/// in `candidate`, next to the text rendered for the model. Should the JSON
+/// hold no error (cargo itself failed, say on a broken manifest), the error
+/// text is cargo's stderr instead.
 pub(crate) async fn compile_dylib(
     crate_dir: &Path,
     profile: Profile,
@@ -64,7 +75,12 @@ pub(crate) async fn compile_dylib(
     let manifest_str = manifest_path.to_string_lossy();
     // `cargo rustc` instead of `cargo build`: the extra flags after `--` apply
     // to the dylib itself, not to its dependencies.
-    let mut args = vec!["rustc", "--manifest-path", &manifest_str];
+    let mut args = vec![
+        "rustc",
+        "--manifest-path",
+        &manifest_str,
+        "--message-format=json",
+    ];
     if profile == Profile::Release {
         args.push("--release");
     }
@@ -97,6 +113,7 @@ pub(crate) async fn compile_dylib(
         .map_err(|e| Error::CompilationFailed {
             code: candidate.to_string(),
             err: format!("Failed to spawn cargo: {e}"),
+            diagnostics: Vec::new(),
         })?;
 
     if output.status.success() {
@@ -106,11 +123,29 @@ pub(crate) async fn compile_dylib(
         );
         Ok(())
     } else {
-        let err = String::from_utf8_lossy(&output.stderr).to_string();
-        Err(Error::CompilationFailed {
-            code: candidate.to_string(),
-            err,
-        })
+        let diagnostics = parse_cargo_json(&String::from_utf8_lossy(&output.stdout), candidate);
+        Err(compilation_failed(
+            candidate,
+            diagnostics,
+            &String::from_utf8_lossy(&output.stderr),
+        ))
+    }
+}
+
+/// The error of a failed build: the located diagnostics and the text the
+/// model reads. Without any located error, cargo's stderr is the text.
+fn compilation_failed(candidate: &str, diagnostics: Vec<Diagnostic>, stderr: &str) -> Error {
+    let err = if diagnostics.is_empty() {
+        stderr.to_string()
+    } else {
+        let mut err = String::new();
+        render_for_prompt(&diagnostics, &mut err);
+        err
+    };
+    Error::CompilationFailed {
+        code: candidate.to_string(),
+        err,
+        diagnostics,
     }
 }
 
