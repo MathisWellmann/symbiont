@@ -141,19 +141,22 @@ The host binary and the dynamically loaded dylib have separate
 panic runtimes. A panic originating inside the dylib cannot be
 caught by `std::panic::catch_unwind` in the host — the host sees
 it as a "foreign exception" and aborts. The harness handles this
-by wrapping every *exported* function body in `catch_unwind`
-*inside the dylib* and exposing the panic message through an
-exported symbol (`__symbiont_take_panic`). Use
+with a generated wrapper per declared function *inside the dylib*:
+the wrapper is the exported symbol, it calls the agent's function
+under `catch_unwind`, and the panic message travels to the host
+through a second exported symbol (`__symbiont_take_panic`). Use
 `Runtime::take_panic` to retrieve panic messages after each
-call.
+call. The agent's code itself is compiled as written; the wrappers
+live in a `mod __symbiont_exports` appended after it (see
+`symbiont/src/layout.rs`).
 
-Only the exported entry points are wrapped — the agent's private
-helpers are not. A panic in a helper unwinds normally within the
-dylib until the entry point catches it, so nothing escapes, while
-recursive helpers avoid a `catch_unwind` frame (and hook install)
-per call, which costs speed and stack depth in exactly the hot
-code this harness optimizes. It also means helpers may return
-types that do not implement `Default`.
+Only these entry points catch panics — the agent's helpers do not.
+A panic in a helper unwinds normally within the dylib until the
+wrapper catches it, so nothing escapes, while recursive helpers
+avoid a `catch_unwind` frame (and hook install) per call, which
+costs speed and stack depth in exactly the hot code this harness
+optimizes. It also means helpers may return types that do not
+implement `Default`.
 
 When an implementation panics, the wrapped call returns
 `Default::default()` as a safe placeholder value — check
@@ -172,9 +175,11 @@ revision overwrite each other.
 ## Symbol exports and libc collisions
 
 Only the *declared* evolvable functions are exported from the
-dylib (`pub` + `#[unsafe(no_mangle)]`). Helper functions the agent
-invents keep their mangled Rust names — validation strips a
-`#[unsafe(no_mangle)]` the model added on its own.
+dylib, through the generated wrappers (`#[unsafe(export_name =
+"<name>")]`). Nothing in the agent's code is exported: helper
+functions keep their mangled Rust names, and validation rejects
+any `#[no_mangle]`, `#[unsafe(no_mangle)]` or `#[export_name]`
+attribute the model adds on its own.
 
 That is not cosmetic. An exported symbol in an ELF dylib has
 default visibility and is therefore *preemptible*: the compiler
@@ -194,9 +199,9 @@ function names.
 The generated code itself is barred from introducing new unsafety:
 validation rejects any `unsafe` construct in LLM-generated code at
 the AST level before compiling — `unsafe` blocks, `unsafe fn`,
-`unsafe impl`/`trait`, `extern` blocks, unsafe attributes (except
-the harness-managed `#[unsafe(no_mangle)]` export), and `unsafe`
-tokens smuggled through macros. The offending construct is fed
+`unsafe impl`/`trait`, `extern` blocks, unsafe attributes
+(including `#[unsafe(no_mangle)]`), and `unsafe` tokens smuggled
+through macros. The offending construct is fed
 back to the agent as backpressure.
 
 Beyond `unsafe`, validation also rejects constructs that break the

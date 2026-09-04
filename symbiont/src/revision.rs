@@ -76,8 +76,8 @@ pub(crate) struct RevisionEntry {
     fn_ptrs: Box<[*const ()]>,
     /// This revision's `__symbiont_take_panic` symbol.
     take_panic: *const (),
-    /// The clean generated source (without panic wrappers or preamble),
-    /// suitable for prompts and display.
+    /// The candidate this revision was compiled from: the agent's code as
+    /// written, without the harness glue. Suitable for prompts and display.
     source: String,
 }
 
@@ -146,7 +146,7 @@ impl RevisionEntry {
         TAKE_PANIC_PTR.store(self.take_panic.cast_mut(), Ordering::Release);
     }
 
-    /// The clean generated source this revision was compiled from.
+    /// The candidate this revision was compiled from.
     pub(crate) fn source(&self) -> &str {
         &self.source
     }

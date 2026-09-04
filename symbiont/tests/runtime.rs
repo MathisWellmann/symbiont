@@ -39,7 +39,7 @@ async fn runtime() {
     assert_eq!(
         &rt.fn_full_sources(),
         &[FullSource(
-            "/// Should increment the counter by a value in the range 5..20\n#[unsafe(no_mangle)]\npub fn step(counter: &mut usize) {\n    *counter += 1;\n}\n"
+            "/// Should increment the counter by a value in the range 5..20\npub fn step(counter: &mut usize) {\n    *counter += 1;\n}\n"
         )]
     );
     assert_eq!(
@@ -49,7 +49,7 @@ async fn runtime() {
     );
     assert_eq!(
         &rt.current_code(),
-        "/// Should increment the counter by a value in the range 5..20\n#[unsafe(no_mangle)]\npub fn step(counter: &mut usize) {\n    *counter += 1;\n}\n\n\n"
+        "/// Should increment the counter by a value in the range 5..20\npub fn step(counter: &mut usize) {\n    *counter += 1;\n}\n"
     );
     let mut counter = 0;
     step(&mut counter);
@@ -72,13 +72,13 @@ async fn runtime() {
     assert_eq!(
         &rt.fn_full_sources(),
         &[FullSource(
-            "/// Should increment the counter by a value in the range 5..20\n#[unsafe(no_mangle)]\npub fn step(counter: &mut usize) {\n    *counter += 1;\n}\n"
+            "/// Should increment the counter by a value in the range 5..20\npub fn step(counter: &mut usize) {\n    *counter += 1;\n}\n"
         )]
     );
     assert_eq!(
         &rt.current_code(),
-        "#[unsafe(no_mangle)]\npub fn step(counter: &mut usize) {\n    *counter += 5;\n}\n",
-        "Code has evolved"
+        "pub fn step(counter: &mut usize) { *counter += 5; }",
+        "Code has evolved and is stored exactly as the agent wrote it"
     );
     assert_eq!(
         rt.fn_prelude(),

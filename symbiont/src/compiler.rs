@@ -5,7 +5,6 @@ use std::time::Instant;
 
 #[cfg(not(miri))]
 use minstant::Instant;
-use prettyplease::unparse;
 use tokio::process::Command;
 use tracing::info;
 
@@ -15,16 +14,16 @@ use crate::{
         Result,
     },
     profile::Profile,
-    unwind::{
-        PANIC_PREAMBLE,
-        wrap_bodies_in_catch_unwind,
-    },
 };
 
-/// Compile a dylib crate at the given directory.
+/// Compile the dylib crate at `crate_dir` from `lib_rs`.
 ///
-/// Runs `cargo build --manifest-path <crate_dir>/Cargo.toml`,
-/// adding `--release` when the profile is [`Profile::Release`].
+/// `lib_rs` is the complete `src/lib.rs`, assembled by
+/// [`crate::layout::assemble_lib_rs`]: the candidate first, the harness glue
+/// after it. `candidate` is the agent's part of it, quoted in the error.
+///
+/// Runs `cargo rustc --manifest-path <crate_dir>/Cargo.toml`, adding
+/// `--release` when the profile is [`Profile::Release`].
 ///
 /// Cargo is spawned through [`tokio::process`] and awaited, so the multi-second
 /// build occupies no runtime worker: the calling task yields and the workers
@@ -34,32 +33,22 @@ use crate::{
 /// [`std::process::Command`] here would park a worker, and with enough lanes
 /// starve the I/O driver that those inference responses depend on.
 ///
-/// The generated crate allows all warnings: the code is machine-generated
-/// and its only reader is the compiler-feedback loop on failed builds, where
-/// warnings would drown out the errors the evolution agent has to fix.
+/// Lints are capped at `allow` for the generated crate: the code is
+/// machine-generated and its only reader is the compiler-feedback loop on
+/// failed builds, where warnings would drown out the errors the evolution
+/// agent has to fix. `--cap-lints` is passed to rustc directly so it also
+/// overrides a `RUSTFLAGS="-D warnings"` inherited from the environment
+/// (CI sets exactly that), which a crate-level `#![allow(warnings)]` would
+/// not: `-D` on the command line outranks an attribute in the source.
 pub(crate) async fn compile_dylib(
     crate_dir: &Path,
     profile: Profile,
-    clean_ast_str: &str,
+    candidate: &str,
+    lib_rs: &str,
 ) -> Result<()> {
     let t0 = Instant::now();
 
-    // Scoped so the `syn` AST is dropped before the `await` below: `syn`
-    // trees are `!Send` (a `proc_macro2` token may wrap a `proc_macro` one),
-    // and holding one across the await would make every caller's future
-    // `!Send` too.
-    let formatted = {
-        let mut clean_ast: syn::File = syn::parse_str(clean_ast_str)?;
-        // Wrap function bodies in catch_unwind so panics stay inside the dylib.
-        wrap_bodies_in_catch_unwind(&mut clean_ast);
-
-        // Final lib.rs: warning suppression + preamble + wrapped code.
-        format!(
-            "#![allow(warnings)]\n{PANIC_PREAMBLE}\n{}",
-            unparse(&clean_ast)
-        )
-    };
-    std::fs::write(crate_dir.join("src").join("lib.rs"), formatted).map_err(|e| {
+    std::fs::write(crate_dir.join("src").join("lib.rs"), lib_rs).map_err(|e| {
         Error::DylibLoad(format!(
             "Failed to write {}: {e}",
             crate_dir.join("src").join("lib.rs").display()
@@ -79,21 +68,22 @@ pub(crate) async fn compile_dylib(
     if profile == Profile::Release {
         args.push("--release");
     }
+    args.extend_from_slice(&["--", "--cap-lints", "allow"]);
     if cfg!(target_os = "linux") {
         // Bind the dylib's calls to its own exported functions at link time.
         //
-        // An exported (`#[unsafe(no_mangle)]`) symbol in an ELF dylib has
-        // default visibility and is therefore preemptible: the compiler emits
-        // the dylib's *own* calls to it through the GOT, and the loader
-        // resolves those against the global scope — the host executable and
-        // everything loaded with it, libc included — before the dylib itself.
-        // A generated function whose name collides with a libc symbol (e.g.
-        // `qsort`) then hijacks the call with mismatched arguments and
-        // segfaults the host. `-Bsymbolic-functions` pre-binds intra-dylib
-        // calls to the local definitions and removes that whole failure mode.
-        // Only Rust symbols undefined in the artifact (libc, a shared std)
-        // still resolve dynamically.
-        args.extend_from_slice(&["--", "-Clink-arg=-Wl,-Bsymbolic-functions"]);
+        // An exported symbol in an ELF dylib has default visibility and is
+        // therefore preemptible: the compiler emits the dylib's *own* calls
+        // to it through the GOT, and the loader resolves those against the
+        // global scope — the host executable and everything loaded with it,
+        // libc included — before the dylib itself. A generated function whose
+        // name collides with a libc symbol (e.g. `qsort`) then hijacks the
+        // call with mismatched arguments and segfaults the host.
+        // `-Bsymbolic-functions` pre-binds intra-dylib calls to the local
+        // definitions and removes that whole failure mode. Only Rust symbols
+        // undefined in the artifact (libc, a shared std) still resolve
+        // dynamically.
+        args.push("-Clink-arg=-Wl,-Bsymbolic-functions");
     }
 
     let output = Command::new("cargo")
@@ -105,7 +95,7 @@ pub(crate) async fn compile_dylib(
         .output()
         .await
         .map_err(|e| Error::CompilationFailed {
-            code: clean_ast_str.to_string(),
+            code: candidate.to_string(),
             err: format!("Failed to spawn cargo: {e}"),
         })?;
 
@@ -118,7 +108,7 @@ pub(crate) async fn compile_dylib(
     } else {
         let err = String::from_utf8_lossy(&output.stderr).to_string();
         Err(Error::CompilationFailed {
-            code: clean_ast_str.to_string(),
+            code: candidate.to_string(),
             err,
         })
     }

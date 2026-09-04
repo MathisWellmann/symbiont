@@ -46,7 +46,6 @@ use metrics::{
 #[cfg(not(miri))]
 use minstant::Instant;
 use owo_colors::OwoColorize;
-use prettyplease::unparse;
 use rig_core::message::Message;
 use tracing::{
     debug,
@@ -82,6 +81,11 @@ use crate::{
         Priority,
         is_context_size_error,
         is_transient_http_error,
+    },
+    layout::{
+        assemble_lib_rs,
+        harness_glue,
+        initial_candidate,
     },
     observability::{
         BUILD_SLOT_WAIT,
@@ -120,7 +124,6 @@ use crate::{
     utils::{
         find_so,
         generate_cargo_toml,
-        generate_lib_rs,
         versioned_so_path,
     },
     validation::{
@@ -192,11 +195,15 @@ pub struct Runtime {
     decls: &'static [EvolvableDecl],
     /// Compilation profile (`debug` or `release`).
     profile: Profile,
-    /// Rust source snippets prepended to the dylib's `lib.rs` on every
+    /// Rust source snippets that are part of the dylib's `lib.rs` on every
     /// (re)compilation. This includes inline items declared inside
     /// `evolvable! { ... }` and configured imports such as
     /// `use host::prelude::*;`.
     prelude: Vec<String>,
+    /// Everything `lib.rs` holds after the candidate: the prelude, the panic
+    /// protocol and the export wrappers. See [`crate::layout`]. Rendered once
+    /// here, appended to every candidate.
+    glue: String,
     /// Failed attempts of the most recent [`Runtime::evolve`] call that fed
     /// backpressure to the agent; drained by
     /// [`Runtime::take_evolve_failures`].
@@ -321,12 +328,19 @@ impl Runtime {
         );
         prelude.extend(config.prelude().iter().cloned());
 
-        // Write src/lib.rs from all default_source entries
-        let lib_rs = generate_lib_rs(decls, &prelude);
-        let initial_source_bytes = lib_rs.len();
+        // The initial revision: every declared function at its default body.
+        let glue = harness_glue(decls, &prelude);
+        let candidate = initial_candidate(decls);
+        let initial_source_bytes = candidate.len();
 
         // Compile
-        compile_dylib(&crate_dir, config.profile(), &lib_rs).await?;
+        compile_dylib(
+            &crate_dir,
+            config.profile(),
+            &candidate,
+            &assemble_lib_rs(&candidate, &glue),
+        )
+        .await?;
 
         // Copy the build output to the revision-0 path: later `cargo build`
         // runs replace the unversioned artifact, while the versioned copy
@@ -348,7 +362,7 @@ impl Runtime {
 
         // Resolve and cache the function pointers of the initial revision
         // (dispatch is lock-free after this point) and register it.
-        let initial = unsafe { RevisionEntry::resolve(lib, decls, lib_rs)? };
+        let initial = unsafe { RevisionEntry::resolve(lib, decls, candidate)? };
         initial.publish(decls);
 
         let runtime = Runtime {
@@ -362,6 +376,7 @@ impl Runtime {
             decls,
             profile: config.profile(),
             prelude,
+            glue,
             evolve_failures: RwLock::new(Vec::new()),
             build_slot: tokio::sync::Mutex::new(()),
             // Unlimited until a caller asks for a limit, so a host that only
@@ -477,31 +492,35 @@ impl Runtime {
         )
         .record(t0.elapsed().as_secs_f64());
 
-        // Parse Rust from markdown fences, validate signatures, and render
-        // the candidate source. Scoped so the `syn` AST is dropped before the
-        // compile `await` below: `syn` trees are `!Send`, and holding one
-        // across an await would make this future `!Send`.
-        let clean_ast_str = {
+        // Parse Rust from markdown fences and validate signatures. The
+        // candidate that goes on to the build is the block's text as the
+        // agent wrote it, never a re-rendering of the AST: the compiler's
+        // line numbers then point into text the agent has seen. Scoped so the
+        // `syn` AST is dropped before the compile `await` below: `syn` trees
+        // are `!Send`, and holding one across an await would make this future
+        // `!Send`.
+        let candidate = {
             let t1 = Instant::now();
             // Recorded before `?` propagates. A rejected candidate must still
             // report the time its parse and validation took.
-            let mut ast = parse_rust_code(&llm_response).inspect_err(|_| {
+            let candidate = parse_rust_code(&llm_response).inspect_err(|_| {
                 stages.set_parse_validate(Some(t1.elapsed()));
             })?;
 
             // Validate signatures match declarations
-            validate_generated_ast(&mut ast, &self.fn_sigs, &self.denied_paths).inspect_err(
-                |_| {
+            validate_generated_ast(candidate.ast(), &self.fn_sigs, &self.denied_paths)
+                .inspect_err(|_| {
                     stages.set_parse_validate(Some(t1.elapsed()));
-                },
-            )?;
+                })?;
             // Reject stub bodies outright, and candidates that implement
             // nothing: an echo of every declared default body. A candidate
             // that genuinely evolves one function while leaving others at
             // their defaults is a partial evolution and passes.
-            check_implementation_bodies(&ast, &self.default_bodies).inspect_err(|_| {
-                stages.set_parse_validate(Some(t1.elapsed()));
-            })?;
+            check_implementation_bodies(candidate.ast(), &self.default_bodies).inspect_err(
+                |_| {
+                    stages.set_parse_validate(Some(t1.elapsed()));
+                },
+            )?;
             stages.set_parse_validate(Some(t1.elapsed()));
 
             histogram!(
@@ -510,30 +529,13 @@ impl Runtime {
             )
             .record(t1.elapsed().as_secs_f64());
 
-            // Re-inject the prelude (inline helper items and configured imports)
-            // so the dylib still sees the same API surface used at initialization.
-            // The LLM is asked to emit only the function bodies, so we control
-            // the prelude here rather than relying on the model to repeat it.
-            if !self.prelude.is_empty() {
-                let mut combined: Vec<syn::Item> = Vec::new();
-                for part in &self.prelude {
-                    if part.is_empty() {
-                        continue;
-                    }
-                    let prelude_file: syn::File = syn::parse_str(part)
-                        .expect("prelude was successfully parsed at init; should still be valid");
-                    combined.extend(prelude_file.items);
-                }
-                combined.append(&mut ast.items);
-                ast.items = combined;
-            }
-            unparse(&ast)
+            candidate.into_source()
         };
 
         // Compile, load and retain the new revision. Whether it also becomes
         // the active one is up to the caller.
         let revision = self
-            .build_and_register(clean_ast_str, stages.build_mut())
+            .build_and_register(candidate, stages.build_mut())
             .await?;
 
         info!("Built revision {revision}. LLM generation: {llm_time}ms.");
@@ -541,7 +543,7 @@ impl Runtime {
         Ok(revision)
     }
 
-    /// Compile `clean_ast_str`, load the resulting dylib, and retain it in the
+    /// Compile `candidate`, load the resulting dylib, and retain it in the
     /// registry under a fresh revision id.
     ///
     /// Does **not** touch the dispatch pointers: the returned revision is
@@ -562,7 +564,7 @@ impl Runtime {
     /// compiler rejects therefore still reports the time its compile took.
     async fn build_and_register(
         &self,
-        clean_ast_str: String,
+        candidate: String,
         record: &mut Option<BuildRecord>,
     ) -> Result<Revision> {
         let t_wait = Instant::now();
@@ -574,7 +576,7 @@ impl Runtime {
         // to gain from building it twice. The check runs inside the build
         // permit, which is what makes it airtight for a batch: two lanes that
         // generated the same code cannot both miss and then both build.
-        if let Some(existing) = self.registered_with_source(&clean_ast_str)? {
+        if let Some(existing) = self.registered_with_source(&candidate)? {
             counter!(REVISION_DEDUP_HITS).increment(1);
             info!(
                 "Candidate is byte-identical to revision {existing}; reusing it instead of spending a build."
@@ -586,22 +588,27 @@ impl Runtime {
             return Ok(existing);
         }
 
-        let source_bytes = clean_ast_str.len();
-        debug!("clean_ast_str: {clean_ast_str}");
+        let source_bytes = candidate.len();
+        debug!("candidate: {candidate}");
 
         let t_compile = Instant::now();
         // A compile failure is the common self-healing case, and its duration
         // is the most useful number of the whole attempt. Record it before the
         // error propagates.
-        compile_dylib(&self.crate_dir, self.profile, &clean_ast_str)
-            .await
-            .inspect_err(|_| {
-                *record = Some(BuildRecord::Built {
-                    slot_wait: waited,
-                    compile: t_compile.elapsed(),
-                    load: Duration::ZERO,
-                });
-            })?;
+        compile_dylib(
+            &self.crate_dir,
+            self.profile,
+            &candidate,
+            &assemble_lib_rs(&candidate, &self.glue),
+        )
+        .await
+        .inspect_err(|_| {
+            *record = Some(BuildRecord::Built {
+                slot_wait: waited,
+                compile: t_compile.elapsed(),
+                load: Duration::ZERO,
+            });
+        })?;
         let compile_time = t_compile.elapsed();
         histogram!(
             PIPELINE_STAGE_DURATION,
@@ -630,7 +637,7 @@ impl Runtime {
         // Resolve the new revision's symbols and retain it in the registry.
         // Every earlier library stays loaded (keep-all), so earlier revisions
         // remain callable for the lifetime of the process.
-        let entry = unsafe { RevisionEntry::resolve(new_lib, self.decls, clean_ast_str)? };
+        let entry = unsafe { RevisionEntry::resolve(new_lib, self.decls, candidate)? };
         {
             let mut revisions = self.revisions.write().map_err(|_| Error::MutexPoison)?;
             debug_assert_eq!(
@@ -1548,8 +1555,9 @@ impl Runtime {
         Vec::from_iter(self.decls.iter().map(|d| FullSource(d.full_source)))
     }
 
-    /// Get the current, clean LLM-generated code (without panic-catching wrappers or preamble).
-    /// Suitable for feeding back into the LLM prompt or displaying to the user.
+    /// Get the current LLM-generated code, byte for byte as the agent wrote
+    /// it (no prelude, no panic protocol, no export wrappers). Suitable for
+    /// feeding back into the LLM prompt or displaying to the user.
     ///
     /// This is the source of the revision the dispatch pointers currently
     /// point at: the latest successful evolution.
@@ -1574,8 +1582,9 @@ impl Runtime {
         u64::try_from(revisions.len()).expect("registry length fits in u64")
     }
 
-    /// The clean generated source of `revision` (without panic-catching
-    /// wrappers or preamble), or `None` if no such revision was registered.
+    /// The generated source of `revision` as the agent wrote it (no prelude,
+    /// no panic protocol, no export wrappers), or `None` if no such revision
+    /// was registered.
     pub fn revision_code(&self, revision: Revision) -> Option<String> {
         let idx = usize::try_from(revision.as_u64()).ok()?;
         let revisions = self
