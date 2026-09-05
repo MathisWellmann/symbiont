@@ -917,7 +917,7 @@ checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
 name = "batched-evolution-example"
-version = "0.35.0"
+version = "0.36.0"
 dependencies = [
  "symbiont",
  "tokio",
@@ -1472,7 +1472,7 @@ dependencies = [
 
 [[package]]
 name = "counter-example"
-version = "0.35.0"
+version = "0.36.0"
 dependencies = [
  "symbiont",
  "tokio",
@@ -2238,7 +2238,7 @@ dependencies = [
 
 [[package]]
 name = "evolving-trader-example"
-version = "0.35.0"
+version = "0.36.0"
 dependencies = [
  "lfest",
  "plotters",
@@ -2345,7 +2345,7 @@ dependencies = [
 
 [[package]]
 name = "fizzbuzz-example"
-version = "0.35.0"
+version = "0.36.0"
 dependencies = [
  "rig-core",
  "symbiont",
@@ -2454,7 +2454,7 @@ dependencies = [
 
 [[package]]
 name = "fractal-studio-example"
-version = "0.35.0"
+version = "0.36.0"
 dependencies = [
  "eframe",
  "egui_extras",
@@ -5038,7 +5038,7 @@ dependencies = [
 
 [[package]]
 name = "quantize-example"
-version = "0.35.0"
+version = "0.36.0"
 dependencies = [
  "colorgrad",
  "derive_more",
@@ -5280,7 +5280,7 @@ dependencies = [
 
 [[package]]
 name = "rastrigin-example"
-version = "0.35.0"
+version = "0.36.0"
 dependencies = [
  "rig-core",
  "romu",
@@ -6300,7 +6300,7 @@ dependencies = [
 
 [[package]]
 name = "sort-example"
-version = "0.35.0"
+version = "0.36.0"
 dependencies = [
  "rig-core",
  "romu",
@@ -6338,7 +6338,7 @@ checksum = "6637bab7722d379c8b41ba849228d680cc12d0a45ba1fa2b48f2a30577a06731"
 
 [[package]]
 name = "struct-support-example"
-version = "0.35.0"
+version = "0.36.0"
 dependencies = [
  "symbiont",
  "tokio",
@@ -6353,7 +6353,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "symbiont"
-version = "0.35.0"
+version = "0.36.0"
 dependencies = [
  "bytes",
  "criterion",
@@ -6389,7 +6389,7 @@ dependencies = [
 
 [[package]]
 name = "symbiont-macros"
-version = "0.35.0"
+version = "0.36.0"
 dependencies = [
  "prettyplease",
  "proc-macro2",
@@ -6581,7 +6581,7 @@ dependencies = [
 
 [[package]]
 name = "tictactoe-example"
-version = "0.35.0"
+version = "0.36.0"
 dependencies = [
  "romu",
  "symbiont",
@@ -6793,7 +6793,7 @@ dependencies = [
 
 [[package]]
 name = "tool-calling-example"
-version = "0.35.0"
+version = "0.36.0"
 dependencies = [
  "rig-core",
  "serde",
