@@ -503,7 +503,7 @@ impl Runtime {
             history_base,
             edit_base,
         } = request;
-        info!("prompt: {}", prompt.green());
+        debug!("prompt: {}", prompt.green());
         let t0 = Instant::now();
         let visible = history.get(history_base..).unwrap_or_default().to_vec();
         let visible_len = visible.len();
@@ -543,7 +543,7 @@ impl Runtime {
         histogram!(LLM_RUN_INPUT_TOKENS).record(run.usage.input_tokens as f64);
         histogram!(LLM_RUN_OUTPUT_TOKENS).record(run.usage.output_tokens as f64);
         histogram!(LLM_RUN_MESSAGES).record(run.new_messages.len() as f64);
-        info!("llm_response: {}", run.output.blue());
+        debug!("llm_response: {}", run.output.blue());
         info!("token usage for this run: {:?}", run.usage);
 
         // `new_messages` contains the prompt, assistant turns and any
