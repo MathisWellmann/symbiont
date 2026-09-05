@@ -890,7 +890,11 @@ impl Runtime {
             }) => {
                 let mut report = String::new();
                 render_fixes_for_prompt(&fixes, &mut report);
-                report.push_str("The code still failed to compile with these fixes applied:\n");
+                report.push_str(
+                    "The code still failed to compile with these fixes applied. The errors below \
+                     are located in the code *after* these fixes, so their line numbers may differ \
+                     from your code block where a fix added or removed a line:\n",
+                );
                 err.insert_str(0, &report);
                 Err(Error::CompilationFailed {
                     code,

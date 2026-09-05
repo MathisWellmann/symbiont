@@ -167,7 +167,7 @@ impl Error {
                 Your previous code is unchanged. Respond with a corrected edit, or with the complete corrected code block.",
             ).expect("Can write to prompt"),
             CompilationFailed{code: _, err, diagnostics: _} => write!(prompt,
-                "nudge: Your generated code failed to compile. Line numbers refer to your code block. Compiler output:\n```\n{err}\n```\n\
+                "nudge: Your generated code failed to compile. Line numbers refer to your code block unless the output below says otherwise. Compiler output:\n```\n{err}\n```\n\
                 Fix the compilation errors while preserving the existing logic and behaviour if possible.\n
                 Change only the expressions the compiler diagnostics point at.",
             ).expect("Can write to prompt"),
