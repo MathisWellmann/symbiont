@@ -194,6 +194,32 @@ the host process. Generated dylibs are additionally linked with
 calls to local definitions and closes the same hole for declared
 function names.
 
+## Edits to the previous candidate
+
+After a compile failure the agent may answer with an edit to its
+previous code instead of the whole code: `E<n> => text` for the
+span the `n`-th reported error underlines, a `SEARCH`/`REPLACE`
+hunk matched on tokens, or a code block holding only the items
+that change. The harness resolves every edit against the
+unmodified previous candidate, rejects overlapping edits, and
+runs the result through the same parse, validation and build as a
+whole response. The base is the candidate that *compiled with
+errors*; a response that failed to parse or validate, or an edit
+that did not apply, leaves it unchanged. A context or repeat
+reset drops the base, because the agent no longer sees the code
+an edit would refer to.
+
+Token matching means a `SEARCH` text must be lexically valid Rust
+on its own: an unbalanced `{` cannot be matched. Anchors replace
+exactly what rustc underlines, which is often a single token; the
+nudge quotes that text so the agent sizes its replacement right.
+
+Machine-applicable compiler suggestions are applied once, before
+the agent is asked. The patched text is what gets registered and
+what a still-failing build's diagnostics refer to. Suggestions
+rustc marks `MaybeIncorrect` (an import among several candidates)
+are never applied.
+
 ## Undefined behaviour and Miri
 
 The generated code itself is barred from introducing new unsafety:
