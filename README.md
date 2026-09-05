@@ -167,6 +167,14 @@ cargo run -p fractal-studio-example --release
 - **Catches Agent Code Panics**
   Any LLM code that generate a runtime panic will be caught using `catch_unwind`, and the panic message is used
   to provide backpressure in the prompt. See [layout.rs](symbiont/src/layout.rs) and [unwind.rs](symbiont/src/unwind.rs) for details.
+- **Cheap repair rounds**:
+  A compile error comes back as rustc's own diagnostics with line numbers that point into the code block the
+  agent wrote, numbered `[E1]`, `[E2]`, ... The agent then edits its previous code instead of retyping it:
+  `E1 => text` replaces the underlined span, a token-matched `SEARCH`/`REPLACE` hunk changes one place, or a
+  block with only the function that changes swaps that function in. Before the agent is asked at all, the
+  harness applies rustc's `MachineApplicable` suggestions itself (a missing `&`, `2` where `2.0` is due) and
+  attaches the definition of any host type the agent called a non-existent method on.
+  See [edit.rs](symbiont/src/edit.rs) and [diagnostics.rs](symbiont/src/diagnostics.rs).
 
 ## When Symbiont wins
 

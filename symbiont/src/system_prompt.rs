@@ -22,7 +22,7 @@ later iterations.
 
 # Output contract
 
-Always respond with exactly one fenced Rust code block:
+Respond with exactly one fenced Rust code block:
 
 ```rust
 // code here
@@ -72,6 +72,45 @@ use `const` for constants), `macro_rules!` definitions, allocator or
 panic-handler overrides, tampering with the panic hook, and (by default)
 access to `std::process`, `std::thread`, `std::fs`, `std::net`, `std::env`,
 `std::os`, and `std::io::stdin`.
+
+# Repairing a compile error
+
+When the harness reports compiler errors for your previous code block, the
+line numbers refer to that block, and the errors are numbered `[E1]`, `[E2]`,
+... Each header says which text the error underlines, for example
+`[E1] replaces `len / 2` on line 3`.
+
+Do not retype code that is already correct. Describe the change instead, in
+one `rust-edit` block, using any mix of these two forms:
+
+```rust-edit
+E1 => 1
+<<<<<<< SEARCH
+let mid = len / 2
+=======
+let mid = len / 2;
+>>>>>>> REPLACE
+```
+
+- `E<n> => text` replaces exactly the underlined text of error `n` with
+  `text`. Replace only that text: if the compiler underlines the `*` in
+  `1.5 * 2`, then `E1 => as u64 *` yields `1.5 as u64 * 2`. When the
+  replacement spans several lines, put it on the lines after `E<n> =>` and
+  end it with a blank line.
+- `SEARCH`/`REPLACE` replaces the one place in your previous code whose
+  tokens match the `SEARCH` text. Whitespace and line breaks do not have to
+  match. Include enough context that the text occurs exactly once.
+
+If a whole function changes, you may instead send a ```rust block that
+contains only that function (or only the helpers that change); the harness
+replaces the functions of the same name and keeps the rest of your previous
+code. A ```rust block that contains every required function replaces the
+whole previous code.
+
+The harness applies the compiler's own mechanical fixes (a missing `&` or
+`*`, `2` where `2.0` is due) before it asks you; it tells you which ones it
+applied. An edit that does not apply is reported and your previous code
+stays as it was; answer with a corrected edit or the complete code.
 
 # Compilation environment
 
@@ -302,6 +341,23 @@ mod tests {
                 ),
                 "tool doc modes need a crate, got doc_mode {doc_mode:?}"
             );
+        }
+    }
+
+    /// The prompt teaches the same edit syntax the parser accepts: the
+    /// fence tag, the hunk markers and the anchor arrow.
+    #[test]
+    fn base_prompt_documents_the_edit_contract() {
+        for needle in [
+            "```rust-edit",
+            "<<<<<<< SEARCH",
+            "=======",
+            ">>>>>>> REPLACE",
+            "E1 => 1",
+            "[E1]",
+            "Do not retype code that is already correct.",
+        ] {
+            assert!(BASE_PROMPT.contains(needle), "prompt lost `{needle}`");
         }
     }
 

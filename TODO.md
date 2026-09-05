@@ -1,3 +1,11 @@
+- Repair rounds: an end-to-end test of the compile-error API hints (`api_hints.rs`) against a
+  host crate with a `prelude` (`struct-support-example`, an invented `step_by` on `GameState`).
+  It cannot be a workspace test: the nested dylib build resolves the workspace's git
+  dependencies afresh and needs the network, so it belongs with the CI smoke tests.
+- Repair rounds, phase 2: expose the edit verbs as a rig `PortableTool` in the tool `DocMode`s
+  that only *stages* edits into the per-request `ToolContext` and returns the instant
+  parse/validate result; the ladder applies staged edits after `run()` and compiles as today.
+  Never put `cargo` inside an inference-gate scope. Measure the response-format version first.
 - Show multi function evolution with example.
 - Show example of using external dependency in generated dylibs, if configured.
 - Proper eval pipeline to compare model performance across tasks. My own benchmark suite so to say, aka `symbiont-eval`
