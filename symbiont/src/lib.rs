@@ -9,6 +9,7 @@
 // out of the interpreted binary.
 #![cfg_attr(miri, allow(unused_crate_dependencies))]
 
+mod api_hints;
 mod compiler;
 #[cfg(debug_assertions)]
 mod debug_call_counter;

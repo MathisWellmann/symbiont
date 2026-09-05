@@ -105,6 +105,22 @@ impl DylibConfig {
         }
     }
 
+    /// The package the dylib depends on as `host`, if any: the crate whose
+    /// `prelude` the generated code imports and whose API the runtime
+    /// documents. `None` for a standalone config.
+    #[must_use]
+    pub fn host_crate(&self) -> Option<&str> {
+        self.dependencies
+            .iter()
+            .find(|dependency| dependency.name() == "host")
+            .map(|dependency| {
+                dependency
+                    .package()
+                    .as_deref()
+                    .unwrap_or_else(|| dependency.name())
+            })
+    }
+
     /// Create a config with no dylib dependencies and the supplied profile.
     #[must_use]
     pub fn standalone(profile: crate::Profile) -> Self {
@@ -166,5 +182,25 @@ impl DylibConfig {
 impl From<crate::Profile> for DylibConfig {
     fn from(profile: crate::Profile) -> Self {
         Self::standalone(profile)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn host_crate_is_the_package_behind_the_host_alias() {
+        let config = DylibConfig::host_package(crate::Profile::Debug, "my-app", "/tmp/app");
+        assert_eq!(config.host_crate(), Some("my-app"));
+
+        let config = DylibConfig::standalone(crate::Profile::Debug)
+            .with_dependency(DylibDependency::with_path("host", "/tmp/host"));
+        assert_eq!(config.host_crate(), Some("host"));
+
+        assert_eq!(
+            DylibConfig::standalone(crate::Profile::Debug).host_crate(),
+            None
+        );
     }
 }
