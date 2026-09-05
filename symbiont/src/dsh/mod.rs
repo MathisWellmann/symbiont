@@ -167,6 +167,7 @@ pub(super) mod tests {
             slot_wait: Duration::from_millis(2),
             compile: Duration::from_secs(3),
             load: Duration::from_millis(1),
+            autofixes: Vec::new(),
         }));
         stages
     }
@@ -227,6 +228,7 @@ pub(super) mod tests {
             LadderEvent::SelfHeal {
                 kind: "compile".to_string(),
                 diagnostics: "E0277: the trait bound is not satisfied".to_string(),
+                api_hints: Vec::new(),
             },
             Duration::from_secs(4),
         );

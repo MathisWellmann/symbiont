@@ -94,11 +94,19 @@ async fn trace_records_the_whole_lane() {
         "a response without a code block never reaches the build stage"
     );
     match first.ladder() {
-        LadderEvent::SelfHeal { kind, diagnostics } => {
+        LadderEvent::SelfHeal {
+            kind,
+            diagnostics,
+            api_hints,
+        } => {
             assert_eq!(kind, "no_rust_code");
             assert!(
                 diagnostics.contains("rust code block"),
                 "the nudge is the diagnostics fed back, got: {diagnostics}"
+            );
+            assert!(
+                api_hints.is_empty(),
+                "only compile failures about a host type attach documentation"
             );
         }
         other => panic!("expected a self-heal after a missing code block, got: {other:?}"),

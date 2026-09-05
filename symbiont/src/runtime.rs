@@ -55,6 +55,7 @@ use tracing::{
 
 use crate::{
     AgentRun,
+    AppliedFix,
     BuildRecord,
     Diagnostic,
     DocIndex,
@@ -179,14 +180,15 @@ struct AttemptRequest<'a> {
     edit_base: Option<&'a EditBase>,
 }
 
-/// What [`Runtime::compile_with_autofix`] ended with.
+/// What [`Runtime::compile_with_autofix`] ended with. Either way the fixes
+/// that were applied to get there come along, for the build record.
 enum Compiled {
     /// The dylib was built from this candidate, which is now the artifact at
     /// the unversioned `so_path`.
-    Fresh(String),
+    Fresh(String, Vec<AppliedFix>),
     /// The autofixed candidate is the source of this revision already;
     /// nothing was built.
-    Registered(Revision),
+    Registered(Revision, Vec<AppliedFix>),
 }
 
 /// Cached pointer to the dylib's `__symbiont_take_panic` function.
@@ -569,7 +571,7 @@ impl Runtime {
             // Recorded before `?` propagates. A rejected candidate must still
             // report the time its parse and validation took.
             let candidate = self
-                .candidate_of(&llm_response, edit_base)
+                .candidate_of(&llm_response, edit_base, stages)
                 .inspect_err(|_| {
                     stages.set_parse_validate(Some(t1.elapsed()));
                 })?;
@@ -611,8 +613,14 @@ impl Runtime {
     }
 
     /// The candidate a response describes: the whole code block, or the
-    /// `edit_base` with the response's edits applied.
-    fn candidate_of(&self, response: &str, edit_base: Option<&EditBase>) -> Result<Candidate> {
+    /// `edit_base` with the response's edits applied. An edit is recorded in
+    /// `stages` for the trace.
+    fn candidate_of(
+        &self,
+        response: &str,
+        edit_base: Option<&EditBase>,
+        stages: &mut StageTimings,
+    ) -> Result<Candidate> {
         let Some(base) = edit_base else {
             return parse_rust_code(response);
         };
@@ -620,8 +628,15 @@ impl Runtime {
         let declared: Vec<&str> = self.decls.iter().map(|decl| decl.name).collect();
         match edit::resolve(base, &fences, &declared) {
             Ok(edit::Resolved::Edited { source, edits }) => {
-                counter!(EVOLVE_EDITS).increment(edits as u64);
-                info!("Applied {edits} edit(s) to the previous candidate.");
+                counter!(EVOLVE_EDITS).increment(edits.total() as u64);
+                info!(
+                    "Applied {} edit(s) to the previous candidate ({} anchor(s), {} hunk(s), {} item(s)).",
+                    edits.total(),
+                    edits.anchors,
+                    edits.hunks,
+                    edits.items
+                );
+                stages.set_edits(Some(edits));
                 parse_candidate(source)
             }
             Ok(edit::Resolved::Whole) => parse_rust_code(response),
@@ -635,13 +650,13 @@ impl Runtime {
     /// The definitions of the host types that `diagnostics` show the agent
     /// misusing, rendered for the nudge. Empty without a host crate, without
     /// such an error, or if the host's documentation cannot be built.
-    async fn api_hints(&self, diagnostics: &[Diagnostic]) -> String {
+    async fn api_hints(&self, diagnostics: &[Diagnostic]) -> (String, Vec<String>) {
         let mut out = String::new();
         if api_hint_names(diagnostics).is_empty() {
-            return out;
+            return (out, Vec::new());
         }
         let Some(host_crate) = &self.host_crate else {
-            return out;
+            return (out, Vec::new());
         };
         let index = self
             .doc_index
@@ -653,10 +668,11 @@ impl Runtime {
                 }
             })
             .await;
-        if let Some(index) = index {
-            render_api_hints(index, diagnostics, &mut out);
-        }
-        out
+        let attached = match index {
+            Some(index) => render_api_hints(index, diagnostics, &mut out),
+            None => Vec::new(),
+        };
+        (out, attached)
     }
 
     /// Compile `candidate`, load the resulting dylib, and retain it in the
@@ -700,6 +716,7 @@ impl Runtime {
             *record = Some(BuildRecord::Deduped {
                 slot_wait: waited,
                 revision: existing,
+                autofixes: Vec::new(),
             });
             return Ok(existing);
         }
@@ -710,23 +727,26 @@ impl Runtime {
         // A compile failure is the common self-healing case, and its duration
         // is the most useful number of the whole attempt. Record it before the
         // error propagates.
-        let candidate = match self
-            .compile_with_autofix(candidate)
+        let mut applied = Vec::new();
+        let (candidate, autofixes) = match self
+            .compile_with_autofix(candidate, &mut applied)
             .await
             .inspect_err(|_| {
                 *record = Some(BuildRecord::Built {
                     slot_wait: waited,
                     compile: t_compile.elapsed(),
                     load: Duration::ZERO,
+                    autofixes: std::mem::take(&mut applied),
                 });
             })? {
-            Compiled::Fresh(candidate) => candidate,
-            Compiled::Registered(existing) => {
+            Compiled::Fresh(candidate, autofixes) => (candidate, autofixes),
+            Compiled::Registered(existing, autofixes) => {
                 counter!(REVISION_DEDUP_HITS).increment(1);
                 info!("Autofixed candidate is byte-identical to revision {existing}; reusing it.");
                 *record = Some(BuildRecord::Deduped {
                     slot_wait: waited,
                     revision: existing,
+                    autofixes,
                 });
                 return Ok(existing);
             }
@@ -786,6 +806,7 @@ impl Runtime {
             slot_wait: waited,
             compile: compile_time,
             load: t_load.elapsed(),
+            autofixes,
         });
 
         info!(
@@ -814,7 +835,14 @@ impl Runtime {
     /// saw. Applying fixes a second time would need the diagnostics to be
     /// relocated first and buys little; a candidate that needs two rounds of
     /// mechanical fixes has bigger problems the model should look at.
-    async fn compile_with_autofix(&self, candidate: String) -> Result<Compiled> {
+    ///
+    /// `applied` receives the fixes as soon as they are applied, so a build
+    /// record written on the error path still says what was tried.
+    async fn compile_with_autofix(
+        &self,
+        candidate: String,
+        applied: &mut Vec<AppliedFix>,
+    ) -> Result<Compiled> {
         let first = match compile_dylib(
             &self.crate_dir,
             self.profile,
@@ -823,7 +851,7 @@ impl Runtime {
         )
         .await
         {
-            Ok(()) => return Ok(Compiled::Fresh(candidate)),
+            Ok(()) => return Ok(Compiled::Fresh(candidate, Vec::new())),
             Err(err) => err,
         };
         let Error::CompilationFailed {
@@ -842,8 +870,9 @@ impl Runtime {
             fixes.len()
         );
         debug!("autofixed candidate: {patched}");
+        applied.clone_from(&fixes);
         if let Some(existing) = self.registered_with_source(&patched)? {
-            return Ok(Compiled::Registered(existing));
+            return Ok(Compiled::Registered(existing, fixes));
         }
         match compile_dylib(
             &self.crate_dir,
@@ -853,7 +882,7 @@ impl Runtime {
         )
         .await
         {
-            Ok(()) => Ok(Compiled::Fresh(patched)),
+            Ok(()) => Ok(Compiled::Fresh(patched, fixes)),
             Err(Error::CompilationFailed {
                 code,
                 mut err,
@@ -1682,11 +1711,11 @@ impl Runtime {
                         // before the error is consumed by the nudge; rendered
                         // after it, so the definitions follow the errors they
                         // explain.
-                        let api_hints = match &e {
+                        let (api_hints, hinted_types) = match &e {
                             Error::CompilationFailed { diagnostics, .. } => {
                                 self.api_hints(diagnostics).await
                             }
-                            _ => String::new(),
+                            _ => (String::new(), Vec::new()),
                         };
 
                         // Add a nudge prompt.
@@ -1718,6 +1747,7 @@ impl Runtime {
                             LadderEvent::SelfHeal {
                                 kind,
                                 diagnostics: prompt.clone(),
+                                api_hints: hinted_types,
                             },
                             t_attempt.elapsed(),
                         );
