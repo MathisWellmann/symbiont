@@ -1,20 +1,72 @@
 // SPDX-License-Identifier: MPL-2.0
 use std::{
+    collections::hash_map::DefaultHasher,
     fmt::Write,
+    hash::{
+        Hash,
+        Hasher,
+    },
     path::{
         Path,
         PathBuf,
     },
 };
 
+use tracing::info;
+
 use crate::{
+    DylibConfig,
     DylibDependency,
     DylibPatch,
     Error,
+    EvolvableDecl,
     Profile,
     Result,
 };
 
+/// Create the dylib crate for `decls` under the temp dir and write its
+/// manifest and lockfile. Returns the crate directory.
+///
+/// The directory is named after a hash of the function names, so the same
+/// set of evolvables reuses one crate (and its `target/`) across runs.
+/// The manifest and lockfile are rewritten on every start, so a reused
+/// directory never keeps a stale manifest or lock from an earlier host.
+pub(crate) fn scaffold_dylib_crate(
+    decls: &[EvolvableDecl],
+    config: &DylibConfig,
+) -> Result<PathBuf> {
+    let mut hasher = DefaultHasher::new();
+    for d in decls {
+        d.name.hash(&mut hasher);
+    }
+    let hash = hasher.finish();
+    let crate_dir = std::env::temp_dir().join(format!("symbiont-evolvable-{hash:x}"));
+    std::fs::create_dir_all(crate_dir.join("src")).map_err(|e| {
+        Error::DylibLoad(format!(
+            "Failed to create dylib crate directory {}: {e}",
+            crate_dir.display()
+        ))
+    })?;
+
+    let cargo_toml = generate_cargo_toml(config.dependencies(), config.patches());
+    std::fs::write(crate_dir.join("Cargo.toml"), cargo_toml).map_err(|e| {
+        Error::DylibLoad(format!(
+            "Failed to write {}: {e}",
+            crate_dir.join("Cargo.toml").display()
+        ))
+    })?;
+
+    if let Some(lockfile) = host_lockfile(config.dependencies()) {
+        info!("Seeding dylib crate lockfile from {}", lockfile.display());
+        std::fs::copy(&lockfile, crate_dir.join("Cargo.lock")).map_err(|e| {
+            Error::DylibLoad(format!(
+                "Failed to copy {} into the dylib crate: {e}",
+                lockfile.display()
+            ))
+        })?;
+    }
+    Ok(crate_dir)
+}
 pub(crate) fn generate_cargo_toml(
     dependencies: &[DylibDependency],
     patches: &[DylibPatch],
@@ -120,6 +172,32 @@ fn write_dependency(toml: &mut String, dependency: &DylibDependency) {
     toml.push_str(" }\n");
 }
 
+/// The `Cargo.lock` that governs the dylib's path dependencies, if any.
+///
+/// A path dependency (the host package) is built inside the dylib crate,
+/// but the dylib crate is its own package: without a lockfile, cargo
+/// resolves the host's dependencies from scratch, and a `git` dependency
+/// then lands on the remote's current HEAD rather than the revision the
+/// host was written and tested against. Copying the host's lockfile into
+/// the dylib crate keeps every shared dependency at the host's pinned
+/// version; cargo adds the dylib package itself and prunes entries nothing
+/// depends on.
+///
+/// The lockfile is found by walking up from the path dependency's directory,
+/// which handles both a standalone package and a workspace member (whose
+/// lockfile sits at the workspace root). The first path dependency that
+/// leads to one wins.
+pub(crate) fn host_lockfile(dependencies: &[DylibDependency]) -> Option<PathBuf> {
+    dependencies
+        .iter()
+        .filter_map(|dependency| dependency.path().as_deref())
+        .find_map(|path| {
+            path.ancestors()
+                .map(|dir| dir.join("Cargo.lock"))
+                .find(|lock| lock.is_file())
+        })
+}
+
 pub(crate) fn dylib_extension() -> &'static str {
     if cfg!(target_os = "macos") {
         ".dylib"
@@ -168,6 +246,28 @@ pub(crate) fn find_so(crate_dir: &Path, profile: Profile) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn host_lockfile_is_found_at_the_workspace_root() {
+        let root =
+            std::env::temp_dir().join(format!("symbiont_host_lockfile_{}", std::process::id()));
+        let member = root.join("examples").join("member");
+        std::fs::create_dir_all(&member).expect("can create fixture dirs");
+        std::fs::write(root.join("Cargo.lock"), "").expect("can write lockfile");
+
+        let deps = [
+            DylibDependency::with_version("serde", "1"),
+            DylibDependency::path_renamed("host", "member", &member),
+        ];
+        assert_eq!(host_lockfile(&deps), Some(root.join("Cargo.lock")));
+        assert_eq!(
+            host_lockfile(&deps[..1]),
+            None,
+            "a registry dependency has no lockfile to inherit"
+        );
+
+        std::fs::remove_dir_all(&root).expect("can remove fixture");
+    }
 
     #[test]
     fn cargo_toml_renders_pinned_git_dependency() {

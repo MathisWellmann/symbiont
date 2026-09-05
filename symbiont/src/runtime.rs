@@ -6,15 +6,8 @@
 #[cfg(miri)]
 use std::time::Instant;
 use std::{
-    collections::{
-        HashMap,
-        hash_map::DefaultHasher,
-    },
+    collections::HashMap,
     fmt::Write,
-    hash::{
-        Hash,
-        Hasher,
-    },
     path::{
         Path,
         PathBuf,
@@ -144,7 +137,7 @@ use crate::{
     },
     utils::{
         find_so,
-        generate_cargo_toml,
+        scaffold_dylib_crate,
         versioned_so_path,
     },
     validation::{
@@ -350,28 +343,7 @@ impl Runtime {
             })
             .collect();
 
-        // Create a stable temp directory based on function names
-        let mut hasher = DefaultHasher::new();
-        for d in decls {
-            d.name.hash(&mut hasher);
-        }
-        let hash = hasher.finish();
-        let crate_dir = std::env::temp_dir().join(format!("symbiont-evolvable-{hash:x}"));
-        std::fs::create_dir_all(crate_dir.join("src")).map_err(|e| {
-            Error::DylibLoad(format!(
-                "Failed to create dylib crate directory {}: {e}",
-                crate_dir.display()
-            ))
-        })?;
-
-        // Write Cargo.toml
-        let cargo_toml = generate_cargo_toml(config.dependencies(), config.patches());
-        std::fs::write(crate_dir.join("Cargo.toml"), cargo_toml).map_err(|e| {
-            Error::DylibLoad(format!(
-                "Failed to write {}: {e}",
-                crate_dir.join("Cargo.toml").display()
-            ))
-        })?;
+        let crate_dir = scaffold_dylib_crate(decls, &config)?;
 
         let mut prelude = Vec::with_capacity(4);
         prelude.extend(
