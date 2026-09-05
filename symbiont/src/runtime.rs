@@ -56,6 +56,8 @@ use tracing::{
 use crate::{
     AgentRun,
     BuildRecord,
+    Diagnostic,
+    DocIndex,
     DylibConfig,
     EXPECT_WRITE,
     EvolutionAgent,
@@ -71,6 +73,10 @@ use crate::{
     RunTrace,
     StageTimings,
     TraceOutcome,
+    api_hints::{
+        api_hint_names,
+        render_api_hints,
+    },
     compiler::compile_dylib,
     diagnostics::{
         apply_machine_applicable,
@@ -269,6 +275,16 @@ pub struct Runtime {
     /// the endpoint, and what lets the lanes that are compiling be covered by
     /// lanes that are generating. See [`InferenceGate`].
     inference_gate: InferenceGate,
+    /// The name of the host crate the dylib depends on as `host`, if the
+    /// [`DylibConfig`] has one. Its [`DocIndex`] documents the API that
+    /// compile errors about an invented method or field are attached with.
+    host_crate: Option<String>,
+    /// The index of `host_crate`, built on the first compile failure that
+    /// needs it. A build runs `cargo rustdoc`, which is slow, so a runtime
+    /// whose candidates compile never pays for it; a host that already built
+    /// the index for its system prompt shares it through the process-wide
+    /// cache of [`DocIndex::host`].
+    doc_index: tokio::sync::OnceCell<Option<Arc<DocIndex>>>,
 }
 
 impl Runtime {
@@ -419,6 +435,8 @@ impl Runtime {
             // Unlimited until a caller asks for a limit, so a host that only
             // ever calls `evolve` is unaffected.
             inference_gate: InferenceGate::unlimited(),
+            host_crate: config.host_crate().map(str::to_string),
+            doc_index: tokio::sync::OnceCell::new(),
         };
 
         RUNTIME
@@ -612,6 +630,33 @@ impl Runtime {
                 err: error.to_string(),
             }),
         }
+    }
+
+    /// The definitions of the host types that `diagnostics` show the agent
+    /// misusing, rendered for the nudge. Empty without a host crate, without
+    /// such an error, or if the host's documentation cannot be built.
+    async fn api_hints(&self, diagnostics: &[Diagnostic]) -> String {
+        let mut out = String::new();
+        if api_hint_names(diagnostics).is_empty() {
+            return out;
+        }
+        let Some(host_crate) = &self.host_crate else {
+            return out;
+        };
+        let index = self
+            .doc_index
+            .get_or_init(async || match DocIndex::host(host_crate).await {
+                Ok(index) => Some(index),
+                Err(err) => {
+                    warn!("Cannot build the host API index for compile-error hints: {err}");
+                    None
+                }
+            })
+            .await;
+        if let Some(index) = index {
+            render_api_hints(index, diagnostics, &mut out);
+        }
+        out
     }
 
     /// Compile `candidate`, load the resulting dylib, and retain it in the
@@ -1633,6 +1678,17 @@ impl Runtime {
                         // the ladder event after the match writes that nudge.
                         let kind = failure_kind_of(&e).to_string();
 
+                        // The host types an invented API was called on. Read
+                        // before the error is consumed by the nudge; rendered
+                        // after it, so the definitions follow the errors they
+                        // explain.
+                        let api_hints = match &e {
+                            Error::CompilationFailed { diagnostics, .. } => {
+                                self.api_hints(diagnostics).await
+                            }
+                            _ => String::new(),
+                        };
+
                         // Add a nudge prompt.
                         if let Err(e) = e.nudge(&mut prompt) {
                             warn!("Unhandled error: {e}");
@@ -1652,6 +1708,7 @@ impl Runtime {
                                 finish!(TraceOutcome::Failed { reason }),
                             ));
                         }
+                        prompt.push_str(&api_hints);
 
                         trace.push_attempt(
                             attempts,
