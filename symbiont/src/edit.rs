@@ -44,6 +44,7 @@ use proc_macro2::{
 };
 
 use crate::{
+    EditRecord,
     diagnostics::Diagnostic,
     parser::Fence,
 };
@@ -140,8 +141,8 @@ pub(crate) enum Resolved {
     Edited {
         /// The new candidate.
         source: String,
-        /// How many edits were applied, for the trace.
-        edits: usize,
+        /// The edits that were applied, by form, for the trace.
+        edits: EditRecord,
     },
     /// The response carried no edits. The code block, if any, is the whole
     /// candidate, as before.
@@ -166,8 +167,9 @@ pub(crate) fn resolve(
     declared: &[&str],
 ) -> Result<Resolved, EditError> {
     let mut replacements: Vec<Replacement> = Vec::new();
+    let mut edits = EditRecord::default();
     for block in fences.iter().filter(|fence| fence.is_edit()) {
-        replacements.extend(parse_edit_block(block.body(), base)?);
+        replacements.extend(parse_edit_block(block.body(), base, &mut edits)?);
     }
 
     if let Some(block) = crate::parser::code_blocks(fences).last()
@@ -175,13 +177,15 @@ pub(crate) fn resolve(
         && !replaces_everything(&file, declared)
         && let Ok(base_file) = syn::parse_file(&base.source)
     {
-        replacements.extend(merge_items(&base.source, &base_file, block.body(), &file)?);
+        let merged = merge_items(&base.source, &base_file, block.body(), &file)?;
+        edits.items = merged.len();
+        replacements.extend(merged);
     }
 
     if replacements.is_empty() {
         return Ok(Resolved::Whole);
     }
-    let edits = replacements.len();
+    debug_assert_eq!(edits.total(), replacements.len());
     let source = apply(&base.source, replacements)?;
     Ok(Resolved::Edited { source, edits })
 }
@@ -338,8 +342,13 @@ const SEARCH_MARKER: &str = "<<<<<<<";
 const DIVIDER: &str = "=======";
 const REPLACE_MARKER: &str = ">>>>>>>";
 
-/// Parse one `rust-edit` block into replacements against `base`.
-fn parse_edit_block(body: &str, base: &EditBase) -> Result<Vec<Replacement>, EditError> {
+/// Parse one `rust-edit` block into replacements against `base`, counting
+/// each form into `edits`.
+fn parse_edit_block(
+    body: &str,
+    base: &EditBase,
+    edits: &mut EditRecord,
+) -> Result<Vec<Replacement>, EditError> {
     let mut replacements = Vec::new();
     let lines: Vec<&str> = body.lines().collect();
     let mut idx = 0;
@@ -350,10 +359,12 @@ fn parse_edit_block(body: &str, base: &EditBase) -> Result<Vec<Replacement>, Edi
         } else if line.trim_start().starts_with(SEARCH_MARKER) {
             let (hunk, next) = parse_hunk(&lines, idx)?;
             replacements.push(resolve_search(base, &hunk.search, hunk.replace)?);
+            edits.hunks += 1;
             idx = next;
         } else if let Some((anchor, rest)) = parse_anchor_head(line) {
             let (replacement, next) = anchor_replacement(&lines, idx, rest);
             replacements.push(resolve_anchor(base, anchor, replacement)?);
+            edits.anchors += 1;
             idx = next;
         } else {
             return Err(EditError::Malformed {
@@ -659,7 +670,17 @@ mod tests {
         let response = "```rust-edit\n<<<<<<< SEARCH\nlen / 2\n=======\nlen as f64 / 2.0\n>>>>>>> REPLACE\n<<<<<<< SEARCH\nx * 2.0\n=======\nx * 3.0\n>>>>>>> REPLACE\n```";
         let result = resolve_response(&base(), response);
         assert!(
-            matches!(result, Ok(Resolved::Edited { edits: 2, .. })),
+            matches!(
+                result,
+                Ok(Resolved::Edited {
+                    edits: EditRecord {
+                        anchors: 0,
+                        hunks: 2,
+                        items: 0
+                    },
+                    ..
+                })
+            ),
             "{result:?}"
         );
         let source = edited(result);

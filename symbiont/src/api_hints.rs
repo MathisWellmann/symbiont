@@ -138,14 +138,19 @@ fn first_quoted(message: &str) -> Option<&str> {
 }
 
 /// Append the definitions of the types named in `diagnostics` to `out`.
+/// Returns the names whose definition was attached, in order.
 ///
 /// Names the index does not know are skipped without a note: an
 /// unresolved path the model invented has no documentation to attach, and
 /// the compiler error already says the name does not exist.
-pub(crate) fn render_api_hints(index: &DocIndex, diagnostics: &[Diagnostic], out: &mut String) {
-    let mut rendered = 0;
+pub(crate) fn render_api_hints(
+    index: &DocIndex,
+    diagnostics: &[Diagnostic],
+    out: &mut String,
+) -> Vec<String> {
+    let mut rendered = Vec::new();
     for name in api_hint_names(diagnostics) {
-        if rendered == MAX_HINTS {
+        if rendered.len() == MAX_HINTS {
             out.push_str(
                 "More host types are involved; call `api_doc` with a type name to see its \
                  definition before you use it.\n",
@@ -155,7 +160,7 @@ pub(crate) fn render_api_hints(index: &DocIndex, diagnostics: &[Diagnostic], out
         let Ok(doc) = index.render_doc(&name) else {
             continue;
         };
-        if rendered == 0 {
+        if rendered.is_empty() {
             out.push_str(
                 "\nThe host API you used does not match its definition. These are the exact \
                  definitions of the types involved; call only what is listed.\n",
@@ -164,8 +169,9 @@ pub(crate) fn render_api_hints(index: &DocIndex, diagnostics: &[Diagnostic], out
         // `render_doc` returns a complete document with its own code fences,
         // so it is not wrapped in another one.
         writeln!(out, "\n## `{name}`\n{doc}").expect(EXPECT_WRITE);
-        rendered += 1;
+        rendered.push(name);
     }
+    rendered
 }
 
 #[cfg(test)]
@@ -273,7 +279,7 @@ mod tests {
         let index = crate::doc_index::tests::fixture_index();
 
         let mut out = String::new();
-        render_api_hints(
+        let attached = render_api_hints(
             &index,
             &[
                 diagnostic(
@@ -284,6 +290,7 @@ mod tests {
             ],
             &mut out,
         );
+        assert_eq!(attached, vec!["decimal".to_string()]);
         assert_eq!(
             out.matches("does not match its definition").count(),
             1,
@@ -294,8 +301,10 @@ mod tests {
         assert!(!out.contains("invented"), "{out}");
 
         let mut out = String::new();
-        render_api_hints(&index, &[diagnostic("E0308", "mismatched types")], &mut out);
+        let attached =
+            render_api_hints(&index, &[diagnostic("E0308", "mismatched types")], &mut out);
         assert!(out.is_empty(), "{out}");
+        assert!(attached.is_empty());
     }
 
     #[test]

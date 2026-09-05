@@ -37,6 +37,7 @@ use serde::{
 use typed_builder::TypedBuilder;
 
 use crate::{
+    AppliedFix,
     EXPECT_WRITE,
     Lane,
     revision::Revision,
@@ -188,6 +189,14 @@ pub struct StageTimings {
     /// The build stage. It runs after the parse and validate stage passes.
     #[getset(get = "pub", set = "pub(crate)", get_mut = "pub(crate)")]
     build: Option<BuildRecord>,
+
+    /// How the response related to the previous candidate: the edits it
+    /// applied, if it was an edit (see [`crate::edit`]). `None` for a whole
+    /// code block, and for an attempt that never got that far. Absent from
+    /// traces written before symbiont 0.36.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[getset(get = "pub", set = "pub(crate)")]
+    edits: Option<EditRecord>,
 }
 
 impl StageTimings {
@@ -200,27 +209,66 @@ impl StageTimings {
         if let Some(parse_validate) = self.parse_validate {
             parts.push(format!("parse/validate {parse_validate:?}"));
         }
+        if let Some(edits) = &self.edits {
+            parts.push(format!(
+                "edits {} ({} anchor(s), {} hunk(s), {} item(s))",
+                edits.total(),
+                edits.anchors,
+                edits.hunks,
+                edits.items
+            ));
+        }
         match &self.build {
             Some(BuildRecord::Built {
                 slot_wait,
                 compile,
                 load,
+                autofixes,
             }) => {
                 parts.push(format!(
                     "build slot {slot_wait:?}, compile {compile:?}, load {load:?}"
                 ));
+                if !autofixes.is_empty() {
+                    parts.push(format!("{} autofix(es)", autofixes.len()));
+                }
             }
             Some(BuildRecord::Deduped {
                 slot_wait,
                 revision,
-            }) => parts.push(format!(
-                "build slot {slot_wait:?}, deduped onto revision {revision}"
-            )),
+                autofixes,
+            }) => {
+                parts.push(format!(
+                    "build slot {slot_wait:?}, deduped onto revision {revision}"
+                ));
+                if !autofixes.is_empty() {
+                    parts.push(format!("{} autofix(es)", autofixes.len()));
+                }
+            }
             None => {}
         }
         if !parts.is_empty() {
             writeln!(out, "stages: {}", parts.join(", ")).expect(EXPECT_WRITE);
         }
+    }
+}
+
+/// The edits a response applied to the previous candidate, by form (see
+/// [`crate::edit`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EditRecord {
+    /// `E<n> => text` replacements of a reported error's span.
+    pub anchors: usize,
+    /// `SEARCH`/`REPLACE` hunks.
+    pub hunks: usize,
+    /// Top-level items replaced by name from a code block.
+    pub items: usize,
+}
+
+impl EditRecord {
+    /// Every edit the response applied.
+    #[must_use]
+    pub fn total(&self) -> usize {
+        self.anchors + self.hunks + self.items
     }
 }
 
@@ -236,6 +284,13 @@ pub enum BuildRecord {
         compile: Duration,
         /// Time spent to copy the dylib, load it, and resolve its symbols.
         load: Duration,
+        /// Compiler suggestions the runtime applied to the candidate before
+        /// the build that this record times (see
+        /// [`crate::Runtime`]'s autofix pass). Empty when the candidate
+        /// compiled, or failed, as written. Absent from traces written before
+        /// symbiont 0.36.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        autofixes: Vec<AppliedFix>,
     },
     /// The candidate was byte-identical to a registered revision. The runtime
     /// reused that revision and spent no build. There is no compile duration
@@ -245,6 +300,12 @@ pub enum BuildRecord {
         slot_wait: Duration,
         /// The revision that the runtime reused.
         revision: Revision,
+        /// Compiler suggestions applied before the candidate turned out to be
+        /// registered already: the text as written failed, the patched text
+        /// was a known revision. Empty when the candidate matched as written.
+        /// Absent from traces written before symbiont 0.36.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        autofixes: Vec<AppliedFix>,
     },
 }
 
@@ -269,7 +330,8 @@ pub enum LadderEvent {
     SelfHeal {
         /// Failure kind. It uses the same labels as
         /// [`crate::EvolveFailure::kind`]: `no_rust_code`, `parse`,
-        /// `max_turns`, `signature`, `unsafe`, `forbidden` or `compile`.
+        /// `max_turns`, `signature`, `unsafe`, `forbidden`, `compile` or
+        /// `edit`.
         ///
         /// A `String`, and not the `&'static str` that the producing side
         /// holds. A persisted trace must deserialize without a borrow from the
@@ -277,6 +339,13 @@ pub enum LadderEvent {
         kind: String,
         /// The diagnostics that the harness quoted back to the agent.
         diagnostics: String,
+        /// The host types whose definitions the nudge attached, because the
+        /// compiler reported a method, field or name they do not have (see
+        /// `api_hints`). Empty for every other failure kind, and for a compile
+        /// failure that named no host type. Absent from traces written before
+        /// symbiont 0.36.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        api_hints: Vec<String>,
     },
     /// A transient inference error. The lane retries the same prompt after
     /// `backoff`. This does not consume the attempt budget.
@@ -318,9 +387,22 @@ impl LadderEvent {
         use LadderEvent::*;
         match self {
             Registered { revision } => format!("registered revision {revision}"),
-            SelfHeal { kind, diagnostics } => {
+            SelfHeal {
+                kind,
+                diagnostics,
+                api_hints,
+            } if api_hints.is_empty() => {
                 format!("self-heal ({kind}): {}", first_line(diagnostics))
             }
+            SelfHeal {
+                kind,
+                diagnostics,
+                api_hints,
+            } => format!(
+                "self-heal ({kind}, docs attached for {}): {}",
+                api_hints.join(", "),
+                first_line(diagnostics)
+            ),
             TransientRetry { backoff, cause } => {
                 format!("transient retry in {backoff:?}: {}", first_line(cause))
             }
@@ -553,6 +635,64 @@ mod tests {
         assert_eq!(old.provider(), "");
         assert_eq!(old.model(), "");
         assert_eq!(old.system_prompt(), "");
+    }
+
+    /// The repair-round records added in 0.36 (`edits`, `autofixes`,
+    /// `api_hints`) are absent from a 0.35 trace and must read back as empty.
+    /// The other way round, a trace without any repair activity serializes
+    /// without them, so the persisted shape of a plain lane did not change.
+    #[test]
+    fn repair_records_are_optional_in_the_wire_shape() {
+        let stages_0_35 = serde_json::json!({
+            "llm": { "secs": 1, "nanos": 0 },
+            "parse_validate": { "secs": 0, "nanos": 500 },
+            "build": { "kind": "built", "slot_wait": { "secs": 0, "nanos": 0 },
+                       "compile": { "secs": 3, "nanos": 0 }, "load": { "secs": 0, "nanos": 10 } }
+        });
+        let stages: StageTimings =
+            serde_json::from_value(stages_0_35).expect("a 0.35 stages record deserializes");
+        assert!(stages.edits().is_none());
+        assert!(matches!(
+            stages.build(),
+            Some(BuildRecord::Built { autofixes, .. }) if autofixes.is_empty()
+        ));
+        let back = serde_json::to_value(&stages).expect("serializes");
+        assert!(back.get("edits").is_none(), "{back}");
+        assert!(back["build"].get("autofixes").is_none(), "{back}");
+
+        let heal_0_35 = serde_json::json!({
+            "event": "self_heal", "kind": "compile", "diagnostics": "error[E0308]"
+        });
+        let heal: LadderEvent =
+            serde_json::from_value(heal_0_35).expect("a 0.35 self-heal deserializes");
+        assert!(matches!(&heal, LadderEvent::SelfHeal { api_hints, .. } if api_hints.is_empty()));
+        assert!(
+            serde_json::to_value(&heal)
+                .expect("serializes")
+                .get("api_hints")
+                .is_none()
+        );
+
+        // With repair activity, every record is on the wire.
+        let mut stages = StageTimings::default();
+        stages.set_edits(Some(EditRecord {
+            anchors: 2,
+            hunks: 1,
+            items: 0,
+        }));
+        let value = serde_json::to_value(&stages).expect("serializes");
+        assert_eq!(value["edits"]["anchors"], 2);
+        assert_eq!(value["edits"]["hunks"], 1);
+        let heal = LadderEvent::SelfHeal {
+            kind: "compile".to_string(),
+            diagnostics: String::new(),
+            api_hints: vec!["Account".to_string()],
+        };
+        assert_eq!(
+            serde_json::to_value(&heal).expect("serializes")["api_hints"][0],
+            "Account"
+        );
+        assert!(heal.render_ladder().contains("docs attached for Account"));
     }
 
     /// `push_attempt` assigns a dense `seq` even when `attempt` repeats. The

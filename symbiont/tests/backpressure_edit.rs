@@ -17,6 +17,7 @@ use common::{
     Turn,
 };
 use symbiont::{
+    EditRecord,
     Profile,
     Runtime,
 };
@@ -76,10 +77,24 @@ async fn anchors(rt: &Runtime) {
         broken_reply(),
         Turn::reply("```rust-edit\nE1 => 1\nE2 => as u64 *\n```"),
     ]);
-    rt.evolve(&agent, PROMPT)
+    let trace = rt
+        .evolve(&agent, PROMPT)
         .await
-        .expect("anchored edits repair the candidate");
+        .expect("anchored edits repair the candidate")
+        .into_trace();
     assert_eq!(agent.calls(), 2);
+    // The trace says how the second attempt related to the first: two
+    // anchors, nothing else. The first attempt was a whole block.
+    let attempts = trace.attempts();
+    assert!(attempts[0].stages().edits().is_none());
+    assert_eq!(
+        attempts[1].stages().edits(),
+        &Some(EditRecord {
+            anchors: 2,
+            hunks: 0,
+            items: 0
+        })
+    );
     let nudge = agent.prompt(1);
     assert!(
         nudge.contains("[E1] replaces `\"one\"` on line 3")
@@ -140,10 +155,20 @@ async fn item_edit(rt: &Runtime) {
              ```rust\nfn offset() -> u64 {\n    7\n}\n```",
         ),
     ]);
-    rt.evolve(&agent, PROMPT)
+    let trace = rt
+        .evolve(&agent, PROMPT)
         .await
-        .expect("an item edit plus an anchor repair the candidate");
+        .expect("an item edit plus an anchor repair the candidate")
+        .into_trace();
     assert_eq!(agent.calls(), 2);
+    assert_eq!(
+        trace.attempts()[1].stages().edits(),
+        &Some(EditRecord {
+            anchors: 1,
+            hunks: 0,
+            items: 1
+        })
+    );
     let code = rt.current_code();
     assert!(
         code.starts_with(

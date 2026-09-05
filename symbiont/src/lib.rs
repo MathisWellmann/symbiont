@@ -83,6 +83,7 @@ pub use evolution_agent::{
 pub use evolution_trace::{
     AttemptTrace,
     BuildRecord,
+    EditRecord,
     EvolutionTrace,
     LadderEvent,
     RunTrace,

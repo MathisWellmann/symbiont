@@ -18,6 +18,7 @@ use common::{
     Turn,
 };
 use symbiont::{
+    BuildRecord,
     Profile,
     Runtime,
 };
@@ -49,14 +50,26 @@ async fn machine_applicable_suggestions_are_applied_before_asking_the_model() {
                  }";
     let agent = ScriptedAgent::new([Turn::reply(&format!("```rust\n{slips}\n```"))]);
 
-    rt.evolve(&agent, "Sum the values. Code only.")
+    let trace = rt
+        .evolve(&agent, "Sum the values. Code only.")
         .await
-        .expect("the harness applies the compiler's fixes itself");
+        .expect("the harness applies the compiler's fixes itself")
+        .into_trace();
     assert_eq!(
         agent.calls(),
         1,
         "no second inference round for a mechanical fix"
     );
+    // The build record of the one attempt names both fixes, in source order.
+    match trace.attempts()[0].stages().build() {
+        Some(BuildRecord::Built { autofixes, .. }) => {
+            assert_eq!(autofixes.len(), 2, "{autofixes:#?}");
+            assert_eq!((autofixes[0].line, autofixes[1].line), (2, 5));
+            assert_eq!(autofixes[0].code.as_deref(), Some("E0308"));
+            assert_eq!(autofixes[0].after.trim(), "let scale: f64 = 2.0;");
+        }
+        other => panic!("expected a built record with autofixes, got {other:?}"),
+    }
 
     let code = rt.current_code();
     assert_eq!(
