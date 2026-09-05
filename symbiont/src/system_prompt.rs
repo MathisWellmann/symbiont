@@ -1,5 +1,5 @@
 use owo_colors::OwoColorize;
-use tracing::info;
+use tracing::debug;
 
 use crate::{
     DocIndex,
@@ -307,7 +307,7 @@ pub async fn system_prompt(opt_crate_name: Option<&str>, doc_mode: DocMode) -> R
         (None, DocMode::Inline) => prompt.push_str(INLINE_DOC_SECTION),
         (None, _) => return Err(Error::InvalidDocMode),
     }
-    info!("system_prompt: {}", prompt.green());
+    debug!("system_prompt: {}", prompt.green());
 
     Ok(prompt)
 }
