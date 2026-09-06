@@ -233,7 +233,15 @@ Both tools accept a single name from a listing, for example `Order`, or a
 is still in scope unqualified. Do not add an import for that crate.
 
 If you do not know the exact signature of an item, call `api_doc` before you
-use the item. You have a limited number of documentation tool calls available (50).
+use the item.
+
+Issue tool calls in parallel. Each response you send is one turn, and you
+have at most 50 turns before you must return code. A turn may contain many
+tool calls, and they all run before you see any result. Do not look up one
+item per turn. Decide which items you need, then request all of them in the
+same response: for example `api_index` on the prelude together with `api_doc`
+on every type and function you plan to use. Look up more items in a later
+turn only when a result names something new that you also need.
 
 ";
 
@@ -401,6 +409,16 @@ mod tests {
     fn tool_doc_section_names_both_tools() {
         assert!(TOOL_DOC_SECTION.contains("api_index"));
         assert!(TOOL_DOC_SECTION.contains("api_doc"));
+    }
+
+    #[test]
+    fn tool_doc_section_asks_for_parallel_tool_calls() {
+        assert!(TOOL_DOC_SECTION.contains("tool calls in parallel"));
+        let stated = format!("at most {} turns", crate::DOC_TOOLS_MAX_TURNS);
+        assert!(
+            TOOL_DOC_SECTION.contains(&stated),
+            "prompt turn budget drifted from DOC_TOOLS_MAX_TURNS"
+        );
     }
 
     #[test]
