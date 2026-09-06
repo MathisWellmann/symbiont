@@ -204,9 +204,10 @@ ref_option_ref = "warn"
 
 [workspace.dependencies]
 # TODO: once 0.43 is published, use from crates.io. only needed here to get access to the system prompt and the transport that moved out of `rig-core` into `rig-reqwest`.
-rig-agent = { git = "https://github.com/0xPlaygrounds/rig", version = "0.42" }
-rig-core = { git = "https://github.com/0xPlaygrounds/rig", version = "0.42" }
-rig-reqwest = { git = "https://github.com/0xPlaygrounds/rig", version = "0.42" }
+# rev pinned: without it cargo resolves the fork's default-branch HEAD on every re-resolution, and that has moved past breaking refactors (#2429+). bump deliberately, never by drift.
+rig-agent = { git = "https://github.com/0xPlaygrounds/rig", rev = "475cfddc28cc5b367108a3d387b84d5f838d613b", version = "0.42" }
+rig-core = { git = "https://github.com/0xPlaygrounds/rig", rev = "475cfddc28cc5b367108a3d387b84d5f838d613b", version = "0.42" }
+rig-reqwest = { git = "https://github.com/0xPlaygrounds/rig", rev = "475cfddc28cc5b367108a3d387b84d5f838d613b", version = "0.42" }
 romu = "0.8"
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1.0", features = ["full"] }
