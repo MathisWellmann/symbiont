@@ -1628,6 +1628,11 @@ impl Runtime {
                             // The agent no longer sees the code an edit
                             // would refer to.
                             edit_base = None;
+                            // Withdrawing tools relied on the definitions the
+                            // agent fetched staying in its history; the reset
+                            // discards them, so it must be able to fetch
+                            // them again.
+                            tools = ToolAccess::Allowed;
                             // The restart consumes this attempt: unlike
                             // transient retries, an overflowing request is
                             // not the LLM's fault but it must not be free.
