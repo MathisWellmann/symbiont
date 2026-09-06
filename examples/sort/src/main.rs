@@ -258,7 +258,7 @@ async fn main() -> symbiont::Result<()> {
     println!("{report}");
 
     // -- Evolution loop ---------------------------------------------------
-    let max_rounds = 5;
+    let max_rounds = 3;
     let orig_total = total_time(&results);
     let mut prev_code = String::new();
     let mut best_total = Duration::MAX;
