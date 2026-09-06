@@ -134,9 +134,16 @@ impl Error {
             CouldNotParseRust { code, err } => write!(prompt,
                 "nudge: Your generated code ```{code}``` is not valid Rust. Parse error: ```{err}```. Fix the syntax error and respond with the full corrected code.",
             ).expect("Can write to prompt"),
-            RigPrompt(rig_agent::completion::PromptError::MaxTurnsError { .. }) => prompt.push_str(
-                "nudge: You exhausted the tool-call turn budget before producing code. Respond with the final Rust code block now.",
-            ),
+            RigPrompt(rig_agent::completion::PromptError::MaxTurnsError { max_turns, .. }) => write!(prompt,
+                "nudge: You spent all {max_turns} tool-call turns without producing code. \
+                The documentation tools are withdrawn for the rest of this conversation. \
+                Respond with the complete Rust code block now, using the definitions you have already seen above. \
+                Do not call a tool; a name you could not look up is not in the host API, so do not use it.",
+            ).expect("Can write to prompt"),
+            RigPrompt(rig_agent::completion::PromptError::UnknownToolCall { tool_name, .. }) => write!(prompt,
+                "nudge: You called `{tool_name}`, which is not available in this conversation. \
+                Do not call any tool. Respond with the complete Rust code block now.",
+            ).expect("Can write to prompt"),
             SignatureMismatch {
                 code: _,
                 expected,
@@ -180,6 +187,18 @@ impl Error {
 }
 
 impl Error {
+    /// Did the agent run spend its whole tool-call turn budget without an
+    /// answer?
+    ///
+    /// The runtime withdraws the agent's tools for the rest of the lane on
+    /// this error - see [`crate::EvolutionAgent::run_without_tools`].
+    pub(crate) fn exhausted_tool_turns(&self) -> bool {
+        matches!(
+            self,
+            Error::RigPrompt(rig_agent::completion::PromptError::MaxTurnsError { .. })
+        )
+    }
+
     /// The messages an aborted agent run added before it failed, if the
     /// error carries them.
     ///

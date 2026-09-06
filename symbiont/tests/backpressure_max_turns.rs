@@ -1,7 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
 //! Backpressure integration test: a rig `MaxTurnsError` (tool-call turn
-//! budget exhausted) gets a concise turn-budget correction, and the agent
-//! recovers.
+//! budget exhausted) gets a concise turn-budget correction, the agent's tools
+//! are withdrawn for the rest of the lane, and the agent recovers.
+//!
+//! Nudging alone did not work in production: a model that spent fifty turns
+//! on documentation lookups resumed them after the nudge, ten times over.
+//! Every request after the first exhaustion therefore goes out through
+//! `run_without_tools`, and a tool call that arrives anyway
+//! (`UnknownToolCall`) is one more nudge, not a terminal failure.
 //!
 //! One test per binary: [`symbiont::Runtime`] is a process-wide singleton.
 #![expect(
@@ -48,15 +54,23 @@ async fn max_turns_error_is_nudged_and_recovered_from() {
             chat_history: Box::new(Vec::new()),
             prompt: Box::new(Message::user(BASE_PROMPT)),
         }),
-        // Attempt 2: final code without further tool calls -> success.
+        // Attempt 2, without tools: the model still emits a tool call, which
+        // rig refuses to dispatch under `tool_choice: none`.
+        Turn::Fail(PromptError::UnknownToolCall {
+            tool_name: "api_doc".to_string(),
+            available_tools: vec!["api_doc".to_string()],
+            allowed_tools: Vec::new(),
+            chat_history: Box::new(Vec::new()),
+        }),
+        // Attempt 3: final code without further tool calls -> success.
         Turn::reply("```rust\npub fn bp_turns_step(counter: &mut usize) { *counter += 11; }\n```"),
     ]);
 
     rt.evolve(&agent, BASE_PROMPT)
         .await
-        .expect("evolution should succeed after one self-healing retry");
+        .expect("evolution should succeed after two self-healing retries");
 
-    assert_eq!(agent.calls(), 2, "exactly one retry expected");
+    assert_eq!(agent.calls(), 3, "exactly two retries expected");
 
     let retry_prompt = agent.prompt(1);
     assert!(
@@ -64,15 +78,28 @@ async fn max_turns_error_is_nudged_and_recovered_from() {
         "retry prompt must contain only the correction, got: {retry_prompt}"
     );
     assert!(
-        retry_prompt.contains("exhausted the tool-call turn budget"),
+        retry_prompt.contains("spent all 3 tool-call turns") && retry_prompt.contains("withdrawn"),
         "retry prompt must contain the turn-budget nudge, got: {retry_prompt}"
     );
+    let stray_tool_prompt = agent.prompt(2);
+    assert!(
+        stray_tool_prompt.contains("`api_doc`")
+            && stray_tool_prompt.contains("Do not call any tool"),
+        "a tool call after withdrawal is nudged, got: {stray_tool_prompt}"
+    );
+
+    // The first request had tools; every request after the exhaustion does
+    // not, including the one after the stray tool call.
+    assert!(agent.tools_allowed(0));
+    assert!(!agent.tools_allowed(1));
+    assert!(!agent.tools_allowed(2));
 
     // A run that aborts without producing any messages (rig reported an
     // empty transcript in the error) recovers nothing, so the history
     // stays empty.
     assert_eq!(agent.history_len(0), 0);
     assert_eq!(agent.history_len(1), 0);
+    assert_eq!(agent.history_len(2), 0);
 
     // The hot-swapped implementation is live.
     let mut counter = 0;

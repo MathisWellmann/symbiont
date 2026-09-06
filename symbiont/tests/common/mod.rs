@@ -65,6 +65,9 @@ pub(crate) struct ScriptedAgent {
     history_lens: Mutex<Vec<usize>>,
     /// Full chat history received on each call, in call order.
     histories: Mutex<Vec<Vec<Message>>>,
+    /// Whether each call allowed tools (`run`) or not (`run_without_tools`),
+    /// in call order.
+    tools_allowed: Mutex<Vec<bool>>,
 }
 
 impl ScriptedAgent {
@@ -75,32 +78,26 @@ impl ScriptedAgent {
             prompts: Mutex::new(Vec::new()),
             history_lens: Mutex::new(Vec::new()),
             histories: Mutex::new(Vec::new()),
+            tools_allowed: Mutex::new(Vec::new()),
         }
     }
 
-    /// Number of times the runtime invoked this agent.
-    pub(crate) fn calls(&self) -> usize {
-        self.prompts.lock().expect("Mutex is not poisoned").len()
+    /// Whether call `idx` (0-based) came through `run` (`true`) or
+    /// `run_without_tools` (`false`).
+    pub(crate) fn tools_allowed(&self, idx: usize) -> bool {
+        self.tools_allowed.lock().expect("Mutex is not poisoned")[idx]
     }
 
-    /// The prompt received on call `idx` (0-based).
-    pub(crate) fn prompt(&self, idx: usize) -> String {
-        self.prompts.lock().expect("Mutex is not poisoned")[idx].clone()
-    }
-
-    /// The chat-history length received on call `idx` (0-based).
-    pub(crate) fn history_len(&self, idx: usize) -> usize {
-        self.history_lens.lock().expect("Mutex is not poisoned")[idx]
-    }
-
-    /// The full chat history received on call `idx` (0-based).
-    pub(crate) fn history(&self, idx: usize) -> Vec<Message> {
-        self.histories.lock().expect("Mutex is not poisoned")[idx].clone()
-    }
-}
-
-impl EvolutionAgent for ScriptedAgent {
-    async fn run(&self, prompt: &str, history: Vec<Message>) -> Result<AgentRun, PromptError> {
+    fn scripted(
+        &self,
+        prompt: &str,
+        history: Vec<Message>,
+        tools: bool,
+    ) -> Result<AgentRun, PromptError> {
+        self.tools_allowed
+            .lock()
+            .expect("Mutex is not poisoned")
+            .push(tools);
         self.prompts
             .lock()
             .expect("Mutex is not poisoned")
@@ -133,6 +130,40 @@ impl EvolutionAgent for ScriptedAgent {
             usage,
             completion_calls: vec![CompletionCall::new(0, usage)],
         })
+    }
+
+    /// Number of times the runtime invoked this agent.
+    pub(crate) fn calls(&self) -> usize {
+        self.prompts.lock().expect("Mutex is not poisoned").len()
+    }
+
+    /// The prompt received on call `idx` (0-based).
+    pub(crate) fn prompt(&self, idx: usize) -> String {
+        self.prompts.lock().expect("Mutex is not poisoned")[idx].clone()
+    }
+
+    /// The chat-history length received on call `idx` (0-based).
+    pub(crate) fn history_len(&self, idx: usize) -> usize {
+        self.history_lens.lock().expect("Mutex is not poisoned")[idx]
+    }
+
+    /// The full chat history received on call `idx` (0-based).
+    pub(crate) fn history(&self, idx: usize) -> Vec<Message> {
+        self.histories.lock().expect("Mutex is not poisoned")[idx].clone()
+    }
+}
+
+impl EvolutionAgent for ScriptedAgent {
+    async fn run(&self, prompt: &str, history: Vec<Message>) -> Result<AgentRun, PromptError> {
+        self.scripted(prompt, history, true)
+    }
+
+    async fn run_without_tools(
+        &self,
+        prompt: &str,
+        history: Vec<Message>,
+    ) -> Result<AgentRun, PromptError> {
+        self.scripted(prompt, history, false)
     }
 
     fn system_prompt(&self) -> String {

@@ -102,7 +102,7 @@ async fn aborted_tool_run_messages_reach_the_retry() {
     assert!(
         agent
             .prompt(1)
-            .contains("exhausted the tool-call turn budget"),
+            .contains("tool-call turns without producing code"),
         "retry prompt must contain the turn-budget nudge, got: {}",
         agent.prompt(1)
     );

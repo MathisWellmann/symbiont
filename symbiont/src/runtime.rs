@@ -109,6 +109,7 @@ use crate::{
         EVOLVE_EDITS,
         EVOLVE_FAILURES,
         EVOLVE_REPEAT_RESETS,
+        EVOLVE_TOOLS_WITHDRAWN,
         INFERENCE_ERRORS,
         LLM_RETRY_BACKOFF,
         LLM_RUN_INPUT_TOKENS,
@@ -171,6 +172,17 @@ struct AttemptRequest<'a> {
     history_base: usize,
     /// The previous candidate a response may edit, with its compiler errors.
     edit_base: Option<&'a EditBase>,
+    /// Whether the agent may call tools in this iteration. Withdrawn for the
+    /// rest of the lane once a run exhausted its turn budget without
+    /// producing code - see [`Runtime::evolve_lane`].
+    tools: ToolAccess,
+}
+
+/// Whether an iteration of the ladder lets the agent call tools.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ToolAccess {
+    Allowed,
+    Withdrawn,
 }
 
 /// What [`Runtime::compile_with_autofix`] ended with. Either way the fixes
@@ -474,6 +486,7 @@ impl Runtime {
             prompt,
             history_base,
             edit_base,
+            tools,
         } = request;
         debug!("prompt: {}", prompt.green());
         let t0 = Instant::now();
@@ -483,7 +496,11 @@ impl Runtime {
 
         // The agent implementation drives any tool-calling turns to
         // completion internally and returns only the final text.
-        let run = match agent.run(prompt, visible).await {
+        let run = match tools {
+            ToolAccess::Allowed => agent.run(prompt, visible).await,
+            ToolAccess::Withdrawn => agent.run_without_tools(prompt, visible).await,
+        };
+        let run = match run {
             Ok(run) => run,
             Err(e) => {
                 let err = Error::from(e);
@@ -1296,6 +1313,14 @@ impl Runtime {
             // first attempt and after a reset, when the agent no longer sees
             // the code the base would refer to.
             let mut edit_base: Option<EditBase> = None;
+            // Tools are withdrawn for the rest of the lane the first time a
+            // run spends its whole turn budget on them without answering.
+            // Nudging such a run to answer while the tools stay on does not
+            // work: v0.28 traces show a lane spend ten attempts of fifty
+            // turns each on the same failing documentation lookup. Without
+            // tools the model has one move left, and the definitions it did
+            // fetch are still in its history.
+            let mut tools = ToolAccess::Allowed;
             let mut trace = EvolutionTrace::new(
                 agent.provider().to_string(),
                 agent.model().to_string(),
@@ -1357,6 +1382,7 @@ impl Runtime {
                                 prompt: &prompt,
                                 history_base,
                                 edit_base: edit_base.as_ref(),
+                                tools,
                             },
                             &mut history,
                             &mut run_out,
@@ -1682,6 +1708,15 @@ impl Runtime {
                         // text as the diagnostics that go to the agent. Record
                         // the ladder event after the match writes that nudge.
                         let kind = failure_kind_of(&e).to_string();
+
+                        if e.exhausted_tool_turns() && tools == ToolAccess::Allowed {
+                            warn!(
+                                "Agent spent its tool-call turn budget without producing code; \
+                                 withdrawing tools for the rest of the lane"
+                            );
+                            counter!(EVOLVE_TOOLS_WITHDRAWN).increment(1);
+                            tools = ToolAccess::Withdrawn;
+                        }
 
                         // The host types an invented API was called on. Read
                         // before the error is consumed by the nudge; rendered
