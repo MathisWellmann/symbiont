@@ -120,9 +120,14 @@ pub struct AttemptTrace {
 
     /// The agent run, when there was one.
     ///
-    /// It is `None` when [`crate::EvolutionAgent::run`] returned an error: a
-    /// transient HTTP failure, or a context-size overflow. Such an iteration
-    /// has no messages, no usage and no completion calls.
+    /// It is `None` when [`crate::EvolutionAgent::run`] returned an error
+    /// before the model answered once: a transient HTTP failure on the first
+    /// request, or a context-size overflow. Such an iteration has no
+    /// messages, no usage and no completion calls. A run that failed *after*
+    /// answered turns (a timeout on the twentieth tool call, an exhausted turn
+    /// budget) is `Some`, with the messages, usage and completion calls it
+    /// produced up to the failure and an empty `response` - see
+    /// [`crate::PartialRun`].
     #[getset(get = "pub")]
     run: Option<RunTrace>,
 
@@ -140,7 +145,8 @@ pub struct AttemptTrace {
     duration: Duration,
 }
 
-/// The parts of an iteration that exist only once the agent run succeeded.
+/// The parts of an iteration that exist once the agent run got at least one
+/// answer from the model, whether or not it then finished.
 #[derive(Debug, Clone, Serialize, Deserialize, Getters, TypedBuilder)]
 pub struct RunTrace {
     /// Range into [`EvolutionTrace::history`] of the messages this run
@@ -152,7 +158,8 @@ pub struct RunTrace {
     #[getset(get = "pub")]
     produced: Range<usize>,
 
-    /// The run's final assistant text.
+    /// The run's final assistant text. Empty for a run that failed before
+    /// it produced one.
     #[getset(get = "pub")]
     response: String,
 

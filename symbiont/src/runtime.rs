@@ -39,7 +39,10 @@ use metrics::{
 #[cfg(not(miri))]
 use minstant::Instant;
 use owo_colors::OwoColorize;
-use rig_core::message::Message;
+use rig_core::{
+    completion::Usage,
+    message::Message,
+};
 use tracing::{
     debug,
     info,
@@ -63,7 +66,9 @@ use crate::{
     FullSource,
     LadderEvent,
     Lane,
+    PartialRun,
     Profile,
+    RunError,
     RunTrace,
     StageTimings,
     TraceOutcome,
@@ -183,6 +188,22 @@ struct AttemptRequest<'a> {
 enum ToolAccess {
     Allowed,
     Withdrawn,
+}
+
+/// The prompt of a transient retry whose failed run had already exchanged
+/// tool calls: those exchanges stay in the history, and the model is asked to
+/// go on from them rather than to start over.
+const TRANSIENT_CONTINUE_NUDGE: &str = "nudge: The connection to the model failed after your last \
+    tool call; its result is above. Continue from there. If you have what you need, respond with \
+    the complete Rust code block now.";
+
+/// Count `usage` into the token counters.
+fn record_token_usage(usage: &Usage) {
+    counter!(LLM_TOKENS, "kind" => "input").increment(usage.input_tokens);
+    counter!(LLM_TOKENS, "kind" => "output").increment(usage.output_tokens);
+    if usage.cached_input_tokens > 0 {
+        counter!(LLM_TOKENS, "kind" => "cached_input").increment(usage.cached_input_tokens);
+    }
 }
 
 /// What [`Runtime::compile_with_autofix`] ended with. Either way the fixes
@@ -305,8 +326,22 @@ impl Runtime {
     /// [`INFERENCE_REQUEST_TIMEOUT`](crate::INFERENCE_REQUEST_TIMEOUT).
     ///
     /// These are retried with exponential backoff and do not count against
-    /// [`Self::MAX_EVOLVE_ATTEMPTS`].
+    /// [`Self::MAX_EVOLVE_ATTEMPTS`]. The retries are also bounded in wall
+    /// time by [`Self::MAX_TRANSIENT_WALL_CLOCK`].
     pub const MAX_TRANSIENT_RETRIES: usize = 6;
+
+    /// The wall-clock budget of one lane for transient failures: the summed
+    /// duration of the attempts that ended in a transient HTTP error, backoff
+    /// included. Once it is spent, the next transient error is terminal even
+    /// if [`Self::MAX_TRANSIENT_RETRIES`] has retries left.
+    ///
+    /// A count alone does not bound time. A request that times out costs
+    /// [`INFERENCE_REQUEST_TIMEOUT`](crate::INFERENCE_REQUEST_TIMEOUT), and a
+    /// run whose twentieth tool turn times out costs the nineteen before it
+    /// as well; six of those on an overloaded endpoint kept a lane busy for
+    /// eight hours doing nothing. Two long timeouts is where a lane stops
+    /// waiting for the endpoint to recover.
+    pub const MAX_TRANSIENT_WALL_CLOCK: Duration = Duration::from_secs(30 * 60);
 
     /// Maximum number of times a lane may discard its accumulated chat
     /// history and restart from the base prompt after a context-overflow
@@ -502,8 +537,8 @@ impl Runtime {
         };
         let run = match run {
             Ok(run) => run,
-            Err(e) => {
-                let err = Error::from(e);
+            Err(RunError { error, partial }) => {
+                let err = Error::from(error);
                 counter!(LLM_RUNS, "outcome" => "error").increment(1);
                 counter!(
                     INFERENCE_ERRORS,
@@ -511,24 +546,43 @@ impl Runtime {
                 )
                 .increment(1);
                 stages.set_llm(Some(t0.elapsed()));
-                // A run aborted inside the tool loop still produced
-                // messages, and rig ships them out in the error (input
-                // history included). Append the run's own messages so the
-                // next request extends the conversation it aborted instead
-                // of repeating the one that just exhausted its budget.
-                if let Some(partial) = err.aborted_run_messages(visible_len) {
-                    debug!("Recovered {} messages from the aborted run", partial.len());
-                    history.extend(partial);
+                // A run that died mid-loop still produced messages and paid
+                // for tokens. Keep both: the messages go into the history so
+                // the next request extends the conversation that broke off
+                // instead of repeating it from the start, and the usage goes
+                // into the counters and the attempt's trace so a lane that
+                // spends an hour on tool turns and then times out does not
+                // account as an hour of nothing. The agent's own record is
+                // preferred; the transcript some rig errors carry (input
+                // history included) is the fallback.
+                let recovered = partial.map(|partial| *partial).or_else(|| {
+                    err.aborted_run_messages(visible_len)
+                        .filter(|messages| !messages.is_empty())
+                        .map(|new_messages| PartialRun {
+                            new_messages,
+                            ..PartialRun::default()
+                        })
+                });
+                if let Some(partial) = recovered {
+                    debug!(
+                        "Recovered {} messages and {} answered request(s) from the failed run",
+                        partial.new_messages.len(),
+                        partial.completion_calls.len()
+                    );
+                    record_token_usage(&partial.usage);
+                    history.extend(partial.new_messages.iter().cloned());
+                    *run_out = Some(AgentRun {
+                        output: String::new(),
+                        new_messages: partial.new_messages,
+                        usage: partial.usage,
+                        completion_calls: partial.completion_calls,
+                    });
                 }
                 return Err(err);
             }
         };
         counter!(LLM_RUNS, "outcome" => "ok").increment(1);
-        counter!(LLM_TOKENS, "kind" => "input").increment(run.usage.input_tokens);
-        counter!(LLM_TOKENS, "kind" => "output").increment(run.usage.output_tokens);
-        if run.usage.cached_input_tokens > 0 {
-            counter!(LLM_TOKENS, "kind" => "cached_input").increment(run.usage.cached_input_tokens);
-        }
+        record_token_usage(&run.usage);
         histogram!(LLM_RUN_INPUT_TOKENS).record(run.usage.input_tokens as f64);
         histogram!(LLM_RUN_OUTPUT_TOKENS).record(run.usage.output_tokens as f64);
         histogram!(LLM_RUN_MESSAGES).record(run.new_messages.len() as f64);
@@ -1304,6 +1358,9 @@ impl Runtime {
             let mut attempts: usize = 0;
             let mut context_resets: usize = 0;
             let mut transient_attempts: usize = 0;
+            // Wall time the lane has lost to transient failures so far, the
+            // second bound on them beside the count.
+            let mut transient_elapsed = Duration::ZERO;
             // Code of the most recent rejected attempt, used to detect an
             // agent that echoes the same broken code back verbatim.
             let mut last_failed_code: Option<String> = None;
@@ -1582,10 +1639,15 @@ impl Runtime {
                         // exponential backoff and don't count against the
                         // self-healing attempt budget.
                         if is_transient_http_error(&e) {
-                            if transient_attempts >= Self::MAX_TRANSIENT_RETRIES {
+                            transient_elapsed += t_attempt.elapsed();
+                            let out_of_time = transient_elapsed >= Self::MAX_TRANSIENT_WALL_CLOCK;
+                            if transient_attempts >= Self::MAX_TRANSIENT_RETRIES || out_of_time {
                                 warn!(
-                                    "Transient HTTP error retry budget exhausted ({transient_attempts}/{}); giving up. Last error: {e}",
-                                    Self::MAX_TRANSIENT_RETRIES
+                                    "Transient HTTP error retry budget exhausted ({transient_attempts}/{} retries, \
+                                     {:.0?} of {:?} wall clock); giving up. Last error: {e}",
+                                    Self::MAX_TRANSIENT_RETRIES,
+                                    transient_elapsed,
+                                    Self::MAX_TRANSIENT_WALL_CLOCK,
                                 );
                                 histogram!(EVOLVE_ATTEMPTS).record(attempts as f64);
                                 histogram!(EVOLVE_DURATION).record(t_start.elapsed().as_secs_f64());
@@ -1607,6 +1669,7 @@ impl Runtime {
                             }
                             let backoff = Self::transient_backoff(transient_attempts);
                             transient_attempts += 1;
+                            transient_elapsed += backoff;
                             counter!(LLM_TRANSIENT_RETRIES).increment(1);
                             histogram!(LLM_RETRY_BACKOFF).record(backoff.as_secs_f64());
                             warn!(
@@ -1614,6 +1677,20 @@ impl Runtime {
                                 Self::MAX_TRANSIENT_RETRIES,
                                 backoff,
                             );
+                            // A run that got some tool turns answered before
+                            // the endpoint failed left them in the history
+                            // (`evolve_no_backpressure`). Resending the same
+                            // prompt after them would open the task a second
+                            // time; ask the model to carry on instead. A run
+                            // that never got an answer left nothing, and the
+                            // prompt goes out again as it was.
+                            let progressed = run_out
+                                .as_ref()
+                                .is_some_and(|run| !run.completion_calls.is_empty());
+                            if progressed {
+                                prompt.clear();
+                                prompt.push_str(TRANSIENT_CONTINUE_NUDGE);
+                            }
                             trace.push_attempt(
                                 attempts,
                                 attempt_prompt,

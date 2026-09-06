@@ -16,7 +16,6 @@
 //!
 //! This test evolves exactly that shape of code and calls it.
 
-use rig_agent::completion::PromptError;
 use rig_core::{
     completion::Usage,
     message::Message,
@@ -26,6 +25,7 @@ use symbiont::{
     CompletionCall,
     EvolutionAgent,
     Profile,
+    RunError,
     Runtime,
 };
 
@@ -76,7 +76,7 @@ pub fn qsort(data: &mut [f64], lo: usize, hi: usize) {
 ```";
 
 impl EvolutionAgent for MockAgent {
-    async fn run(&self, prompt: &str, _history: Vec<Message>) -> Result<AgentRun, PromptError> {
+    async fn run(&self, prompt: &str, _history: Vec<Message>) -> Result<AgentRun, RunError> {
         Ok(AgentRun {
             output: MOCK_LLM_REPLY.to_string(),
             new_messages: vec![Message::user(prompt), Message::assistant(MOCK_LLM_REPLY)],
