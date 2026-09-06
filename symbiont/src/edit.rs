@@ -18,7 +18,10 @@
 //!    more `<<<<<<< SEARCH` / `=======` / `>>>>>>> REPLACE` hunks. The
 //!    search text must match exactly one place in the base. The match is
 //!    made on *tokens*, not on characters, so the agent's indentation and
-//!    line breaks do not have to reproduce the base's.
+//!    line breaks do not have to reproduce the base's. The search may be a
+//!    fragment that opens a bracket it does not close (`match x {`, `} else
+//!    {`): a fragment `proc_macro2` refuses is lexed by [`fragment_tokens`],
+//!    which produces the same leaf tokens without asking for balance.
 //!
 //! 3. **Diagnostic anchors.** A line `E<n> => <replacement>` (or a block
 //!    `E<n> =>` followed by the replacement on the next lines, terminated by
@@ -30,7 +33,11 @@
 //! unmodified base first, then all are applied from the end of the text
 //! towards the start, so no edit's range moves another's. Two edits that
 //! overlap are an error: the agent asked for two different texts in one
-//! place.
+//! place. The overlap seen in practice is one change described twice, as an
+//! anchor *and* as a hunk, by a model that read `E1 => 53` as "error 1 is on
+//! line 53"; the error names both forms so the nudge can say which one to
+//! drop, and an anchor whose replacement *is* the error's line number is
+//! refused on its own ([`EditError::AnchorIsLineNumber`]).
 //!
 //! The result is a candidate like any other. It goes through the same
 //! parse, validation and build as a complete response, so an edit that
@@ -83,14 +90,21 @@ pub(crate) enum EditError {
     SearchNotFound { search: String },
     /// A `SEARCH` text was found more than once.
     SearchAmbiguous { search: String, count: usize },
-    /// A `SEARCH` text does not tokenize as Rust, so it cannot be matched.
-    SearchNotRust { search: String, reason: String },
+    /// A `SEARCH` text has no tokens to match.
+    SearchEmpty,
     /// `E<n>` names an error the previous report did not have.
     UnknownAnchor { anchor: usize, available: usize },
     /// The error `E<n>` refers to has no span in the candidate to replace.
     AnchorWithoutSpan { anchor: usize },
-    /// Two edits want to change the same text.
-    Overlap,
+    /// The replacement of `E<n>` is the line number of the error it anchors
+    /// on: the agent read the anchor as a location, not as a replacement.
+    AnchorIsLineNumber { anchor: usize, line: usize },
+    /// Two edits want to change the same text. `first` and `second` say
+    /// which forms collided, in text order.
+    Overlap {
+        first: &'static str,
+        second: &'static str,
+    },
     /// A `rust-edit` block did not follow the `<<<<<<< SEARCH` /
     /// `=======` / `>>>>>>> REPLACE` form.
     Malformed { reason: String },
@@ -111,10 +125,7 @@ impl std::fmt::Display for EditError {
                 "the SEARCH text matches {count} places in your previous code; include more \
                  context so it matches exactly one:\n{search}"
             ),
-            Self::SearchNotRust { search, reason } => write!(
-                f,
-                "the SEARCH text is not valid Rust tokens ({reason}):\n{search}"
-            ),
+            Self::SearchEmpty => f.write_str("the SEARCH text is empty"),
             Self::UnknownAnchor { anchor, available } => write!(
                 f,
                 "E{anchor} does not exist; the previous report had {available} error(s)"
@@ -123,7 +134,22 @@ impl std::fmt::Display for EditError {
                 f,
                 "E{anchor} has no location in your code to replace; use a SEARCH/REPLACE edit"
             ),
-            Self::Overlap => f.write_str("two edits change the same text; merge them into one"),
+            Self::AnchorIsLineNumber { anchor, line } => write!(
+                f,
+                "`E{anchor} => {line}` reads as a line number. The text after `=>` is the \
+                 replacement for the text error {anchor} underlines; the harness already \
+                 knows the error is on line {line}. Write `E{anchor} => <new code>`, or \
+                 leave the anchor out and use only a SEARCH/REPLACE hunk"
+            ),
+            Self::Overlap { first, second } if first == second => write!(
+                f,
+                "two edits of the same form ({first}) change the same text; merge them into one"
+            ),
+            Self::Overlap { first, second } => write!(
+                f,
+                "two edits change the same text: {first} and {second}. Describe each \
+                 change once, with one form; drop the other"
+            ),
             Self::Malformed { reason } => write!(f, "malformed edit block: {reason}"),
             Self::UnplaceableItem { item } => write!(
                 f,
@@ -190,24 +216,36 @@ pub(crate) fn resolve(
     Ok(Resolved::Edited { source, edits })
 }
 
-/// One resolved change: replace `range` of the base with `text`.
+/// One resolved change: replace `range` of the base with `text`. `form` is
+/// how the agent wrote it, for the overlap report.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Replacement {
     range: Range<usize>,
     text: String,
+    form: &'static str,
 }
 
-/// Apply `replacements` to `base`, last range first. Overlaps are an error.
+const FORM_ANCHOR: &str = "an `E<n> =>` anchor";
+const FORM_HUNK: &str = "a SEARCH/REPLACE hunk";
+const FORM_ITEM: &str = "a replaced item";
+
+/// Apply `replacements` to `base`, last range first. Overlaps are an error
+/// naming the two forms in text order.
 fn apply(base: &str, mut replacements: Vec<Replacement>) -> Result<String, EditError> {
     replacements.sort_by_key(|replacement| std::cmp::Reverse(replacement.range.start));
     let mut out = base.to_string();
     let mut applied_from = base.len();
+    let mut previous: Option<&'static str> = None;
     for replacement in replacements {
         if replacement.range.end > applied_from {
-            return Err(EditError::Overlap);
+            return Err(EditError::Overlap {
+                first: replacement.form,
+                second: previous.unwrap_or(replacement.form),
+            });
         }
         out.replace_range(replacement.range.clone(), &replacement.text);
         applied_from = replacement.range.start;
+        previous = Some(replacement.form);
     }
     Ok(out)
 }
@@ -256,6 +294,7 @@ fn merge_items(
         replacements.push(Replacement {
             range: item_range(base_src, target),
             text: edit_src[item_range(edit_src, item)].to_string(),
+            form: FORM_ITEM,
         });
     }
     Ok(replacements)
@@ -469,6 +508,10 @@ fn anchor_replacement(lines: &[&str], start: usize, inline: &str) -> (String, us
 }
 
 /// The replacement of the primary span of error `anchor` (1-based).
+///
+/// A replacement that is exactly the span's line number is refused: the
+/// agent echoed the `on line N` of the error header instead of writing new
+/// code, and applying it would put a bare integer into the candidate.
 fn resolve_anchor(
     base: &EditBase,
     anchor: usize,
@@ -487,39 +530,40 @@ fn resolve_anchor(
         .find(|span| span.is_primary)
         .or(diagnostic.spans.first())
         .ok_or(EditError::AnchorWithoutSpan { anchor })?;
+    if replacement.trim().parse::<usize>() == Ok(span.line_start) {
+        return Err(EditError::AnchorIsLineNumber {
+            anchor,
+            line: span.line_start,
+        });
+    }
     Ok(Replacement {
         range: span.bytes.clone(),
         text: replacement,
+        form: FORM_ANCHOR,
     })
 }
 
 /// The replacement of the unique place in the base whose tokens are
 /// `search`.
 ///
-/// Both sides are tokenized with `proc_macro2`; the match is a run of the
-/// base's tokens whose kinds and texts equal the search's, so whitespace,
-/// line breaks and comments do not have to agree. The replaced range runs
-/// from the first matched token's start to the last one's end, so the text
-/// around the match (indentation, the trailing newline) is preserved.
+/// Both sides are tokenized; the match is a run of the base's tokens whose
+/// texts equal the search's, so whitespace, line breaks and comments do not
+/// have to agree. The base is lexed with `proc_macro2` (it parsed, or it
+/// would never have been compiled). The search is too when it can be, and
+/// by [`fragment_tokens`] when it opens a bracket it does not close. The
+/// replaced range runs from the first matched token's start to the last
+/// one's end, so the text around the match (indentation, the trailing
+/// newline) is preserved.
 fn resolve_search(
     base: &EditBase,
     search: &str,
     replace: String,
 ) -> Result<Replacement, EditError> {
-    let needle: Vec<Token> = tokens(search).map_err(|reason| EditError::SearchNotRust {
-        search: search.to_string(),
-        reason,
-    })?;
+    let needle: Vec<Token> = tokens(search).unwrap_or_else(|_| fragment_tokens(search));
     if needle.is_empty() {
-        return Err(EditError::SearchNotRust {
-            search: search.to_string(),
-            reason: "it is empty".to_string(),
-        });
+        return Err(EditError::SearchEmpty);
     }
-    let haystack = tokens(&base.source).map_err(|reason| EditError::SearchNotRust {
-        search: search.to_string(),
-        reason: format!("the base does not tokenize: {reason}"),
-    })?;
+    let haystack = tokens(&base.source).unwrap_or_else(|_| fragment_tokens(&base.source));
     let matches: Vec<usize> = (0..haystack.len().saturating_sub(needle.len() - 1))
         .filter(|&start| {
             haystack[start..start + needle.len()]
@@ -538,6 +582,7 @@ fn resolve_search(
             Ok(Replacement {
                 range: first.range.start..last.range.end,
                 text: replace,
+                form: FORM_HUNK,
             })
         }
         many => Err(EditError::SearchAmbiguous {
@@ -556,7 +601,7 @@ struct Token {
 
 /// The leaf tokens of `text`, in order, with group delimiters as their own
 /// tokens. Fails when `text` is not lexically valid Rust (an unbalanced
-/// bracket, an unterminated string).
+/// bracket, an unterminated string); [`fragment_tokens`] is the fallback.
 fn tokens(text: &str) -> Result<Vec<Token>, String> {
     let stream: TokenStream = text
         .parse()
@@ -598,6 +643,128 @@ fn flatten(stream: TokenStream, out: &mut Vec<Token>) {
             }),
         }
     }
+}
+
+/// The leaf tokens of a Rust *fragment*: text that need not balance its
+/// brackets, such as the opening line of a match arm or `} else {`.
+///
+/// Produces the same token texts [`tokens`] would for balanced input -
+/// identifiers and keywords as one token, literals as one token including
+/// their suffix, every punctuation character and bracket on its own - so a
+/// needle lexed here matches a haystack lexed by `proc_macro2`. Comments are
+/// skipped. Doc comments, which `proc_macro2` turns into `#[doc = ..]`, and
+/// raw identifiers are the known gaps; neither appears in a search text in
+/// practice.
+fn fragment_tokens(text: &str) -> Vec<Token> {
+    let mut out = Vec::new();
+    let mut rest = text;
+    let mut offset = 0;
+    while let Some(c) = rest.chars().next() {
+        let consumed = if c.is_whitespace() {
+            c.len_utf8()
+        } else if rest.starts_with("//") {
+            rest.find('\n').unwrap_or(rest.len())
+        } else if rest.starts_with("/*") {
+            rest.find("*/").map_or(rest.len(), |end| end + 2)
+        } else {
+            let len = fragment_token_len(rest, c);
+            out.push(Token {
+                text: rest[..len].to_string(),
+                range: offset..offset + len,
+            });
+            len
+        };
+        rest = &rest[consumed..];
+        offset += consumed;
+    }
+    out
+}
+
+/// The byte length of the token starting at `rest` with first char `c`.
+fn fragment_token_len(rest: &str, c: char) -> usize {
+    if c == '_' || c.is_alphabetic() {
+        let ident = rest
+            .find(|ch: char| !(ch == '_' || ch.is_alphanumeric()))
+            .unwrap_or(rest.len());
+        // `b".."`, `r".."`, `br".."`, `c".."`: the prefix belongs to the
+        // literal.
+        if rest[ident..].starts_with('"') && rest[..ident].chars().all(|ch| "brc".contains(ch)) {
+            return ident + string_literal_len(&rest[ident..]);
+        }
+        return ident;
+    }
+    if c.is_ascii_digit() {
+        return number_literal_len(rest);
+    }
+    if c == '"' {
+        return string_literal_len(rest);
+    }
+    if c == '\'' {
+        return char_literal_len(rest).unwrap_or(1);
+    }
+    c.len_utf8()
+}
+
+/// A number literal: digits, `_`, an alphanumeric suffix or radix, one `.`
+/// followed by a digit, and an exponent sign after `e`.
+fn number_literal_len(rest: &str) -> usize {
+    let bytes = rest.as_bytes();
+    let mut idx = 0;
+    let mut seen_dot = false;
+    while idx < bytes.len() {
+        let b = bytes[idx];
+        let next = bytes.get(idx + 1).copied();
+        if b.is_ascii_alphanumeric() || b == b'_' {
+            idx += 1;
+        } else if b == b'.' && !seen_dot && next.is_some_and(|n| n.is_ascii_digit()) {
+            seen_dot = true;
+            idx += 1;
+        } else if (b == b'-' || b == b'+')
+            && idx > 0
+            && matches!(bytes[idx - 1], b'e' | b'E')
+            && next.is_some_and(|n| n.is_ascii_digit())
+        {
+            idx += 1;
+        } else {
+            break;
+        }
+    }
+    idx
+}
+
+/// A `".."` literal starting at `rest`, escapes honoured; runs to the end of
+/// `rest` when unterminated.
+fn string_literal_len(rest: &str) -> usize {
+    let bytes = rest.as_bytes();
+    let mut idx = 1;
+    while idx < bytes.len() {
+        match bytes[idx] {
+            b'\\' => idx += 2,
+            b'"' => return idx + 1,
+            _ => idx += 1,
+        }
+    }
+    rest.len()
+}
+
+/// A `'x'` or `'\n'` literal starting at `rest`; `None` when the quote
+/// opens a lifetime instead.
+fn char_literal_len(rest: &str) -> Option<usize> {
+    let mut chars = rest.char_indices().skip(1);
+    let (_, first) = chars.next()?;
+    let body_end = if first == '\\' {
+        // `'\''`, `'\n'`, `'\x41'`, `'\u{1F600}'`: skip the escaped char,
+        // then its payload.
+        let (idx, escaped) = chars.next()?;
+        match escaped {
+            'x' => idx + 3,
+            'u' => idx + 1 + rest[idx + 1..].find('}')? + 1,
+            _ => idx + escaped.len_utf8(),
+        }
+    } else {
+        1 + first.len_utf8()
+    };
+    rest[body_end..].starts_with('\'').then_some(body_end + 1)
 }
 
 #[cfg(test)]
@@ -710,13 +877,56 @@ mod tests {
         ));
     }
 
+    /// The opening line of a block is how a model edits a match arm or a
+    /// loop head; `proc_macro2` refuses the unclosed brace, the fragment
+    /// lexer does not.
     #[test]
-    fn an_unbalanced_search_is_reported_as_not_rust() {
+    fn an_unbalanced_search_matches_on_fragment_tokens() {
         let response = "```rust-edit\n<<<<<<< SEARCH\nfor i in 0..len {\n=======\nfor i in 0..len.min(3) {\n>>>>>>> REPLACE\n```";
-        assert!(matches!(
+        let source = edited(resolve_response(&base(), response));
+        assert!(
+            source.contains("    for i in 0..len.min(3) {\n        data.swap"),
+            "{source}"
+        );
+    }
+
+    #[test]
+    fn a_search_closing_a_block_it_did_not_open_matches() {
+        let response = "```rust-edit\n<<<<<<< SEARCH\n    }\n}\n\nfn helper(x: f64) -> f64 {\n=======\n    }\n}\n\nfn helper(x: f64, _y: f64) -> f64 {\n>>>>>>> REPLACE\n```";
+        let source = edited(resolve_response(&base(), response));
+        assert!(
+            source.contains("fn helper(x: f64, _y: f64) -> f64 {"),
+            "{source}"
+        );
+    }
+
+    #[test]
+    fn an_empty_search_is_reported() {
+        let response = "```rust-edit\n<<<<<<< SEARCH\n\n=======\nx\n>>>>>>> REPLACE\n```";
+        assert_eq!(
             resolve_response(&base(), response),
-            Err(EditError::SearchNotRust { .. })
-        ));
+            Err(EditError::SearchEmpty)
+        );
+    }
+
+    /// The fragment lexer must agree with `proc_macro2` on balanced input,
+    /// or a fragment needle could never match a `proc_macro2` haystack.
+    #[test]
+    fn fragment_tokens_agree_with_proc_macro2_on_balanced_input() {
+        for src in [
+            BASE,
+            "let s = \"a \\\" b\"; let c = '\\''; let l: &'a str = b\"x\";",
+            "x.0 + 1.5e-3 * 2u32 - 0x1F; a..=b; a => b; // c\n /* d */ e",
+            "OrderUpdate::LimitOrderFill(fill) => { let q = fill.qty(); }",
+        ] {
+            let strict: Vec<String> = tokens(src)
+                .expect("balanced")
+                .into_iter()
+                .map(|t| t.text)
+                .collect();
+            let lenient: Vec<String> = fragment_tokens(src).into_iter().map(|t| t.text).collect();
+            assert_eq!(strict, lenient, "{src}");
+        }
     }
 
     #[test]
@@ -776,10 +986,51 @@ mod tests {
     }
 
     #[test]
-    fn overlapping_edits_are_rejected() {
+    fn overlapping_edits_are_rejected_naming_both_forms() {
         let base = base_with_error_at("len / 2");
         let response = "```rust-edit\nE1 => len as f64 / 3.0\n<<<<<<< SEARCH\nlet mid: f64 = len / 2;\n=======\nlet mid = 0.0;\n>>>>>>> REPLACE\n```";
-        assert_eq!(resolve_response(&base, response), Err(EditError::Overlap));
+        let err = resolve_response(&base, response).expect_err("overlap");
+        assert_eq!(
+            err,
+            EditError::Overlap {
+                first: FORM_HUNK,
+                second: FORM_ANCHOR
+            }
+        );
+        let text = err.to_string();
+        assert!(text.contains("an `E<n> =>` anchor"), "{text}");
+        assert!(text.contains("a SEARCH/REPLACE hunk"), "{text}");
+    }
+
+    /// The failure seen in production: `E1 => 53` for an error on line 53,
+    /// followed by the real change as a hunk. The anchor is refused on its
+    /// own, before the overlap, with a message that says what `=>` means.
+    #[test]
+    fn an_anchor_echoing_the_line_number_is_refused() {
+        let base = base_with_error_at("len / 2");
+        let line = base.diagnostics[0].spans[0].line_start;
+        let response = format!(
+            "```rust-edit\nE1 => {line}\n<<<<<<< SEARCH\nlen / 2\n=======\nlen as f64 / 2.0\n>>>>>>> REPLACE\n```"
+        );
+        let err = resolve_response(&base, &response).expect_err("line number");
+        assert_eq!(err, EditError::AnchorIsLineNumber { anchor: 1, line });
+        let text = err.to_string();
+        assert!(text.contains("reads as a line number"), "{text}");
+        assert!(text.contains("E1 => <new code>"), "{text}");
+    }
+
+    /// A bare integer that is not the line number is a legitimate
+    /// replacement (`1` for a `1.0` the compiler underlined).
+    #[test]
+    fn an_integer_replacement_that_is_not_the_line_number_applies() {
+        let base = base_with_error_at("len / 2");
+        let line = base.diagnostics[0].spans[0].line_start;
+        let response = format!("```rust-edit\nE1 => {}\n```", line + 40);
+        let source = edited(resolve_response(&base, &response));
+        assert!(
+            source.contains(&format!("let mid: f64 = {};", line + 40)),
+            "{source}"
+        );
     }
 
     #[test]

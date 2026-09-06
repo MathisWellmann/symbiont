@@ -81,10 +81,27 @@ line numbers refer to that block, and the errors are numbered `[E1]`, `[E2]`,
 `[E1] replaces `len / 2` on line 3`.
 
 Do not retype code that is already correct. Describe the change instead, in
-one `rust-edit` block, using any mix of these two forms:
+one `rust-edit` block. Two forms exist; describe each change with exactly
+one of them.
+
+Form 1, an error anchor. `E<n> => new code` replaces the text that error `n`
+underlines with `new code`. The harness already knows where error `n` is:
+never write a line number after `=>`, only the replacement. For the header
+`[E1] replaces `len / 2` on line 3`, this makes line 3 read
+`let mid: f64 = len as f64 / 2.0;`:
 
 ```rust-edit
-E1 => 1
+E1 => len as f64 / 2.0
+```
+
+Replace only the underlined text: if the compiler underlines the `*` in
+`1.5 * 2`, then `E1 => as u64 *` yields `1.5 as u64 * 2`. When the
+replacement spans several lines, put it on the lines after `E<n> =>` and
+end it with a blank line.
+
+Form 2, search and replace, for a change the compiler did not point at:
+
+```rust-edit
 <<<<<<< SEARCH
 let mid = len / 2
 =======
@@ -92,14 +109,14 @@ let mid = len / 2;
 >>>>>>> REPLACE
 ```
 
-- `E<n> => text` replaces exactly the underlined text of error `n` with
-  `text`. Replace only that text: if the compiler underlines the `*` in
-  `1.5 * 2`, then `E1 => as u64 *` yields `1.5 as u64 * 2`. When the
-  replacement spans several lines, put it on the lines after `E<n> =>` and
-  end it with a blank line.
-- `SEARCH`/`REPLACE` replaces the one place in your previous code whose
-  tokens match the `SEARCH` text. Whitespace and line breaks do not have to
-  match. Include enough context that the text occurs exactly once.
+`SEARCH` names the one place in your previous code whose tokens match it;
+whitespace and line breaks do not have to match, and the text may be a
+fragment such as the first line of a `match` arm. Include enough context
+that it occurs exactly once.
+
+One block may hold several edits of either form, but one place may be
+changed by one edit only: an `E<n>` anchor and a `SEARCH` hunk for the same
+text are rejected together.
 
 If a whole function changes, you may instead send a ```rust block that
 contains only that function (or only the helpers that change); the harness
@@ -353,11 +370,30 @@ mod tests {
             "<<<<<<< SEARCH",
             "=======",
             ">>>>>>> REPLACE",
-            "E1 => 1",
+            "E1 => len as f64 / 2.0",
             "[E1]",
             "Do not retype code that is already correct.",
+            "never write a line number after `=>`",
         ] {
             assert!(BASE_PROMPT.contains(needle), "prompt lost `{needle}`");
+        }
+    }
+
+    /// `E1 => 1` was read as "error 1 is on line 1" by several models, which
+    /// then described the change a second time as a hunk. No example may
+    /// put a bare integer after the arrow.
+    #[test]
+    fn no_edit_example_puts_a_bare_integer_after_the_arrow() {
+        for line in BASE_PROMPT.lines() {
+            let Some((_, rest)) = line.split_once("=> ") else {
+                continue;
+            };
+            if line.trim_start().starts_with('E') {
+                assert!(
+                    rest.trim().parse::<u64>().is_err(),
+                    "example `{line}` looks like a line number"
+                );
+            }
         }
     }
 
