@@ -155,6 +155,22 @@ fn first_quoted(message: &str) -> Option<&str> {
     Some(&message[start..start + end])
 }
 
+/// The member a receiver error quotes: the first quoted name (`no method
+/// named \`best_bid\` found for ...`), except in the struct-literal form
+/// where the type comes first (`struct \`Account\` has no field named
+/// \`missing\``).
+fn misused_member(message: &str) -> Option<&str> {
+    const FIELD_NAMED: &str = "has no field named `";
+    if message.starts_with("struct `")
+        && let Some(start) = message.find(FIELD_NAMED)
+    {
+        let start = start + FIELD_NAMED.len();
+        let end = message[start..].find('`')?;
+        return Some(&message[start..start + end]);
+    }
+    first_quoted(message)
+}
+
 /// The members of `type_name` that `diagnostics` say do not exist, in order
 /// of first appearance: the quoted name of a receiver error whose receiver
 /// is `type_name` (`no method named \`best_bid\` found for ...`).
@@ -169,7 +185,7 @@ fn misused_members(diagnostics: &[Diagnostic], type_name: &str) -> Vec<String> {
         if !is_receiver_error || receiver_type(&diagnostic.message).as_deref() != Some(type_name) {
             continue;
         }
-        if let Some(member) = first_quoted(&diagnostic.message)
+        if let Some(member) = misused_member(&diagnostic.message)
             && member != type_name
             && seen.insert(member.to_string())
         {
@@ -621,12 +637,19 @@ mod tests {
                 "E0609",
                 "no field `best_bid` on type `&agent_symbiont::prelude::MarketState<i64, 8>`",
             ),
+            diagnostic(
+                "E0560",
+                "struct `prelude::Account<{integer}>` has no field named `missing`",
+            ),
         ];
         assert_eq!(
             misused_members(&diagnostics, "MarketState"),
             vec!["best_bid", "best_ask"]
         );
-        assert_eq!(misused_members(&diagnostics, "Account"), vec!["position"]);
+        assert_eq!(
+            misused_members(&diagnostics, "Account"),
+            vec!["position", "missing"]
+        );
         assert_eq!(
             api_hint_names(&diagnostics),
             vec!["MarketState".to_string(), "Account".to_string()]
