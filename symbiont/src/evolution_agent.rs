@@ -155,15 +155,15 @@ pub trait EvolutionAgent {
     /// looking up documentation resumes looking it up. Withdrawing the tools
     /// leaves it one thing to do.
     ///
-    /// The default runs with tools, which is right for an agent that has
-    /// none. An implementation that registers tools should override it.
+    /// There is no default: the runtime relies on this request carrying no
+    /// tools, and a default that forwarded to [`Self::run`] would silently
+    /// void that for any implementation that registers tools. An agent that
+    /// has no tools implements this by forwarding to [`Self::run`].
     fn run_without_tools(
         &self,
         prompt: &str,
         history: Vec<Message>,
-    ) -> impl Future<Output = Result<AgentRun, RunError>> + Send {
-        self.run(prompt, history)
-    }
+    ) -> impl Future<Output = Result<AgentRun, RunError>> + Send;
 
     /// The agent's system prompt (preamble).
     ///

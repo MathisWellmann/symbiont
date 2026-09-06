@@ -278,6 +278,14 @@ impl EvolutionAgent for RoutedAgent {
         })
     }
 
+    async fn run_without_tools(
+        &self,
+        prompt: &str,
+        history: Vec<Message>,
+    ) -> Result<AgentRun, RunError> {
+        self.run(prompt, history).await
+    }
+
     fn system_prompt(&self) -> String {
         String::new()
     }
