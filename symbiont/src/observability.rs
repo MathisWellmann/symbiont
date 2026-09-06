@@ -35,6 +35,7 @@
 //! | [`EVOLVE_DURATION`]         | histogram | —                      |
 //! | [`EVOLVE_CONTEXT_RESETS`]   | counter   | —                      |
 //! | [`EVOLVE_REPEAT_RESETS`]    | counter   | —                      |
+//! | [`EVOLVE_TOOLS_WITHDRAWN`]  | counter   | —                      |
 //! | [`EVOLVE_BATCH_SIZE`]       | histogram | —                      |
 //! | [`EVOLVE_BATCH_DURATION`]   | histogram | —                      |
 //! | [`EVOLVE_BATCH_LANES`]      | counter   | `outcome`              |
@@ -105,6 +106,12 @@ pub const EVOLVE_CONTEXT_RESETS: &str = "symbiont_evolve_context_window_resets_t
 /// rising value signals a model that echoes its own broken answers instead
 /// of applying corrections.
 pub const EVOLVE_REPEAT_RESETS: &str = "symbiont_evolve_repeat_resets_total";
+/// Lanes whose agent spent its whole tool-call turn budget without
+/// producing code and finished the lane without tools. Against
+/// `EVOLVE_BATCH_LANES` this is the share of lanes that could not stop
+/// reading documentation; a rising value says the documentation is missing
+/// something the model keeps looking for.
+pub const EVOLVE_TOOLS_WITHDRAWN: &str = "symbiont_evolve_tools_withdrawn_total";
 /// Wall-clock seconds per pipeline stage of one evolution attempt, labelled
 /// by `stage` (`llm`, `parse_validate`, `compile`, `load`). The `llm` vs
 /// `compile` split is the key capacity signal: one is paid API latency, the
@@ -277,6 +284,11 @@ pub fn describe_metrics() {
         EVOLVE_CONTEXT_RESETS,
         Unit::Count,
         "Context-window overflows that discarded the chat history"
+    );
+    describe_counter!(
+        EVOLVE_TOOLS_WITHDRAWN,
+        Unit::Count,
+        "Lanes that finished without tools after a run exhausted its tool-call turn budget"
     );
     describe_counter!(
         EVOLVE_REPEAT_RESETS,

@@ -13,13 +13,17 @@
 use rig_agent::{
     agent::{
         CompletionCall,
+        Extended,
         PromptRequest,
     },
     completion::PromptError,
 };
 use rig_core::{
     completion::Usage,
-    message::Message,
+    message::{
+        Message,
+        ToolChoice,
+    },
 };
 
 /// The result of one complete agentic run.
@@ -62,6 +66,25 @@ pub trait EvolutionAgent {
         history: Vec<Message>,
     ) -> impl Future<Output = Result<AgentRun, PromptError>> + Send;
 
+    /// Like [`Self::run`], but the model may not call tools: the request
+    /// asks for a plain answer and a tool call in the reply is an error.
+    ///
+    /// The runtime uses this after a run exhausted its tool-call turn budget
+    /// without producing code. Nudging such a run to "answer now" while its
+    /// tools stay available does not work: a model that spent fifty turns
+    /// looking up documentation resumes looking it up. Withdrawing the tools
+    /// leaves it one thing to do.
+    ///
+    /// The default runs with tools, which is right for an agent that has
+    /// none. An implementation that registers tools should override it.
+    fn run_without_tools(
+        &self,
+        prompt: &str,
+        history: Vec<Message>,
+    ) -> impl Future<Output = Result<AgentRun, PromptError>> + Send {
+        self.run(prompt, history)
+    }
+
     /// The agent's system prompt (preamble).
     ///
     /// The runtime records it in the [`EvolutionTrace`](crate::EvolutionTrace)
@@ -87,6 +110,21 @@ fn drop_raw(call: CompletionCall) -> CompletionCall {
     }
 }
 
+/// Drive a prepared request to completion and shape its response.
+async fn send(request: PromptRequest<Extended>) -> Result<AgentRun, PromptError> {
+    let response = request.await?;
+    Ok(AgentRun {
+        output: response.output,
+        new_messages: response.messages.unwrap_or_default(),
+        usage: response.usage,
+        completion_calls: response
+            .completion_calls
+            .into_iter()
+            .map(drop_raw)
+            .collect(),
+    })
+}
+
 impl EvolutionAgent for crate::Agent {
     fn run(
         &self,
@@ -96,22 +134,28 @@ impl EvolutionAgent for crate::Agent {
         // `PromptRequest` clones the agent's internals, so the returned future
         // does not borrow `self`. Rig runs the tool-calling loop inside
         // `send()`, bounded by the agent's `default_max_turns`.
-        let request = PromptRequest::from_agent(&self.inner, prompt)
-            .history(history)
-            .extended_details();
-        async move {
-            let response = request.await?;
-            Ok(AgentRun {
-                output: response.output,
-                new_messages: response.messages.unwrap_or_default(),
-                usage: response.usage,
-                completion_calls: response
-                    .completion_calls
-                    .into_iter()
-                    .map(drop_raw)
-                    .collect(),
-            })
-        }
+        send(
+            PromptRequest::from_agent(&self.inner, prompt)
+                .history(history)
+                .extended_details(),
+        )
+    }
+
+    fn run_without_tools(
+        &self,
+        prompt: &str,
+        history: Vec<Message>,
+    ) -> impl Future<Output = Result<AgentRun, PromptError>> + Send {
+        // `tool_choice: none` goes out on the wire, so a compliant server
+        // never returns a tool call; should one arrive anyway, rig refuses
+        // to dispatch it and reports `PromptError::UnknownToolCall` with the
+        // transcript, which the runtime turns into one more nudge.
+        send(
+            PromptRequest::from_agent(&self.inner, prompt)
+                .history(history)
+                .tool_choice(ToolChoice::None)
+                .extended_details(),
+        )
     }
 
     fn system_prompt(&self) -> String {
