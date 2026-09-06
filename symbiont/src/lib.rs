@@ -79,6 +79,8 @@ pub use error::{
 pub use evolution_agent::{
     AgentRun,
     EvolutionAgent,
+    PartialRun,
+    RunError,
 };
 pub use evolution_trace::{
     AttemptTrace,

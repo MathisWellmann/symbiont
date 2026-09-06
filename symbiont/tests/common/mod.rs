@@ -27,6 +27,8 @@ use symbiont::{
     AgentRun,
     CompletionCall,
     EvolutionAgent,
+    PartialRun,
+    RunError,
 };
 
 /// A single scripted agent turn.
@@ -37,6 +39,9 @@ pub(crate) enum Turn {
     ReplyWithUsage(String, Usage),
     /// Fail the run with this error.
     Fail(PromptError),
+    /// Fail the run with this error after it produced this much: the shape
+    /// of a real agent whose request died on a later tool turn.
+    FailAfter(PromptError, PartialRun),
 }
 
 impl Turn {
@@ -93,7 +98,7 @@ impl ScriptedAgent {
         prompt: &str,
         history: Vec<Message>,
         tools: bool,
-    ) -> Result<AgentRun, PromptError> {
+    ) -> Result<AgentRun, RunError> {
         self.tools_allowed
             .lock()
             .expect("Mutex is not poisoned")
@@ -121,7 +126,13 @@ impl ScriptedAgent {
         let (text, usage) = match turn {
             Turn::Reply(text) => (text, Usage::new()),
             Turn::ReplyWithUsage(text, usage) => (text, usage),
-            Turn::Fail(err) => return Err(err),
+            Turn::Fail(err) => return Err(err.into()),
+            Turn::FailAfter(error, partial) => {
+                return Err(RunError {
+                    error,
+                    partial: Some(Box::new(partial)),
+                });
+            }
         };
         let new_messages = vec![Message::user(prompt), Message::assistant(text.as_str())];
         Ok(AgentRun {
@@ -154,7 +165,7 @@ impl ScriptedAgent {
 }
 
 impl EvolutionAgent for ScriptedAgent {
-    async fn run(&self, prompt: &str, history: Vec<Message>) -> Result<AgentRun, PromptError> {
+    async fn run(&self, prompt: &str, history: Vec<Message>) -> Result<AgentRun, RunError> {
         self.scripted(prompt, history, true)
     }
 
@@ -162,7 +173,7 @@ impl EvolutionAgent for ScriptedAgent {
         &self,
         prompt: &str,
         history: Vec<Message>,
-    ) -> Result<AgentRun, PromptError> {
+    ) -> Result<AgentRun, RunError> {
         self.scripted(prompt, history, false)
     }
 
@@ -241,7 +252,7 @@ impl RoutedAgent {
 }
 
 impl EvolutionAgent for RoutedAgent {
-    async fn run(&self, prompt: &str, _history: Vec<Message>) -> Result<AgentRun, PromptError> {
+    async fn run(&self, prompt: &str, _history: Vec<Message>) -> Result<AgentRun, RunError> {
         self.prompts
             .lock()
             .expect("Mutex is not poisoned")

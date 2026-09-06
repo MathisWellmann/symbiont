@@ -9,7 +9,6 @@
 //! the aborted call yields the `Default` placeholder, and that helpers may
 //! return types that do not implement `Default`.
 
-use rig_agent::completion::PromptError;
 use rig_core::{
     completion::Usage,
     message::Message,
@@ -19,6 +18,7 @@ use symbiont::{
     CompletionCall,
     EvolutionAgent,
     Profile,
+    RunError,
     Runtime,
 };
 
@@ -71,7 +71,7 @@ fn order(data: &[usize], idx: usize) -> std::cmp::Ordering {
 ```";
 
 impl EvolutionAgent for MockAgent {
-    async fn run(&self, prompt: &str, _history: Vec<Message>) -> Result<AgentRun, PromptError> {
+    async fn run(&self, prompt: &str, _history: Vec<Message>) -> Result<AgentRun, RunError> {
         Ok(AgentRun {
             output: MOCK_LLM_REPLY.to_string(),
             new_messages: vec![Message::user(prompt), Message::assistant(MOCK_LLM_REPLY)],
