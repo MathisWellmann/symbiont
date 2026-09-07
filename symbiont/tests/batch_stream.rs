@@ -17,6 +17,7 @@ use common::{
 };
 use futures_util::StreamExt;
 use symbiont::{
+    LadderEvent,
     Lane,
     Profile,
     Runtime,
@@ -108,9 +109,23 @@ async fn lanes_are_yielded_as_they_finish() {
     // lanes at the gate, which is exactly what the priority is for.
     assert_eq!(agent.calls(), 4, "three lanes, one of them retried once");
 
-    // The stream deliberately leaves the failure buffer alone: clearing it
-    // would discard the records of an overlapping round.
-    let failures = rt.take_evolve_failures();
-    assert_eq!(failures.len(), 1, "the rejected answer of lane 1");
-    assert_eq!(failures[0].lane(), Lane::from(1));
+    // The rejected answer is in the trace of the lane that produced it and
+    // nowhere else, so overlapping rounds cannot mix their records up.
+    for (lane, info) in values.iter().enumerate() {
+        let trace = info
+            .as_ref()
+            .expect("every lane yielded a result above")
+            .trace();
+        assert_eq!(trace.lane(), Lane::from(lane as u32));
+        let rejections = trace
+            .attempts()
+            .iter()
+            .filter(|attempt| matches!(attempt.ladder(), LadderEvent::SelfHeal { .. }))
+            .count();
+        assert_eq!(
+            rejections,
+            usize::from(lane == 1),
+            "only lane 1 had an answer rejected"
+        );
+    }
 }

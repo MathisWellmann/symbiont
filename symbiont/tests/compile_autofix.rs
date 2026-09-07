@@ -19,6 +19,7 @@ use common::{
 };
 use symbiont::{
     BuildRecord,
+    LadderEvent,
     Profile,
     Runtime,
 };
@@ -61,7 +62,8 @@ async fn machine_applicable_suggestions_are_applied_before_asking_the_model() {
         "no second inference round for a mechanical fix"
     );
     // The build record of the one attempt names both fixes, in source order.
-    match trace.attempts()[0].stages().build() {
+    let attempt = &trace.attempts()[0];
+    match attempt.stages().build() {
         Some(BuildRecord::Built { autofixes, .. }) => {
             assert_eq!(autofixes.len(), 2, "{autofixes:#?}");
             assert_eq!((autofixes[0].line, autofixes[1].line), (2, 5));
@@ -79,10 +81,10 @@ async fn machine_applicable_suggestions_are_applied_before_asking_the_model() {
     );
     assert_eq!(autofix_total(&[3, 3, 4]), (3 + 3 + 4) * 2 + 3);
     assert_eq!(rt.take_panic(), None);
-    assert!(
-        rt.take_evolve_failures().is_empty(),
-        "an autofixed build is not a failure the model has to see"
-    );
+    // An autofixed build is not a failure the model has to see, and the
+    // attempt records the patched text the build accepted.
+    assert!(matches!(attempt.ladder(), LadderEvent::Registered { .. }));
+    assert_eq!(attempt.candidate().as_deref(), Some(code.as_str()));
 
     // A candidate with a mechanical slip *and* a real error: the fix is
     // applied, the real error is reported, and the model is told about the
@@ -98,7 +100,8 @@ async fn machine_applicable_suggestions_are_applied_before_asking_the_model() {
             "```rust\nfn autofix_total(values: &[u64]) -> u64 { values.iter().sum() }\n```",
         ),
     ]);
-    rt.evolve(&agent, "Sum the values. Code only.")
+    let info = rt
+        .evolve(&agent, "Sum the values. Code only.")
         .await
         .expect("the model fixes the real error on the retry");
     assert_eq!(agent.calls(), 2);
@@ -130,16 +133,14 @@ async fn machine_applicable_suggestions_are_applied_before_asking_the_model() {
         !errors.contains("f64"),
         "the fixed error must not be reported again, got: {errors}"
     );
-    // The failure record holds the patched candidate: that is the text the
-    // recorded diagnostics are located in, so spans index it directly.
-    let failures = rt.take_evolve_failures();
-    assert_eq!(failures.len(), 1);
+    // The rejected attempt records the patched candidate: that is the text
+    // the recorded diagnostics are located in, so spans index it directly.
+    let rejected = &info.trace().attempts()[0];
+    assert!(matches!(rejected.ladder(), LadderEvent::SelfHeal { .. }));
+    let candidate = rejected.candidate().as_deref().unwrap_or_default();
     assert!(
-        failures[0]
-            .generated_code()
-            .contains("let scale: f64 = 2.0;"),
-        "the failure record holds the text the diagnostics refer to: {}",
-        failures[0].generated_code()
+        candidate.contains("let scale: f64 = 2.0;"),
+        "the attempt records the text the diagnostics refer to: {candidate}"
     );
     assert_eq!(autofix_total(&[3, 3, 4]), 10);
 }

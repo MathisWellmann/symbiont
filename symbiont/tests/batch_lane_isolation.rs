@@ -17,6 +17,7 @@ use common::{
 };
 use symbiont::{
     Error,
+    LadderEvent,
     Lane,
     Profile,
     Runtime,
@@ -80,11 +81,10 @@ async fn a_failing_lane_does_not_disturb_its_siblings() {
     );
 
     // The doomed lane fails in place, with the budget-exhaustion error.
-    match results[1]
+    let doomed = results[1]
         .as_ref()
-        .expect_err("lane 1 never produced Rust and must fail")
-        .error()
-    {
+        .expect_err("lane 1 never produced Rust and must fail");
+    match doomed.error() {
         Error::MaxRetriesExceeded { attempts, .. } => assert_eq!(
             *attempts,
             Runtime::MAX_EVOLVE_ATTEMPTS,
@@ -102,26 +102,41 @@ async fn a_failing_lane_does_not_disturb_its_siblings() {
 
     // Every failure belongs to the lane that produced it, and the retry budget
     // is per lane rather than shared.
-    let failures = rt.take_evolve_failures();
+    let trace = doomed.trace();
+    assert_eq!(trace.lane(), Lane::from(1));
     assert_eq!(
-        failures.len(),
+        trace.attempts().len(),
         Runtime::MAX_EVOLVE_ATTEMPTS,
         "one record per failed attempt of the doomed lane"
     );
+    let (last, healed) = trace
+        .attempts()
+        .split_last()
+        .expect("the lane made attempts");
     assert!(
-        failures.iter().all(|f| f.lane() == Lane::from(1)),
-        "healthy lanes must not contribute failure records, got lanes: {:?}",
-        Vec::from_iter(failures.iter().map(symbiont::EvolveFailure::lane))
+        healed.iter().all(|attempt| matches!(
+            attempt.ladder(),
+            LadderEvent::SelfHeal { kind, .. } if kind == "no_rust_code"
+        )),
+        "the doomed lane only ever answered with prose, got: {:?}",
+        Vec::from_iter(healed.iter().map(|attempt| attempt.ladder()))
     );
     assert!(
-        failures.iter().all(|f| f.kind() == "no_rust_code"),
-        "the doomed lane only ever answered with prose"
+        matches!(last.ladder(), LadderEvent::Terminal { .. }),
+        "the attempt that exhausts the budget ends the lane, got: {:?}",
+        last.ladder()
     );
-    let mut attempts = Vec::from_iter(failures.iter().map(symbiont::EvolveFailure::attempt));
-    attempts.sort_unstable();
     assert_eq!(
-        attempts,
+        Vec::from_iter(trace.attempts().iter().map(|attempt| attempt.attempt())),
         Vec::from_iter(1..=Runtime::MAX_EVOLVE_ATTEMPTS),
         "attempt numbering is per lane and starts at 1"
     );
+    for healthy in [&results[0], &results[2]] {
+        let trace = healthy.as_ref().expect("checked above").trace();
+        assert_eq!(
+            trace.attempts().len(),
+            1,
+            "healthy lanes must not record failures"
+        );
+    }
 }

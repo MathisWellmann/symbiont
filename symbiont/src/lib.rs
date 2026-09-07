@@ -26,7 +26,6 @@ mod error;
 mod evolution_agent;
 mod evolution_trace;
 mod evolve_error;
-mod evolve_failure;
 mod evolve_info;
 mod inference;
 mod init_tracing;
@@ -93,7 +92,6 @@ pub use evolution_trace::{
     TraceOutcome,
 };
 pub use evolve_error::EvolveError;
-pub use evolve_failure::EvolveFailure;
 pub use evolve_info::{
     EvolveInfo,
     Lane,
