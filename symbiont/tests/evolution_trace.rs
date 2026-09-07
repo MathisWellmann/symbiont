@@ -93,6 +93,10 @@ async fn trace_records_the_whole_lane() {
         first.stages().build().is_none(),
         "a response without a code block never reaches the build stage"
     );
+    assert!(
+        first.candidate().is_none(),
+        "a response without a code block has no candidate to record"
+    );
     match first.ladder() {
         LadderEvent::SelfHeal {
             kind,
@@ -127,6 +131,11 @@ async fn trace_records_the_whole_lane() {
         second.stages().build()
     );
     assert!(matches!(second.ladder(), LadderEvent::Registered { .. }));
+    assert_eq!(
+        second.candidate().as_deref(),
+        Some(rt.current_code().as_str()),
+        "the candidate of a registered attempt is the registered source"
+    );
 
     // The outcome agrees with the returned revision.
     match trace.outcome() {

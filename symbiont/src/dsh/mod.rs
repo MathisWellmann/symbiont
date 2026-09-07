@@ -225,6 +225,7 @@ pub(super) mod tests {
                     .build(),
             ),
             StageTimings::default(),
+            None,
             LadderEvent::SelfHeal {
                 kind: "compile".to_string(),
                 diagnostics: "E0277: the trait bound is not satisfied".to_string(),
@@ -244,6 +245,7 @@ pub(super) mod tests {
                     .build(),
             ),
             built_stages(),
+            None,
             LadderEvent::Registered {
                 revision: Revision::new(1),
             },
