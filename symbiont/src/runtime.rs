@@ -1449,6 +1449,9 @@ impl Runtime {
                     .await
                 {
                     Ok(revision) => {
+                        // The registered source is the candidate the build
+                        // accepted, autofixes included.
+                        let candidate = self.revision_code(revision);
                         if publish == Publish::Yes {
                             // The revision built and registered. Only the step
                             // that makes it active can still fail. The trace is
@@ -1460,6 +1463,7 @@ impl Runtime {
                                     attempt_prompt,
                                     run_trace!(),
                                     stages,
+                                    candidate,
                                     LadderEvent::Terminal {
                                         reason: reason.clone(),
                                     },
@@ -1479,6 +1483,7 @@ impl Runtime {
                             attempt_prompt,
                             run_trace!(),
                             stages,
+                            candidate,
                             LadderEvent::Registered { revision },
                             t_attempt.elapsed(),
                         );
@@ -1493,6 +1498,10 @@ impl Runtime {
                             "kind" => failure_kind_of(&e)
                         )
                         .increment(1);
+                        // The text the pipeline rejected, for the trace. Every
+                        // exit of this arm records exactly one attempt, so the
+                        // owned copy moves into whichever `push_attempt` runs.
+                        let candidate = e.candidate().map(str::to_owned);
                         // Record every failure that will feed backpressure to
                         // the agent (including the one that exhausts the
                         // retry budget) so hosts can drain and persist them
@@ -1520,6 +1529,7 @@ impl Runtime {
                                         attempt_prompt,
                                         run_trace!(),
                                         stages,
+                                        candidate.clone(),
                                         LadderEvent::Terminal {
                                             reason: reason.clone(),
                                         },
@@ -1565,6 +1575,7 @@ impl Runtime {
                                     attempt_prompt,
                                     run_trace!(),
                                     stages,
+                                    candidate,
                                     LadderEvent::Terminal {
                                         reason: reason.clone(),
                                     },
@@ -1589,6 +1600,7 @@ impl Runtime {
                                     attempt_prompt,
                                     run_trace!(),
                                     stages,
+                                    candidate,
                                     LadderEvent::Terminal {
                                         reason: reason.clone(),
                                     },
@@ -1616,6 +1628,7 @@ impl Runtime {
                                 attempt_prompt,
                                 run_trace!(),
                                 stages,
+                                candidate,
                                 LadderEvent::ContextReset {
                                     messages_dropped: dropped,
                                     brief: e.to_string(),
@@ -1662,6 +1675,7 @@ impl Runtime {
                                     attempt_prompt,
                                     run_trace!(),
                                     stages,
+                                    candidate,
                                     LadderEvent::Terminal {
                                         reason: reason.clone(),
                                     },
@@ -1701,6 +1715,7 @@ impl Runtime {
                                 attempt_prompt,
                                 run_trace!(),
                                 stages,
+                                candidate,
                                 LadderEvent::TransientRetry {
                                     backoff,
                                     cause: e.to_string(),
@@ -1725,6 +1740,7 @@ impl Runtime {
                                 attempt_prompt,
                                 run_trace!(),
                                 stages,
+                                candidate,
                                 LadderEvent::Terminal {
                                     reason: reason.clone(),
                                 },
@@ -1777,6 +1793,7 @@ impl Runtime {
                                 attempt_prompt,
                                 run_trace!(),
                                 stages,
+                                candidate,
                                 LadderEvent::RepeatReset {
                                     messages_dropped: dropped,
                                     brief: e.to_string(),
@@ -1820,6 +1837,7 @@ impl Runtime {
                                 attempt_prompt,
                                 run_trace!(),
                                 stages,
+                                candidate,
                                 LadderEvent::Terminal {
                                     reason: reason.clone(),
                                 },
@@ -1837,6 +1855,7 @@ impl Runtime {
                             attempt_prompt,
                             run_trace!(),
                             stages,
+                            candidate,
                             LadderEvent::SelfHeal {
                                 kind,
                                 diagnostics: prompt.clone(),

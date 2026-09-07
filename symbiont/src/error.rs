@@ -187,6 +187,27 @@ impl Error {
 }
 
 impl Error {
+    /// The candidate that this failure rejected: the Rust source the
+    /// pipeline validated or compiled, as the compiler saw it.
+    ///
+    /// `None` for a failure that has no candidate of its own. A response
+    /// without a code block or an exhausted turn budget produced nothing.
+    /// A failed edit ([`Error::EditFailed`]) carries the previous candidate,
+    /// which it left unchanged; that text belongs to the attempt before.
+    /// Errors outside the pipeline (provider, IO, dylib load) have none.
+    pub(crate) fn candidate(&self) -> Option<&str> {
+        use Error::*;
+        match self {
+            CouldNotParseRust { code, .. }
+            | SignatureMismatch { code, .. }
+            | UnsafeCode { code, .. }
+            | ForbiddenConstruct { code, .. }
+            | UnimplementedFunction { code, .. }
+            | CompilationFailed { code, .. } => Some(code),
+            _ => None,
+        }
+    }
+
     /// Did the agent run spend its whole tool-call turn budget without an
     /// answer?
     ///

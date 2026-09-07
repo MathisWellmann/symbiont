@@ -136,6 +136,22 @@ pub struct AttemptTrace {
     #[getset(get = "pub")]
     stages: StageTimings,
 
+    /// The Rust source this iteration submitted to the build, as the compiler
+    /// saw it: the response's code block, or the previous candidate with the
+    /// response's edits applied, in both cases after any compiler fixes the
+    /// runtime applied itself (see [`BuildRecord::Built::autofixes`]). The
+    /// spans of a compile failure's diagnostics index this text. On a
+    /// [`LadderEvent::Registered`] iteration it is the registered source.
+    ///
+    /// `None` when the iteration produced no candidate: no code block, an
+    /// exhausted turn budget, a transient inference error, a context-size
+    /// overflow, or an edit that did not apply (the previous candidate stands
+    /// and is on the iteration before). Absent from traces written before
+    /// symbiont 0.38.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[getset(get = "pub")]
+    candidate: Option<String>,
+
     /// What the harness did in response to this iteration.
     #[getset(get = "pub")]
     ladder: LadderEvent,
@@ -484,12 +500,17 @@ impl EvolutionTrace {
     }
 
     /// Append an attempt and assign its [`AttemptTrace::seq`].
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "One parameter per field of the attempt; a builder would only move the list"
+    )]
     pub(crate) fn push_attempt(
         &mut self,
         attempt: usize,
         prompt: String,
         run: Option<RunTrace>,
         stages: StageTimings,
+        candidate: Option<String>,
         ladder: LadderEvent,
         duration: Duration,
     ) {
@@ -499,6 +520,7 @@ impl EvolutionTrace {
             prompt,
             run,
             stages,
+            candidate,
             ladder,
             duration,
         });
@@ -557,6 +579,7 @@ mod tests {
             prompt: "p".to_string(),
             run,
             stages: StageTimings::default(),
+            candidate: None,
             ladder: LadderEvent::Terminal {
                 reason: "done".to_string(),
             },
@@ -702,6 +725,45 @@ mod tests {
         assert!(heal.render_ladder().contains("docs attached for Account"));
     }
 
+    /// The candidate added in 0.38 is absent from a 0.37 attempt and must read
+    /// back as `None`. An attempt without one serializes without the field,
+    /// so the persisted shape of such an attempt did not change.
+    #[test]
+    fn candidate_is_optional_in_the_wire_shape() {
+        let attempt_0_37 = serde_json::json!({
+            "seq": 0, "attempt": 1, "prompt": "p", "run": null,
+            "stages": {},
+            "ladder": { "event": "terminal", "reason": "gave up" },
+            "duration": { "secs": 1, "nanos": 0 }
+        });
+        let old: AttemptTrace =
+            serde_json::from_value(attempt_0_37).expect("a 0.37 attempt deserializes");
+        assert!(old.candidate().is_none());
+        let back = serde_json::to_value(&old).expect("serializes");
+        assert!(back.get("candidate").is_none(), "{back}");
+
+        let mut trace = EvolutionTrace::new(
+            String::new(),
+            String::new(),
+            Lane::from(0),
+            String::new(),
+            String::new(),
+        );
+        trace.push_attempt(
+            1,
+            "p".to_string(),
+            None,
+            StageTimings::default(),
+            Some("fn f() {}".to_string()),
+            LadderEvent::Registered {
+                revision: Revision::new(1),
+            },
+            Duration::ZERO,
+        );
+        let value = serde_json::to_value(&trace.attempts[0]).expect("serializes");
+        assert_eq!(value["candidate"], "fn f() {}");
+    }
+
     /// `push_attempt` assigns a dense `seq` even when `attempt` repeats. The
     /// `attempt` counter repeats across a transient retry.
     #[test]
@@ -719,6 +781,7 @@ mod tests {
                 "p".to_string(),
                 None,
                 StageTimings::default(),
+                None,
                 LadderEvent::TransientRetry {
                     backoff: Duration::from_secs(1),
                     cause: "503".to_string(),

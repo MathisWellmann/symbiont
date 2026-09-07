@@ -518,6 +518,7 @@ mod tests {
                     .build(),
             ),
             StageTimings::default(),
+            None,
             LadderEvent::Registered {
                 revision: Revision::new(1),
             },
@@ -588,6 +589,7 @@ mod tests {
             "base".to_string(),
             None,
             StageTimings::default(),
+            None,
             LadderEvent::Terminal {
                 reason: "gave up".to_string(),
             },
@@ -624,6 +626,7 @@ mod tests {
             "base".to_string(),
             None,
             StageTimings::default(),
+            None,
             LadderEvent::TransientRetry {
                 backoff: Duration::from_secs(2),
                 cause: "503 Service Unavailable".to_string(),
