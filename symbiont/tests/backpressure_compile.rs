@@ -16,6 +16,7 @@ use common::{
     Turn,
 };
 use symbiont::{
+    LadderEvent,
     Profile,
     Runtime,
 };
@@ -51,7 +52,8 @@ async fn compile_failure_feeds_compiler_diagnostics_back() {
         Turn::reply("```rust\npub fn bp_compile_step(counter: &mut usize) { *counter += 9; }\n```"),
     ]);
 
-    rt.evolve(&agent, BASE_PROMPT)
+    let info = rt
+        .evolve(&agent, BASE_PROMPT)
         .await
         .expect("evolution should succeed after one self-healing retry");
 
@@ -80,29 +82,29 @@ async fn compile_failure_feeds_compiler_diagnostics_back() {
          surfaces only errors, got: {retry_prompt}"
     );
 
-    // The failed attempt is recorded for the host to persist and analyze.
-    let failures = rt.take_evolve_failures();
-    assert_eq!(
-        failures.len(),
-        1,
-        "exactly the one compile failure should be recorded"
-    );
-    let failure = &failures[0];
+    // The failed attempt is in the trace for the host to persist and analyze.
+    let trace = info.trace();
+    assert_eq!(trace.attempts().len(), 2, "one rejection plus one success");
+    let failure = &trace.attempts()[0];
     assert_eq!(failure.attempt(), 1, "the first attempt failed");
-    assert_eq!(failure.kind(), "compile");
+    let LadderEvent::SelfHeal {
+        kind, diagnostics, ..
+    } = failure.ladder()
+    else {
+        panic!("expected a self-heal, got: {:?}", failure.ladder());
+    };
+    assert_eq!(kind, "compile");
     assert!(
-        failure.generated_code().contains("definitely not a usize"),
-        "the failed source must be recorded, got: {}",
-        failure.generated_code()
+        failure
+            .candidate()
+            .as_deref()
+            .is_some_and(|code| code.contains("definitely not a usize")),
+        "the failed source must be recorded, got: {:?}",
+        failure.candidate()
     );
     assert!(
-        failure.diagnostics().contains("mismatched types"),
-        "the rustc diagnostics must be recorded, got: {}",
-        failure.diagnostics()
-    );
-    assert!(
-        rt.take_evolve_failures().is_empty(),
-        "draining must clear the recorded failures"
+        diagnostics.contains("mismatched types"),
+        "the rustc diagnostics must be recorded, got: {diagnostics}"
     );
 
     // The hot-swapped implementation is live.

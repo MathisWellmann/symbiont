@@ -18,6 +18,7 @@ use common::{
 };
 use symbiont::{
     EditRecord,
+    LadderEvent,
     Profile,
     Runtime,
 };
@@ -190,7 +191,8 @@ async fn failed_edit(rt: &Runtime) {
         Turn::reply("```rust-edit\nE3 => 1\n```"),
         Turn::reply("```rust-edit\nE1 => 1\nE2 => as u64 *\n```"),
     ]);
-    rt.evolve(&agent, PROMPT)
+    let info = rt
+        .evolve(&agent, PROMPT)
         .await
         .expect("the third response repairs the candidate");
     assert_eq!(agent.calls(), 3);
@@ -203,10 +205,21 @@ async fn failed_edit(rt: &Runtime) {
         nudge.contains("previous code is unchanged"),
         "the agent is told the base still stands, got: {nudge}"
     );
-    let failures = rt.take_evolve_failures();
-    let kinds: Vec<&str> = failures.iter().map(|f| f.kind()).collect();
+    let kinds: Vec<&str> = info
+        .trace()
+        .attempts()
+        .iter()
+        .filter_map(|attempt| match attempt.ladder() {
+            LadderEvent::SelfHeal { kind, .. } => Some(kind.as_str()),
+            _ => None,
+        })
+        .collect();
     assert!(
         kinds.contains(&"edit"),
         "the failed edit is recorded as its own failure kind, got: {kinds:?}"
+    );
+    assert!(
+        info.trace().attempts()[1].candidate().is_none(),
+        "a failed edit has no candidate of its own; the base stands"
     );
 }

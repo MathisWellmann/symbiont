@@ -31,8 +31,8 @@ shared prefill away.
 
 **Failures are per lane.** Each lane owns its retry budget and chat history, so
 one lane answering with prose ten times does not cost its siblings anything.
-The report groups `EvolveFailure` records by `lane()`, which is how you tell an
-unproductive prompt variant from a broken batch.
+The report reads the self-heal attempts out of each lane's `EvolutionTrace`,
+which is how you tell an unproductive prompt variant from a broken batch.
 
 ## Running
 

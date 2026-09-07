@@ -16,6 +16,7 @@ use common::{
     Turn,
 };
 use symbiont::{
+    LadderEvent,
     Profile,
     Runtime,
 };
@@ -47,7 +48,8 @@ async fn unsafe_code_is_rejected_and_recovered_from() {
         Turn::reply("```rust\npub fn bp_unsafe_step(counter: &mut usize) { *counter = 9; }\n```"),
     ]);
 
-    rt.evolve(&agent, BASE_PROMPT)
+    let info = rt
+        .evolve(&agent, BASE_PROMPT)
         .await
         .expect("evolution should succeed after one self-healing retry");
 
@@ -67,11 +69,19 @@ async fn unsafe_code_is_rejected_and_recovered_from() {
         "retry prompt must name the offending construct, got: {retry_prompt}"
     );
 
-    // The failure record is drained with the `unsafe` kind.
-    let failures = rt.take_evolve_failures();
-    assert_eq!(failures.len(), 1);
-    assert_eq!(failures[0].kind(), "unsafe");
-    assert!(failures[0].generated_code().contains("unsafe"));
+    // The trace records the rejection with the `unsafe` kind.
+    let rejected = &info.trace().attempts()[0];
+    assert!(
+        matches!(rejected.ladder(), LadderEvent::SelfHeal { kind, .. } if kind == "unsafe"),
+        "got: {:?}",
+        rejected.ladder()
+    );
+    assert!(
+        rejected
+            .candidate()
+            .as_deref()
+            .is_some_and(|code| code.contains("unsafe"))
+    );
 
     // The hot-swapped safe implementation is live.
     let mut counter = 0;

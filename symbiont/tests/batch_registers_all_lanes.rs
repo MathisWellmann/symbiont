@@ -59,10 +59,11 @@ async fn every_lane_registers_a_revision_without_activating_it() {
         prompts.len(),
         "one result per prompt, positionally aligned"
     );
-    let revisions = Vec::from_iter(results.into_iter().map(|r| {
-        r.expect("every lane was given a compiling implementation and should succeed")
-            .revision()
-    }));
+    let infos =
+        Vec::from_iter(results.into_iter().map(|r| {
+            r.expect("every lane was given a compiling implementation and should succeed")
+        }));
+    let revisions = Vec::from_iter(infos.iter().map(|info| info.revision()));
     assert_eq!(agent.calls(), 3, "one agent run per lane, no retries");
 
     // Initial build plus one revision per lane, all distinct.
@@ -119,7 +120,7 @@ async fn every_lane_registers_a_revision_without_activating_it() {
     assert_eq!(counter, 30, "the activated candidate is now live");
 
     assert!(
-        rt.take_evolve_failures().is_empty(),
-        "no lane failed, so nothing should be recorded"
+        infos.iter().all(|info| info.trace().attempts().len() == 1),
+        "no lane failed, so every trace holds its one registered attempt"
     );
 }

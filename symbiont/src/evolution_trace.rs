@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
 //! The [`EvolutionTrace`]: the full agent trajectory of one evolution lane.
 //!
-//! [`crate::EvolveFailure`] records only the rejections that fed backpressure
-//! to the agent. A trace records the whole lane. It holds every prompt and
-//! nudge, every assistant turn and tool exchange, and every recovery decision.
-//! It also holds the per-request token breakdown, the per-stage timings and
-//! the final outcome. A host persists a trace to find offline why a lane ended
-//! the way it did.
+//! A trace records the whole lane. It holds every prompt and nudge, every
+//! assistant turn and tool exchange, every candidate the pipeline saw, and
+//! every recovery decision. It also holds the per-request token breakdown,
+//! the per-stage timings and the final outcome. A host persists a trace to
+//! find offline why a lane ended the way it did, or which failure kinds a
+//! prompt keeps running into: the rejected attempts are the ones whose
+//! [`AttemptTrace::ladder`] is a [`LadderEvent::SelfHeal`].
 //!
 //! The transcript is stored **once** per lane. Each attempt records the range
 //! of [`EvolutionTrace::history`] that it produced instead of its own copy.
@@ -103,9 +104,8 @@ pub struct AttemptTrace {
     #[getset(get_copy = "pub")]
     seq: usize,
 
-    /// The lane's self-healing attempt counter at this iteration. It uses the
-    /// same numbering as [`crate::EvolveFailure::attempt`] and the `attempt`
-    /// metric label.
+    /// The lane's self-healing attempt counter at this iteration, 1-based. It
+    /// uses the same numbering as the `attempt` metric label.
     ///
     /// **Not unique across entries.** A transient HTTP retry does not consume
     /// the attempt budget by design. Two entries in sequence can thus carry
@@ -338,8 +338,8 @@ pub enum BuildRecord {
 /// gives the recovery path of the lane, such as `SelfHeal → SelfHeal →
 /// Terminal`, or `TransientRetry → SelfHeal → Registered`.
 // Tagged `event` and not `kind`: `SelfHeal` carries its own `kind` field, which
-// mirrors `EvolveFailure::kind`. Serde forbids a variant field that collides
-// with the internal tag.
+// mirrors the `kind` label of the failure metric. Serde forbids a variant
+// field that collides with the internal tag.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum LadderEvent {
@@ -351,10 +351,10 @@ pub enum LadderEvent {
     },
     /// The harness fed the failure back to the agent as a corrective nudge.
     SelfHeal {
-        /// Failure kind. It uses the same labels as
-        /// [`crate::EvolveFailure::kind`]: `no_rust_code`, `parse`,
-        /// `max_turns`, `signature`, `unsafe`, `forbidden`, `compile` or
-        /// `edit`.
+        /// Failure kind. It uses the same labels as the `kind` label of
+        /// [`crate::observability::EVOLVE_FAILURES`]: `no_rust_code`,
+        /// `parse`, `max_turns`, `signature`, `unsafe`, `forbidden`,
+        /// `unimplemented`, `compile` or `edit`.
         ///
         /// A `String`, and not the `&'static str` that the producing side
         /// holds. A persisted trace must deserialize without a borrow from the

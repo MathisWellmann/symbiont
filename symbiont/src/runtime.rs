@@ -61,7 +61,6 @@ use crate::{
     EvolutionTrace,
     EvolvableDecl,
     EvolveError,
-    EvolveFailure,
     EvolveInfo,
     FullSource,
     LadderEvent,
@@ -275,10 +274,6 @@ pub struct Runtime {
     /// protocol and the export wrappers. See [`crate::layout`]. Rendered once
     /// here, appended to every candidate.
     glue: String,
-    /// Failed attempts of the most recent [`Runtime::evolve`] call that fed
-    /// backpressure to the agent; drained by
-    /// [`Runtime::take_evolve_failures`].
-    evolve_failures: RwLock<Vec<EvolveFailure>>,
     /// Serializes the compile-and-register critical section.
     ///
     /// Everything guarded by it is process-wide shared state: the generated
@@ -451,7 +446,6 @@ impl Runtime {
             profile: config.profile(),
             prelude,
             glue,
-            evolve_failures: RwLock::new(Vec::new()),
             build_slot: tokio::sync::Mutex::new(()),
             // Unlimited until a caller asks for a limit, so a host that only
             // ever calls `evolve` is unaffected.
@@ -1070,10 +1064,11 @@ impl Runtime {
     /// request restarts from `base_prompt` with an explicit do-not-repeat
     /// instruction. Such attempts still count against the retry budget.
     ///
-    /// Every failure that feeds backpressure to the agent is recorded and
-    /// can be drained afterwards with [`Runtime::take_evolve_failures`],
-    /// e.g. to persist the compiler diagnostics of failed attempts for
-    /// offline analysis.
+    /// Every attempt, rejected or registered, is in the [`EvolutionTrace`]
+    /// of the result: [`EvolveInfo::trace`] on success, [`EvolveError::trace`]
+    /// on failure. A rejected attempt records the candidate the pipeline
+    /// turned down and the diagnostics it fed back, so a host can persist
+    /// the compiler output of failed attempts for offline analysis.
     ///
     /// # Contract
     ///
@@ -1096,11 +1091,6 @@ impl Runtime {
             // Checked up front as well as in `publish_revision`, so a contract
             // violation surfaces before minutes of inference rather than after.
             Self::assert_no_calls_in_flight();
-
-            self.evolve_failures
-                .write()
-                .map_err(|_| Error::MutexPoison)?
-                .clear();
 
             self.evolve_lane(agent, base_prompt, Lane::from(0), Publish::Yes)
                 .await
@@ -1155,9 +1145,9 @@ impl Runtime {
     ///
     /// # Failures
     ///
-    /// The failure buffer is cleared once for the whole batch, then filled by
-    /// all lanes in completion order. Group the drained records by
-    /// [`EvolveFailure::lane`] to see what each prompt variant struggled with.
+    /// Each lane's rejected attempts are in its own [`EvolutionTrace`], on the
+    /// `Ok` and on the `Err` side alike. The trace sits at the lane's index,
+    /// so what each prompt variant struggled with needs no attribution step.
     #[expect(
         clippy::manual_async_fn,
         reason = "Ensure the future is `Send` such that it works better with tokios multi-thread runtime"
@@ -1174,17 +1164,6 @@ impl Runtime {
         async move {
             if prompts.is_empty() {
                 return Vec::new();
-            }
-            match self.evolve_failures.write() {
-                Ok(mut failures) => failures.clear(),
-                // Every lane would fail on the same poisoned lock; report it
-                // once per lane rather than pretending the batch ran.
-                Err(_) => {
-                    return prompts
-                        .iter()
-                        .map(|_| Err(EvolveError::from(Error::MutexPoison)))
-                        .collect();
-                }
             }
 
             info!(
@@ -1254,15 +1233,8 @@ impl Runtime {
     /// }
     /// ```
     ///
-    /// # Failures
-    ///
-    /// Unlike [`Runtime::evolve_batch`] this does **not** clear the
-    /// failure buffer: a round that cleared it would discard the records of an
-    /// overlapping round that is still running, which is the case this method
-    /// exists for. Drain it yourself with
-    /// [`Runtime::take_evolve_failures`] — grouping by [`EvolveFailure::lane`]
-    /// is only unambiguous within one round, so drain between rounds if you
-    /// need to attribute them.
+    /// Every lane carries its own [`EvolutionTrace`], so overlapping rounds
+    /// share no state that one round could clobber for another.
     pub fn evolve_batch_stream<'a, AgentT, S>(
         &'a self,
         agent: &'a AgentT,
@@ -1320,10 +1292,8 @@ impl Runtime {
     ///
     /// This is the body shared by [`Runtime::evolve`] (one lane, publishing)
     /// and [`Runtime::evolve_batch`] (`n` concurrent lanes, not publishing).
-    /// It does not clear the failure buffer — the caller owns that, since a
-    /// batch clears once for the whole round rather than once per lane.
     ///
-    /// `lane` only labels the [`EvolveFailure`] records this lane produces.
+    /// `lane` only labels the [`EvolutionTrace`] this lane produces.
     ///
     /// On success, the returned [`EvolveInfo`] carries the lane's total
     /// token usage across all of its attempts — a rejected attempt's tokens
@@ -1361,8 +1331,9 @@ impl Runtime {
             // Wall time the lane has lost to transient failures so far, the
             // second bound on them beside the count.
             let mut transient_elapsed = Duration::ZERO;
-            // Code of the most recent rejected attempt, used to detect an
-            // agent that echoes the same broken code back verbatim.
+            // Candidate of the agent's most recent answer (`None` for an
+            // answer without code), used to detect an agent that echoes the
+            // same broken code back verbatim.
             let mut last_failed_code: Option<String> = None;
             // The candidate the next response may edit instead of retyping:
             // the most recent one that parsed and validated, with the
@@ -1502,45 +1473,20 @@ impl Runtime {
                         // exit of this arm records exactly one attempt, so the
                         // owned copy moves into whichever `push_attempt` runs.
                         let candidate = e.candidate().map(str::to_owned);
-                        // Record every failure that will feed backpressure to
-                        // the agent (including the one that exhausts the
-                        // retry budget) so hosts can drain and persist them
-                        // via `take_evolve_failures` for offline analysis.
-                        // Along the way, detect a verbatim repeat of the
-                        // previously rejected code.
-                        let mut repeated = false;
-                        if let Some(failure) = EvolveFailure::from_error(&e, attempts, lane) {
-                            let code = failure.generated_code();
-                            // A failed edit records the base it left
-                            // unchanged, which is the code of the failure
-                            // before it. That is not the agent echoing
-                            // itself; the base stays the reference.
-                            if !matches!(e, Error::EditFailed { .. }) {
-                                repeated = !code.is_empty()
-                                    && last_failed_code.as_deref() == Some(code.as_str());
-                                last_failed_code = Some(code.clone());
-                            }
-                            match self.evolve_failures.write() {
-                                Ok(mut failures) => failures.push(failure),
-                                Err(_) => {
-                                    let reason = Error::MutexPoison.to_string();
-                                    trace.push_attempt(
-                                        attempts,
-                                        attempt_prompt,
-                                        run_trace!(),
-                                        stages,
-                                        candidate.clone(),
-                                        LadderEvent::Terminal {
-                                            reason: reason.clone(),
-                                        },
-                                        t_attempt.elapsed(),
-                                    );
-                                    return Err(EvolveError::new(
-                                        Error::MutexPoison,
-                                        finish!(TraceOutcome::Failed { reason }),
-                                    ));
-                                }
-                            }
+                        // A verbatim repeat of the previously rejected code.
+                        // The reference is the last answer the agent gave,
+                        // with code or without: the same code after a prose
+                        // answer is not an echo. A failed edit is not an
+                        // answer of its own (it left the previous candidate
+                        // standing), and a transport failure is not one
+                        // either; neither moves the reference.
+                        let answered = candidate.is_some()
+                            || matches!(e, Error::NoRustCode)
+                            || e.exhausted_tool_turns();
+                        let repeated = candidate.as_deref().is_some_and(|code| !code.is_empty())
+                            && last_failed_code == candidate;
+                        if answered {
+                            last_failed_code.clone_from(&candidate);
                         }
                         // What the next response may edit. A candidate the
                         // compiler rejected is a valid edit base: it parsed,
@@ -1884,31 +1830,6 @@ impl Runtime {
         // SAFETY: TAKE_PANIC_PTR is only ever set from `__symbiont_take_panic`
         // symbols resolved out of libraries the registry keeps loaded.
         unsafe { crate::revision::read_panic_buffer(ptr.cast_const()) }
-    }
-
-    /// Drain the failed attempts recorded during the most recent
-    /// [`Runtime::evolve`] or [`Runtime::evolve_batch`] call.
-    ///
-    /// Each entry is one failure that fed backpressure to the agent inside
-    /// the self-healing loop: missing code blocks, parse errors, exhausted
-    /// tool-call turn budgets, signature mismatches, and compilation
-    /// failures (with the full rustc diagnostics). Transient provider errors
-    /// and context-window resets are not recorded.
-    ///
-    /// The buffer is cleared at the start of every `evolve` call and by this
-    /// method, so drain it right after `evolve` returns — including on
-    /// `Err`, where the recorded failures explain what exhausted the retry
-    /// budget. Persist them (e.g. to a database) to analyze common failure
-    /// patterns of the generation agent offline.
-    ///
-    /// A batch clears the buffer once for the whole round, not once per lane,
-    /// then fills it from all lanes in completion order. Group by
-    /// [`EvolveFailure::lane`] to attribute records back to their prompt.
-    pub fn take_evolve_failures(&self) -> Vec<EvolveFailure> {
-        self.evolve_failures
-            .write()
-            .map(|mut failures| std::mem::take(&mut *failures))
-            .unwrap_or_default()
     }
 
     /// Path to the temporary crate directory.

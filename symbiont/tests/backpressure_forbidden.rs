@@ -16,6 +16,7 @@ use common::{
     Turn,
 };
 use symbiont::{
+    LadderEvent,
     Profile,
     Runtime,
 };
@@ -49,7 +50,8 @@ async fn forbidden_construct_is_rejected_and_recovered_from() {
         ),
     ]);
 
-    rt.evolve(&agent, BASE_PROMPT)
+    let info = rt
+        .evolve(&agent, BASE_PROMPT)
         .await
         .expect("evolution should succeed after one self-healing retry");
 
@@ -73,11 +75,19 @@ async fn forbidden_construct_is_rejected_and_recovered_from() {
         "retry prompt must explain the reason, got: {retry_prompt}"
     );
 
-    // The failure record is drained with the `forbidden` kind.
-    let failures = rt.take_evolve_failures();
-    assert_eq!(failures.len(), 1);
-    assert_eq!(failures[0].kind(), "forbidden");
-    assert!(failures[0].generated_code().contains("static CALLS"));
+    // The trace records the rejection with the `forbidden` kind.
+    let rejected = &info.trace().attempts()[0];
+    assert!(
+        matches!(rejected.ladder(), LadderEvent::SelfHeal { kind, .. } if kind == "forbidden"),
+        "got: {:?}",
+        rejected.ladder()
+    );
+    assert!(
+        rejected
+            .candidate()
+            .as_deref()
+            .is_some_and(|code| code.contains("static CALLS"))
+    );
 
     // The hot-swapped implementation is live.
     let mut counter = 0;

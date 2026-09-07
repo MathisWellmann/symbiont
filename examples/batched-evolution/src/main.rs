@@ -46,7 +46,7 @@ use std::{
 
 use symbiont::{
     DocMode,
-    Lane,
+    LadderEvent,
     Revision,
     Runtime,
 };
@@ -342,22 +342,31 @@ async fn main() -> symbiont::Result<()> {
         batch_time.as_secs_f64(),
     );
 
-    // Failures are attributed to the lane that produced them, so a host can
-    // see which prompt variants are unproductive rather than just that
+    // Each lane's trace holds its own rejected attempts, so a host can see
+    // which prompt variants are unproductive rather than just that
     // "something failed".
-    let failures = runtime.take_evolve_failures();
-    if !failures.is_empty() {
-        println!("\nSelf-healing retries by lane:");
-        for lane in 0..prompts.len() {
-            let kinds = Vec::from_iter(
-                failures
+    let mut header_printed = false;
+    for (lane, result) in results.iter().enumerate() {
+        let trace = match result {
+            Ok(info) => info.trace(),
+            Err(e) => e.trace(),
+        };
+        let kinds =
+            Vec::from_iter(
+                trace
+                    .attempts()
                     .iter()
-                    .filter(|f| f.lane() == Lane::from(lane as u32))
-                    .map(symbiont::EvolveFailure::kind),
+                    .filter_map(|attempt| match attempt.ladder() {
+                        LadderEvent::SelfHeal { kind, .. } => Some(kind.as_str()),
+                        _ => None,
+                    }),
             );
-            if !kinds.is_empty() {
-                println!("  lane {lane}: {kinds:?}");
+        if !kinds.is_empty() {
+            if !header_printed {
+                println!("\nSelf-healing retries by lane:");
+                header_printed = true;
             }
+            println!("  lane {lane}: {kinds:?}");
         }
     }
 
