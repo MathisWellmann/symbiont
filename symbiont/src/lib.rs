@@ -17,7 +17,6 @@ mod decl;
 mod diagnostics;
 mod doc_index;
 mod doc_string;
-mod doc_tools;
 pub mod dsh;
 mod dylib_config;
 mod dylib_dependency;
@@ -34,10 +33,10 @@ pub mod observability;
 mod parser;
 mod profile;
 mod revision;
-mod revision_tool;
 mod runtime;
 mod system_prompt;
 mod thinking_level;
+pub mod tools;
 mod unwind;
 mod utils;
 mod validation;
@@ -56,10 +55,6 @@ pub use diagnostics::{
 pub use doc_index::{
     DocIndex,
     DocIndexError,
-};
-pub use doc_tools::{
-    ApiDocTool,
-    ApiIndexTool,
 };
 #[cfg(feature = "dsh-export")]
 pub use dsh::export_dsh_session;
@@ -112,11 +107,6 @@ pub use revision::{
     Revision,
     RevisionFn,
 };
-pub use revision_tool::{
-    RevisionSourceArgs,
-    RevisionSourceError,
-    RevisionSourceTool,
-};
 // Reachable through `AgentRun::completion_calls`, so hosts need it nameable
 // without depending on `rig-agent` directly.
 pub use rig_agent::agent::CompletionCall;
@@ -154,6 +144,15 @@ pub use system_prompt::{
     system_prompt,
 };
 pub use thinking_level::ThinkingLevel;
+// The built-in tools stay nameable at the crate root, where `ApiDocTool` and
+// `ApiIndexTool` have always lived; `tools` groups them with their arguments.
+pub use tools::{
+    ApiDocTool,
+    ApiIndexTool,
+    RevisionSourceArgs,
+    RevisionSourceError,
+    RevisionSourceTool,
+};
 
 /// The agent the runtime drives: a [`rig_agent::Agent`] plus the base URL of
 /// the provider it talks to, so the runtime can name the provider in the
