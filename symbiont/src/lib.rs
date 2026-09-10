@@ -34,6 +34,7 @@ pub mod observability;
 mod parser;
 mod profile;
 mod revision;
+mod revision_tool;
 mod runtime;
 mod system_prompt;
 mod thinking_level;
@@ -110,6 +111,11 @@ pub use profile::Profile;
 pub use revision::{
     Revision,
     RevisionFn,
+};
+pub use revision_tool::{
+    RevisionSourceArgs,
+    RevisionSourceError,
+    RevisionSourceTool,
 };
 // Reachable through `AgentRun::completion_calls`, so hosts need it nameable
 // without depending on `rig-agent` directly.
