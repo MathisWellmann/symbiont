@@ -10,10 +10,13 @@ use common::{
     ScriptedAgent,
     Turn,
 };
+use rig_core::tool::PortableTool;
 use symbiont::{
     Error,
     Profile,
     Revision,
+    RevisionSourceError,
+    RevisionSourceTool,
     Runtime,
 };
 
@@ -115,6 +118,40 @@ async fn revisions_are_retained_and_activatable() {
     ));
     assert_eq!(rt.active_revision(), Revision::INITIAL);
     assert!(rt.revision_code(Revision::new(99)).is_none());
+
+    // -- The `revision_source` tool over the live registry --------------------
+
+    // The tool reads the same registry: the active revision without
+    // arguments, any registered revision by number, and a model-visible
+    // error for a number that is not registered.
+    let tool = RevisionSourceTool::new(rt);
+    let shown = PortableTool::call(&tool, revision_source_args(None))
+        .await
+        .expect("the active revision is registered");
+    assert_eq!(
+        shown,
+        "Revision 0 (active; initial build from the default bodies). Registered revisions: 0..=2.\n\n\
+         pub fn rev_step(counter: &mut usize) {\n    *counter += 1;\n}\n"
+    );
+    let shown = PortableTool::call(&tool, revision_source_args(Some(2)))
+        .await
+        .expect("revision 2 is registered");
+    assert_eq!(
+        shown,
+        "Revision 2. Registered revisions: 0..=2.\n\n\
+         pub fn rev_step(counter: &mut usize) { *counter += 7; }\n"
+    );
+    let err = PortableTool::call(&tool, revision_source_args(Some(99)))
+        .await
+        .expect_err("revision 99 is not registered");
+    assert_eq!(
+        err,
+        RevisionSourceError::UnknownRevision {
+            requested: Revision::new(99),
+            latest: rev_plus_7,
+            active: Revision::INITIAL,
+        }
+    );
 
     // Evolving after a rollback appends on top of the registry; earlier
     // revisions are never overwritten.
@@ -228,4 +265,14 @@ async fn revisions_are_retained_and_activatable() {
             "evolve call {call} must start with an empty chat history"
         );
     }
+}
+
+/// The tool's arguments as the model sends them: a JSON object with an
+/// optional integer `revision`.
+fn revision_source_args(revision: Option<u64>) -> symbiont::RevisionSourceArgs {
+    let json = match revision {
+        Some(revision) => serde_json::json!({ "revision": revision }),
+        None => serde_json::json!({}),
+    };
+    serde_json::from_value(json).expect("the arguments match the tool's schema")
 }
