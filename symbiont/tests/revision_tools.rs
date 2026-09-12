@@ -28,6 +28,8 @@ use symbiont::{
     Revision,
     RevisionToolError,
     Runtime,
+    SubmitRevisionArgs,
+    SubmitRevisionTool,
     ToolBuildOutcome,
 };
 
@@ -36,6 +38,14 @@ type Verdicts = Arc<Mutex<Vec<String>>>;
 
 async fn build(rt: &'static Runtime, code: &str) -> Result<String, RevisionToolError> {
     PortableTool::call(&BuildRevisionTool::new(rt), BuildRevisionArgs::new(code)).await
+}
+
+async fn submit(revision: u64) -> Result<String, RevisionToolError> {
+    PortableTool::call(
+        &SubmitRevisionTool,
+        SubmitRevisionArgs::new(Revision::new(revision)),
+    )
+    .await
 }
 
 /// The model's first run: it builds through the tool, reads each verdict,
@@ -76,6 +86,10 @@ async fn build_reject_repeat_register(rt: &'static Runtime, seen: Verdicts) -> S
     ignore = "compiles and dlopens dylibs, which Miri does not support"
 )]
 #[tracing_test::traced_test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "The Runtime singleton allows one runtime per process, so every scenario lives in one sequential test"
+)]
 async fn revision_tools_drive_the_pipeline_from_inside_a_run() {
     symbiont::evolvable! {
         fn tool_step(x: f64) -> f64 {
@@ -195,4 +209,95 @@ async fn revision_tools_drive_the_pipeline_from_inside_a_run() {
         "the response's code was the tool-built revision: {:?}",
         stages.build()
     );
+
+    // -- `submit_revision`: two candidates, a choice, no code in the reply --
+
+    let verdicts: Verdicts = Arc::default();
+    let seen = Arc::clone(&verdicts);
+    let agent = ScriptedAgent::new([Turn::with_tools(move || build_two_and_choose(rt, seen))]);
+    let info = rt
+        .evolve(&agent, "Try two variants and keep the better one.")
+        .await
+        .expect("the choice is the answer");
+    assert_eq!(
+        info.revision(),
+        Revision::new(3),
+        "the chosen one, not the last built"
+    );
+    assert_eq!(tool_step(2.0), 12.0, "the chosen revision is active");
+    assert_eq!(rt.revision_count(), 4);
+    let verdicts = verdicts.lock().expect("not poisoned").clone();
+    assert!(
+        matches!(&verdicts[..], [_, _, refused, chosen]
+            if refused.contains("not built in this lane") && chosen.starts_with("Revision 3 is chosen.")),
+        "{verdicts:#?}"
+    );
+    let stages = info.trace().attempts()[0].stages();
+    assert_eq!(stages.tool_builds().len(), 2);
+    assert!(
+        stages.build().is_none(),
+        "a chosen revision spends no build in the response path: {:?}",
+        stages.build()
+    );
+
+    // -- A run that builds but does not choose is nudged for the choice ----
+
+    let agent = ScriptedAgent::new([
+        Turn::with_tools(move || build_and_forget(rt)),
+        // The nudge names the text form; the model uses it.
+        Turn::reply("Keeping the faster one.\nrevision: 4"),
+    ]);
+    let info = rt
+        .evolve(&agent, "Halve the input.")
+        .await
+        .expect("the text form of the choice is accepted");
+    assert_eq!(info.revision(), Revision::new(4));
+    assert_eq!(agent.calls(), 2);
+    let nudge = agent.prompt(1);
+    assert!(
+        nudge.contains("You built revisions 4 with the tools but did not choose one"),
+        "{nudge}"
+    );
+    assert!(nudge.contains("`revision: N`"), "{nudge}");
+    assert!(
+        matches!(
+            info.trace().attempts()[0].ladder(),
+            symbiont::LadderEvent::SelfHeal { kind, .. } if kind == "unsubmitted"
+        ),
+        "{:?}",
+        info.trace().attempts()[0].ladder()
+    );
+}
+
+/// Two candidates through the tool; the model then tries to choose a
+/// revision it did not build, and chooses one it did.
+async fn build_two_and_choose(rt: &'static Runtime, seen: Verdicts) -> String {
+    let record = |verdict: String| seen.lock().expect("not poisoned").push(verdict);
+    record(
+        build(rt, "fn tool_step(x: f64) -> f64 { x * 5.0 }")
+            .await
+            .expect("registered"),
+    );
+    record(
+        build(rt, "fn tool_step(x: f64) -> f64 { x * 6.0 }")
+            .await
+            .expect("registered"),
+    );
+    record(
+        submit(1)
+            .await
+            .expect_err("revision 1 belongs to the earlier lane")
+            .to_string(),
+    );
+    record(submit(3).await.expect("built here"));
+    "Revision 3 multiplies by six, which the task asked for.".to_string()
+}
+
+/// One candidate through the tool, then a reply that neither chooses it
+/// nor carries code.
+async fn build_and_forget(rt: &'static Runtime) -> String {
+    build(rt, "fn tool_step(x: f64) -> f64 { x / 2.0 }")
+        .await
+        .expect("registered");
+    "I built a candidate that halves the input.".to_string()
 }

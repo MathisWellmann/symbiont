@@ -63,6 +63,18 @@ pub enum RevisionToolError {
         /// The revisions the lane registered through the tools.
         built: Vec<Revision>,
     },
+    /// The agent chose a revision this lane did not build.
+    #[error(
+        "revision {requested} was not built in this lane; you can only submit one of the \
+         revisions you built here: {}",
+        revision_list(built)
+    )]
+    NotBuiltHere {
+        /// The revision the agent asked for.
+        requested: Revision,
+        /// The revisions the lane registered through the tools.
+        built: Vec<Revision>,
+    },
     /// The harness itself failed (IO, dylib load): nothing the agent can
     /// repair.
     #[error("the harness failed: {0}")]
@@ -78,6 +90,7 @@ impl RevisionToolError {
             Self::OutsideEvolve | Self::BudgetExhausted { .. } => {
                 ToolExecutionError::permission_denied(text).with_retryable(false)
             }
+            Self::NotBuiltHere { .. } => ToolExecutionError::not_found(text).with_retryable(false),
             Self::Harness(_) => ToolExecutionError::other(text).with_retryable(false),
         }
     }
@@ -118,6 +131,9 @@ struct Inner {
     edit_base: Option<EditBase>,
     /// The revisions the tools registered in this lane, in build order.
     built: Vec<Revision>,
+    /// The revision the agent chose with `submit_revision`, until the
+    /// ladder takes it.
+    submitted: Option<Revision>,
     /// Builds the tools spent, against `max_builds`.
     builds_used: usize,
     /// The build budget of the lane.
@@ -137,6 +153,7 @@ impl ToolContext {
             inner: Arc::new(Mutex::new(Inner {
                 edit_base: None,
                 built: Vec::new(),
+                submitted: None,
                 builds_used: 0,
                 max_builds,
                 rejected: HashMap::new(),
@@ -224,6 +241,26 @@ impl ToolContext {
         self.lock().rejected.insert(source, verdict);
     }
 
+    /// Record the agent's choice. Only a revision this lane built through
+    /// the tools qualifies: submitting the active revision would be no
+    /// evolution, which a response cannot get away with either.
+    pub(crate) fn submit(&self, revision: Revision) -> Result<(), RevisionToolError> {
+        let mut inner = self.lock();
+        if !inner.built.contains(&revision) {
+            return Err(RevisionToolError::NotBuiltHere {
+                requested: revision,
+                built: inner.built.clone(),
+            });
+        }
+        inner.submitted = Some(revision);
+        Ok(())
+    }
+
+    /// The revision the agent chose during the run that just ended, if any.
+    pub(crate) fn take_submitted(&self) -> Option<Revision> {
+        self.lock().submitted.take()
+    }
+
     /// Record one tool build for the trace.
     pub(crate) fn record(&self, build: ToolBuild) {
         self.lock().builds.push(build);
@@ -308,6 +345,23 @@ mod tests {
     }
 
     #[test]
+    fn only_a_revision_built_here_can_be_submitted() {
+        let ctx = ToolContext::new(1);
+        assert_eq!(
+            ctx.submit(Revision::new(5)),
+            Err(RevisionToolError::NotBuiltHere {
+                requested: Revision::new(5),
+                built: Vec::new(),
+            })
+        );
+        assert_eq!(ctx.take_submitted(), None);
+        ctx.push_built(Revision::new(5));
+        ctx.submit(Revision::new(5)).expect("built here");
+        assert_eq!(ctx.take_submitted(), Some(Revision::new(5)));
+        assert_eq!(ctx.take_submitted(), None, "taken once");
+    }
+
+    #[test]
     fn a_rejected_candidate_is_remembered_by_source() {
         let ctx = ToolContext::new(1);
         assert_eq!(ctx.rejected_verdict("fn f() {}"), None);
@@ -335,5 +389,12 @@ mod tests {
         assert_eq!(err.kind(), ToolErrorKind::PermissionDenied);
         assert!(err.message().contains("no lane"), "{}", err.message());
         assert_eq!(err.retryable(), Some(false));
+        let err = RevisionToolError::NotBuiltHere {
+            requested: Revision::new(9),
+            built: vec![Revision::new(1)],
+        }
+        .model_visible();
+        assert_eq!(err.kind(), ToolErrorKind::NotFound);
+        assert!(err.message().contains("built here: 1"), "{}", err.message());
     }
 }

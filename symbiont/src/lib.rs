@@ -157,6 +157,8 @@ pub use tools::{
     RevisionSourceError,
     RevisionSourceTool,
     RevisionToolError,
+    SubmitRevisionArgs,
+    SubmitRevisionTool,
 };
 
 /// The agent the runtime drives: a [`rig_agent::Agent`] plus the base URL of

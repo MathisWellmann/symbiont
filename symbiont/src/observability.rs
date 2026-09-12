@@ -68,8 +68,8 @@
 use metrics::Unit;
 
 /// Total failed evolution attempts, by failure kind (one of
-/// `parse`, `signature`, `compile`, `no_rust_code`, `max_turns`,
-/// `unimplemented`, `llm`, `dylib_load`, `io`, `other`). Emitted once per
+/// `parse`, `signature`, `compile`, `no_rust_code`, `unsubmitted`,
+/// `max_turns`, `unimplemented`, `llm`, `dylib_load`, `io`, `other`). Emitted once per
 /// failed attempt inside the
 /// self-healing loop of `Runtime::evolve`.
 pub const EVOLVE_FAILURES: &str = "symbiont_evolve_failures_total";
@@ -230,6 +230,7 @@ pub(crate) mod failure_kind {
     pub(crate) const COMPILE: &str = "compile";
     pub(crate) const EDIT: &str = "edit";
     pub(crate) const NO_RUST_CODE: &str = "no_rust_code";
+    pub(crate) const UNSUBMITTED: &str = "unsubmitted";
     pub(crate) const MAX_TURNS: &str = "max_turns";
     pub(crate) const LLM: &str = "llm";
     pub(crate) const DYLIB_LOAD: &str = "dylib_load";
@@ -440,6 +441,7 @@ pub(crate) fn failure_kind_of(e: &crate::Error) -> &'static str {
         CompilationFailed { .. } => failure_kind::COMPILE,
         EditFailed { .. } => failure_kind::EDIT,
         NoRustCode => failure_kind::NO_RUST_CODE,
+        UnsubmittedRevisions { .. } => failure_kind::UNSUBMITTED,
         RigPrompt(rig_agent::completion::PromptError::MaxTurnsError { .. }) => {
             failure_kind::MAX_TURNS
         }
