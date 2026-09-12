@@ -132,6 +132,7 @@ use crate::{
     },
     parser::{
         Candidate,
+        Fence,
         parse_candidate,
         parse_rust_code,
     },
@@ -140,6 +141,7 @@ use crate::{
         RevisionEntry,
         RevisionFn,
     },
+    tools::context::ToolContext,
     utils::{
         find_so,
         scaffold_dylib_crate,
@@ -174,8 +176,9 @@ struct AttemptRequest<'a> {
     /// Index into the lane's transcript of the first message the agent still
     /// sees. A context or repeat reset moves it forward.
     history_base: usize,
-    /// The previous candidate a response may edit, with its compiler errors.
-    edit_base: Option<&'a EditBase>,
+    /// The lane's state for the revision tools, and the previous candidate
+    /// a response may edit, with its compiler errors.
+    tools_ctx: &'a ToolContext,
     /// Whether the agent may call tools in this iteration. Withdrawn for the
     /// rest of the lane once a run exhausted its turn budget without
     /// producing code - see [`Runtime::evolve_lane`].
@@ -214,6 +217,14 @@ enum Compiled {
     /// The autofixed candidate is the source of this revision already;
     /// nothing was built.
     Registered(Revision, Vec<AppliedFix>),
+}
+
+/// What a response answered with; see [`Runtime::answer_of`].
+enum Answer {
+    /// A registered revision the agent chose.
+    Chosen(Revision),
+    /// The source of a validated candidate, for the build.
+    Candidate(String),
 }
 
 /// Cached pointer to the dylib's `__symbiont_take_panic` function.
@@ -344,6 +355,17 @@ impl Runtime {
     /// [`Self::MAX_EVOLVE_ATTEMPTS`]: resending is a consumed attempt, not a
     /// free one, so a lane that keeps overflowing cannot retry without limit.
     pub const MAX_CONTEXT_RESETS: usize = 3;
+
+    /// Maximum number of candidates one lane may send to the compiler
+    /// through the revision tools (`build_revision`, `edit_revision`; see
+    /// [`crate::tools`]). Once spent, the tools refuse to build and tell the
+    /// agent to submit what it has. The budget is separate from
+    /// [`Self::MAX_EVOLVE_ATTEMPTS`], which bounds response rounds; a lane
+    /// with the tools can therefore spend at most the sum of both in builds.
+    /// Candidates that fail to parse or validate spend nothing, and neither
+    /// does code the compiler already rejected in the lane or code that is
+    /// byte-identical to a registered revision: the budget counts compiles.
+    pub const MAX_TOOL_BUILDS: usize = 10;
 
     /// Initialize the symbiont runtime.
     ///
@@ -496,10 +518,12 @@ impl Runtime {
     /// exchanges the aborted run already made instead of replaying the
     /// identical request that just exhausted its budget.
     ///
-    /// `request.edit_base` is the previous attempt's candidate with its
-    /// compiler errors, if there is one. A response may then edit it instead
-    /// of repeating it (see [`crate::edit`]); the edited text is the
-    /// candidate.
+    /// `request.tools_ctx` holds the previous candidate with its compiler
+    /// errors, if there is one. A response may then edit it instead of
+    /// repeating it (see [`crate::edit`]); the edited text is the candidate.
+    /// The context is installed on the run's task, so the revision tools the
+    /// agent calls during the run find their lane; the builds they made are
+    /// drained into `stages` after the run, whether it succeeded or not.
     async fn evolve_no_backpressure<AgentT>(
         &self,
         agent: &AgentT,
@@ -514,7 +538,7 @@ impl Runtime {
         let AttemptRequest {
             prompt,
             history_base,
-            edit_base,
+            tools_ctx,
             tools,
         } = request;
         debug!("prompt: {}", prompt.green());
@@ -525,10 +549,17 @@ impl Runtime {
 
         // The agent implementation drives any tool-calling turns to
         // completion internally and returns only the final text.
-        let run = match tools {
-            ToolAccess::Allowed => agent.run(prompt, visible).await,
-            ToolAccess::Withdrawn => agent.run_without_tools(prompt, visible).await,
-        };
+        let run = tools_ctx
+            .scope(async {
+                match tools {
+                    ToolAccess::Allowed => agent.run(prompt, visible).await,
+                    ToolAccess::Withdrawn => agent.run_without_tools(prompt, visible).await,
+                }
+            })
+            .await;
+        // The candidates the tools built during the run belong to this
+        // attempt, whichever way the run ended.
+        stages.set_tool_builds(tools_ctx.take_builds());
         let run = match run {
             Ok(run) => run,
             Err(RunError { error, partial }) => {
@@ -596,46 +627,12 @@ impl Runtime {
         )
         .record(t0.elapsed().as_secs_f64());
 
-        // Parse Rust from markdown fences and validate signatures. The
-        // candidate that goes on to the build is the block's text as the
-        // agent wrote it, never a re-rendering of the AST: the compiler's
-        // line numbers then point into text the agent has seen. Scoped so the
-        // `syn` AST is dropped before the compile `await` below: `syn` trees
-        // are `!Send`, and holding one across an await would make this future
-        // `!Send`.
-        let candidate = {
-            let t1 = Instant::now();
-            // Recorded before `?` propagates. A rejected candidate must still
-            // report the time its parse and validation took.
-            let candidate = self
-                .candidate_of(&llm_response, edit_base, stages)
-                .inspect_err(|_| {
-                    stages.set_parse_validate(Some(t1.elapsed()));
-                })?;
-
-            // Validate signatures match declarations
-            validate_generated_ast(candidate.ast(), &self.fn_sigs, &self.denied_paths)
-                .inspect_err(|_| {
-                    stages.set_parse_validate(Some(t1.elapsed()));
-                })?;
-            // Reject stub bodies outright, and candidates that implement
-            // nothing: an echo of every declared default body. A candidate
-            // that genuinely evolves one function while leaving others at
-            // their defaults is a partial evolution and passes.
-            check_implementation_bodies(candidate.ast(), &self.default_bodies).inspect_err(
-                |_| {
-                    stages.set_parse_validate(Some(t1.elapsed()));
-                },
-            )?;
-            stages.set_parse_validate(Some(t1.elapsed()));
-
-            histogram!(
-                PIPELINE_STAGE_DURATION,
-                "stage" => stage::PARSE_VALIDATE
-            )
-            .record(t1.elapsed().as_secs_f64());
-
-            candidate.into_source()
+        let candidate = match self.answer_of(&llm_response, tools_ctx, stages)? {
+            Answer::Chosen(revision) => {
+                info!("Agent chose revision {revision}. LLM generation: {llm_time}ms.");
+                return Ok(revision);
+            }
+            Answer::Candidate(candidate) => candidate,
         };
 
         // Compile, load and retain the new revision. Whether it also becomes
@@ -647,6 +644,89 @@ impl Runtime {
         info!("Built revision {revision}. LLM generation: {llm_time}ms.");
 
         Ok(revision)
+    }
+
+    /// What a response answers with, in order of precedence:
+    ///
+    /// 1. The revision the agent chose with `submit_revision` during the
+    ///    run. It is built and registered already. The choice wins over a
+    ///    code block in the same reply: the agent named what it wants, and
+    ///    the block is most likely a quote of it.
+    /// 2. The code block, parsed and validated (see
+    ///    [`Runtime::parse_and_validate`]), as before the tools existed.
+    /// 3. Without a code block, a `revision: N` line naming a revision the
+    ///    tools built: the text form of the choice, for a run whose tools
+    ///    were withdrawn.
+    ///
+    /// A reply with none of these fails with [`Error::UnsubmittedRevisions`]
+    /// when the tools built revisions in this lane, so the nudge asks for
+    /// the choice, and with [`Error::NoRustCode`] otherwise.
+    fn answer_of(
+        &self,
+        response: &str,
+        tools_ctx: &ToolContext,
+        stages: &mut StageTimings,
+    ) -> Result<Answer> {
+        if let Some(revision) = tools_ctx.take_submitted() {
+            return Ok(Answer::Chosen(revision));
+        }
+        let edit_base = tools_ctx.edit_base();
+        match self.parse_and_validate(stages, |stages| {
+            self.candidate_of(response, edit_base.as_ref(), stages)
+        }) {
+            Ok(candidate) => Ok(Answer::Candidate(candidate)),
+            Err(Error::NoRustCode) => {
+                let built = tools_ctx.built();
+                if built.is_empty() {
+                    return Err(Error::NoRustCode);
+                }
+                match crate::parser::submission_line(response) {
+                    Some(revision) if built.contains(&revision) => Ok(Answer::Chosen(revision)),
+                    _ => Err(Error::UnsubmittedRevisions { built }),
+                }
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// The parse and validate stage: `parse` yields the candidate, which
+    /// must then match the declared signatures and implement something. On
+    /// success the result is the candidate's source, ready for the build.
+    ///
+    /// The candidate that goes on to the build is the text as the agent
+    /// wrote it, never a re-rendering of the AST: the compiler's line numbers
+    /// then point into text the agent has seen. The `syn` AST never leaves
+    /// this method: `syn` trees are `!Send`, and holding one across the
+    /// compile `await` would make the calling future `!Send`.
+    ///
+    /// The stage's duration is recorded in `stages` whether it passes or not:
+    /// a rejected candidate must still report the time its parse and
+    /// validation took.
+    pub(crate) fn parse_and_validate(
+        &self,
+        stages: &mut StageTimings,
+        parse: impl FnOnce(&mut StageTimings) -> Result<Candidate>,
+    ) -> Result<String> {
+        let t1 = Instant::now();
+        let result = parse(stages).and_then(|candidate| {
+            // Validate signatures match declarations
+            validate_generated_ast(candidate.ast(), &self.fn_sigs, &self.denied_paths)?;
+            // Reject stub bodies outright, and candidates that implement
+            // nothing: an echo of every declared default body. A candidate
+            // that genuinely evolves one function while leaving others at
+            // their defaults is a partial evolution and passes.
+            check_implementation_bodies(candidate.ast(), &self.default_bodies)?;
+            Ok(candidate.into_source())
+        });
+        stages.set_parse_validate(Some(t1.elapsed()));
+        if result.is_ok() {
+            histogram!(
+                PIPELINE_STAGE_DURATION,
+                "stage" => stage::PARSE_VALIDATE
+            )
+            .record(t1.elapsed().as_secs_f64());
+        }
+        result
     }
 
     /// The candidate a response describes: the whole code block, or the
@@ -661,9 +741,25 @@ impl Runtime {
         let Some(base) = edit_base else {
             return parse_rust_code(response);
         };
-        let fences = crate::parser::fences(response);
+        self.edited_candidate(base, &crate::parser::fences(response), stages, || {
+            parse_rust_code(response)
+        })
+    }
+
+    /// The candidate `fences` describe against `base`: the base with the
+    /// edits applied, or, when the fences carry no edits, whatever `whole`
+    /// parses as the complete candidate. An edit is recorded in `stages` for
+    /// the trace; an edit that does not apply is [`Error::EditFailed`] with
+    /// the base unchanged.
+    pub(crate) fn edited_candidate(
+        &self,
+        base: &EditBase,
+        fences: &[Fence],
+        stages: &mut StageTimings,
+        whole: impl FnOnce() -> Result<Candidate>,
+    ) -> Result<Candidate> {
         let declared: Vec<&str> = self.decls.iter().map(|decl| decl.name).collect();
-        match edit::resolve(base, &fences, &declared) {
+        match edit::resolve(base, fences, &declared) {
             Ok(edit::Resolved::Edited { source, edits }) => {
                 counter!(EVOLVE_EDITS).increment(edits.total() as u64);
                 info!(
@@ -676,12 +772,39 @@ impl Runtime {
                 stages.set_edits(Some(edits));
                 parse_candidate(source)
             }
-            Ok(edit::Resolved::Whole) => parse_rust_code(response),
+            Ok(edit::Resolved::Whole) => whole(),
             Err(error) => Err(Error::EditFailed {
                 code: base.source().to_string(),
                 err: error.to_string(),
             }),
         }
+    }
+
+    /// Write the corrective nudge for `e` to `out`: the text of
+    /// [`Error::nudge`], followed by the definitions of the host types a
+    /// compile error shows the agent misusing (see [`Runtime::api_hints`]).
+    /// Returns the names of those types, for the trace.
+    ///
+    /// The same text goes to the agent whether the failure came from a
+    /// response or from a tool call, so a repair reads the same either way.
+    ///
+    /// Hands `e` back when it is not a failure the agent can repair
+    /// (provider, IO, dylib load).
+    pub(crate) async fn render_nudge(
+        &self,
+        e: Error,
+        out: &mut String,
+    ) -> std::result::Result<Vec<String>, Error> {
+        // The host types an invented API was called on. Read before the
+        // error is consumed by the nudge; rendered after it, so the
+        // definitions follow the errors they explain.
+        let (api_hints, hinted_types) = match &e {
+            Error::CompilationFailed { diagnostics, .. } => self.api_hints(diagnostics).await,
+            _ => (String::new(), Vec::new()),
+        };
+        e.nudge(out)?;
+        out.push_str(&api_hints);
+        Ok(hinted_types)
     }
 
     /// The definitions of the host types that `diagnostics` show the agent
@@ -731,7 +854,7 @@ impl Runtime {
     /// `record` receives the result of the build stage for the trace. This
     /// method writes it before every early return. A candidate that the
     /// compiler rejects therefore still reports the time its compile took.
-    async fn build_and_register(
+    pub(crate) async fn build_and_register(
         &self,
         candidate: String,
         record: &mut Option<BuildRecord>,
@@ -1335,12 +1458,13 @@ impl Runtime {
             // answer without code), used to detect an agent that echoes the
             // same broken code back verbatim.
             let mut last_failed_code: Option<String> = None;
-            // The candidate the next response may edit instead of retyping:
-            // the most recent one that parsed and validated, with the
-            // compiler errors the agent was shown about it. `None` on the
-            // first attempt and after a reset, when the agent no longer sees
-            // the code the base would refer to.
-            let mut edit_base: Option<EditBase> = None;
+            // The lane's state for the revision tools, and the candidate the
+            // next response may edit instead of retyping: the most recent
+            // one that parsed and validated, with the compiler errors the
+            // agent was shown about it. No base on the first attempt and
+            // after a reset, when the agent no longer sees the code the
+            // base would refer to.
+            let tools_ctx = ToolContext::new(Self::MAX_TOOL_BUILDS);
             // Tools are withdrawn for the rest of the lane the first time a
             // run spends its whole turn budget on them without answering.
             // Nudging such a run to answer while the tools stay on does not
@@ -1409,7 +1533,7 @@ impl Runtime {
                             AttemptRequest {
                                 prompt: &prompt,
                                 history_base,
-                                edit_base: edit_base.as_ref(),
+                                tools_ctx: &tools_ctx,
                                 tools,
                             },
                             &mut history,
@@ -1481,7 +1605,7 @@ impl Runtime {
                         // standing), and a transport failure is not one
                         // either; neither moves the reference.
                         let answered = candidate.is_some()
-                            || matches!(e, Error::NoRustCode)
+                            || matches!(e, Error::NoRustCode | Error::UnsubmittedRevisions { .. })
                             || e.exhausted_tool_turns();
                         let repeated = candidate.as_deref().is_some_and(|code| !code.is_empty())
                             && last_failed_code == candidate;
@@ -1499,7 +1623,10 @@ impl Runtime {
                             code, diagnostics, ..
                         } = &e
                         {
-                            edit_base = Some(EditBase::new(code.clone(), diagnostics.clone()));
+                            tools_ctx.set_edit_base(Some(EditBase::new(
+                                code.clone(),
+                                diagnostics.clone(),
+                            )));
                         }
                         // A request that exceeds the model's context window can
                         // never succeed by resending: shrink it instead.
@@ -1586,7 +1713,7 @@ impl Runtime {
                             prompt.push_str(base_prompt);
                             // The agent no longer sees the code an edit
                             // would refer to.
-                            edit_base = None;
+                            tools_ctx.set_edit_base(None);
                             // Withdrawing tools relied on the definitions the
                             // agent fetched staying in its history; the reset
                             // discards them, so it must be able to fetch
@@ -1724,7 +1851,7 @@ impl Runtime {
                                  {dropped} history messages and restarting from the base prompt",
                             );
                             history_base = history.len();
-                            edit_base = None;
+                            tools_ctx.set_edit_base(None);
                             write!(
                                 prompt,
                                 "{base_prompt}\n\nYour previous attempt was rejected: {}\n\
@@ -1763,38 +1890,45 @@ impl Runtime {
                             tools = ToolAccess::Withdrawn;
                         }
 
-                        // The host types an invented API was called on. Read
-                        // before the error is consumed by the nudge; rendered
-                        // after it, so the definitions follow the errors they
-                        // explain.
-                        let (api_hints, hinted_types) = match &e {
-                            Error::CompilationFailed { diagnostics, .. } => {
-                                self.api_hints(diagnostics).await
-                            }
-                            _ => (String::new(), Vec::new()),
-                        };
-
                         // Add a nudge prompt.
-                        if let Err(e) = e.nudge(&mut prompt) {
-                            warn!("Unhandled error: {e}");
-                            let reason = e.to_string();
-                            trace.push_attempt(
-                                attempts,
-                                attempt_prompt,
-                                run_trace!(),
-                                stages,
-                                candidate,
-                                LadderEvent::Terminal {
-                                    reason: reason.clone(),
-                                },
-                                t_attempt.elapsed(),
-                            );
-                            return Err(EvolveError::new(
-                                e,
-                                finish!(TraceOutcome::Failed { reason }),
-                            ));
+                        let hinted_types = match self.render_nudge(e, &mut prompt).await {
+                            Ok(hinted_types) => hinted_types,
+                            Err(e) => {
+                                warn!("Unhandled error: {e}");
+                                let reason = e.to_string();
+                                trace.push_attempt(
+                                    attempts,
+                                    attempt_prompt,
+                                    run_trace!(),
+                                    stages,
+                                    candidate,
+                                    LadderEvent::Terminal {
+                                        reason: reason.clone(),
+                                    },
+                                    t_attempt.elapsed(),
+                                );
+                                return Err(EvolveError::new(
+                                    e,
+                                    finish!(TraceOutcome::Failed { reason }),
+                                ));
+                            }
+                        };
+                        // Without tools the agent cannot call `submit_revision`
+                        // for the revisions it built with them. Name the text
+                        // form of the choice, so those builds are not lost.
+                        if tools == ToolAccess::Withdrawn {
+                            let built = tools_ctx.built();
+                            if !built.is_empty() {
+                                write!(
+                                    prompt,
+                                    " You built revisions {} with the tools before they were \
+                                     withdrawn. To activate one of them, reply with the single \
+                                     line `revision: N` instead of code.",
+                                    crate::tools::revision_list(&built)
+                                )
+                                .expect(EXPECT_WRITE);
+                            }
                         }
-                        prompt.push_str(&api_hints);
 
                         trace.push_attempt(
                             attempts,

@@ -24,12 +24,18 @@ use crate::{
     Agent,
     ApiDocTool,
     ApiIndexTool,
+    BuildRevisionTool,
     DocIndex,
     DocMode,
+    EditRevisionTool,
     Error,
     MeteredHttpClient,
     Result,
+    RevisionSourceTool,
+    Runtime,
+    SubmitRevisionTool,
     ThinkingLevel,
+    system_prompt::revision_tools_section,
 };
 
 /// Total time budget for one completion request, from send until the
@@ -177,6 +183,61 @@ pub async fn agent_builder(
         _ => builder.dynamic_tools(Vec::new()),
     };
     Ok(builder)
+}
+
+/// Register the revision tools on `builder`: `build_revision`,
+/// `edit_revision`, `submit_revision` and `revision_source` over `runtime`
+/// (see [`crate::tools`]), with the prompt section that explains them
+/// appended to the preamble and a turn budget of [`DOC_TOOLS_MAX_TURNS`].
+///
+/// With these the agent can build several candidates, read the compiler's
+/// verdict on each inside the same run, repair by editing, and end the run
+/// by choosing one, instead of answering with one code block per attempt.
+/// The evaluation that would tell the candidates apart is the host's: add
+/// an [`EvaluateRevisionTool`](crate::EvaluateRevisionTool) with `.tool(..)`
+/// to let the agent compare them itself.
+///
+/// The tools need the runtime, so the agent is built after
+/// [`Runtime::new`]:
+///
+/// ```no_run
+/// # use symbiont::{DocMode, Profile, Runtime, ThinkingLevel};
+/// # async fn example() -> symbiont::Result<()> {
+/// symbiont::evolvable! {
+///     fn step(x: f64) -> f64 { x }
+/// };
+/// let rt = Runtime::new(SYMBIONT_DECLS, SYMBIONT_PRELUDE, Profile::Debug).await?;
+/// let builder = symbiont::agent_builder(
+///     None,
+///     DocMode::Inline,
+///     "http://127.0.0.1:8321/v1",
+///     "",
+///     "qwen3.6",
+///     ThinkingLevel::Disabled,
+/// )
+/// .await?;
+/// let agent = symbiont::with_revision_tools(builder, rt).build();
+/// # let _ = agent;
+/// # Ok(())
+/// # }
+/// ```
+///
+/// The turn budget replaces whatever the builder had; set your own with
+/// `.default_max_turns(n)` after this call if you need a different one.
+/// A reply with a code block and no `submit_revision` call is built as
+/// before, so an agent that ignores the tools loses nothing.
+#[must_use]
+pub fn with_revision_tools(
+    builder: crate::AgentBuilder,
+    runtime: &'static Runtime,
+) -> crate::AgentBuilder {
+    builder
+        .tool(BuildRevisionTool::new(runtime))
+        .tool(EditRevisionTool::new(runtime))
+        .tool(SubmitRevisionTool)
+        .tool(RevisionSourceTool::new(runtime))
+        .append_preamble(&revision_tools_section(Runtime::MAX_TOOL_BUILDS))
+        .default_max_turns(DOC_TOOLS_MAX_TURNS)
 }
 
 /// Create an `Agent` with the endpoint and credentials read from the

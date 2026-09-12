@@ -32,6 +32,12 @@ pub enum Error {
     #[error("The text does not contain any rust code.")]
     NoRustCode,
 
+    /// The response carried no code, and the agent had built revisions
+    /// through the tools (see [`crate::tools`]) without choosing one. The
+    /// nudge asks for the choice.
+    #[error("The response chose none of the revisions the tools built: {built:?}")]
+    UnsubmittedRevisions { built: Vec<Revision> },
+
     #[error("Could not parse Rust code: {err}")]
     CouldNotParseRust { code: String, err: String },
 
@@ -131,6 +137,13 @@ impl Error {
             NoRustCode => prompt.push_str(
                 "nudge: Your response did not contain a rust code block. Please try again and make sure its wrapped like this: ```CODE```",
             ),
+            UnsubmittedRevisions { built } => write!(prompt,
+                "nudge: You built revisions {} with the tools but did not choose one, and your response \
+                 contained no code block. Call `submit_revision` with the revision to activate, then \
+                 reply with a short summary. If the tools are not available to you, reply with the \
+                 single line `revision: N` instead.",
+                crate::tools::revision_list(&built)
+            ).expect("Can write to prompt"),
             CouldNotParseRust { code, err } => write!(prompt,
                 "nudge: Your generated code ```{code}``` is not valid Rust. Parse error: ```{err}```. Fix the syntax error and respond with the full corrected code.",
             ).expect("Can write to prompt"),

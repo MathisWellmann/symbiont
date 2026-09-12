@@ -15,6 +15,8 @@
 
 use std::{
     collections::VecDeque,
+    future::Future,
+    pin::Pin,
     sync::Mutex,
 };
 
@@ -31,10 +33,18 @@ use symbiont::{
     RunError,
 };
 
+/// What a [`Turn::WithTools`] runs inside the agent run: the tool calls the
+/// model would make, ending in the text of its reply.
+pub(crate) type ToolTurn = Box<dyn FnOnce() -> Pin<Box<dyn Future<Output = String> + Send>> + Send>;
+
 /// A single scripted agent turn.
 pub(crate) enum Turn {
     /// Respond with this canned assistant text.
     Reply(String),
+    /// Call tools inside the run, as rig would between two requests, and
+    /// respond with the text the closure returns. The closure runs on the
+    /// run's task, which is where the revision tools find their lane.
+    WithTools(ToolTurn),
     /// Respond with this canned assistant text and this token usage.
     ReplyWithUsage(String, Usage),
     /// Fail the run with this error.
@@ -53,6 +63,15 @@ impl Turn {
     /// Convenience constructor for a canned reply with explicit token usage.
     pub(crate) fn reply_with_usage(text: &str, usage: Usage) -> Self {
         Self::ReplyWithUsage(text.to_string(), usage)
+    }
+
+    /// Convenience constructor for a turn that calls tools before it replies.
+    pub(crate) fn with_tools<F, Fut>(f: F) -> Self
+    where
+        F: FnOnce() -> Fut + Send + 'static,
+        Fut: Future<Output = String> + Send + 'static,
+    {
+        Self::WithTools(Box::new(move || Box::pin(f())))
     }
 }
 
@@ -93,7 +112,7 @@ impl ScriptedAgent {
         self.tools_allowed.lock().expect("Mutex is not poisoned")[idx]
     }
 
-    fn scripted(
+    async fn scripted(
         &self,
         prompt: &str,
         history: Vec<Message>,
@@ -125,6 +144,7 @@ impl ScriptedAgent {
 
         let (text, usage) = match turn {
             Turn::Reply(text) => (text, Usage::new()),
+            Turn::WithTools(f) => (f().await, Usage::new()),
             Turn::ReplyWithUsage(text, usage) => (text, usage),
             Turn::Fail(err) => return Err(err.into()),
             Turn::FailAfter(error, partial) => {
@@ -166,7 +186,7 @@ impl ScriptedAgent {
 
 impl EvolutionAgent for ScriptedAgent {
     async fn run(&self, prompt: &str, history: Vec<Message>) -> Result<AgentRun, RunError> {
-        self.scripted(prompt, history, true)
+        self.scripted(prompt, history, true).await
     }
 
     async fn run_without_tools(
@@ -174,7 +194,7 @@ impl EvolutionAgent for ScriptedAgent {
         prompt: &str,
         history: Vec<Message>,
     ) -> Result<AgentRun, RunError> {
-        self.scripted(prompt, history, false)
+        self.scripted(prompt, history, false).await
     }
 
     fn system_prompt(&self) -> String {

@@ -85,6 +85,8 @@ pub use evolution_trace::{
     LadderEvent,
     RunTrace,
     StageTimings,
+    ToolBuild,
+    ToolBuildOutcome,
     TraceOutcome,
 };
 pub use evolve_error::EvolveError;
@@ -100,6 +102,7 @@ pub use inference::{
     agent_builder,
     agent_from_env,
     init_agent,
+    with_revision_tools,
 };
 pub use init_tracing::init_tracing;
 pub use profile::Profile;
@@ -149,9 +152,19 @@ pub use thinking_level::ThinkingLevel;
 pub use tools::{
     ApiDocTool,
     ApiIndexTool,
+    BuildRevisionArgs,
+    BuildRevisionTool,
+    EditRevisionArgs,
+    EditRevisionTool,
+    EvaluateRevisionArgs,
+    EvaluateRevisionError,
+    EvaluateRevisionTool,
     RevisionSourceArgs,
     RevisionSourceError,
     RevisionSourceTool,
+    RevisionToolError,
+    SubmitRevisionArgs,
+    SubmitRevisionTool,
 };
 
 /// The agent the runtime drives: a [`rig_agent::Agent`] plus the base URL of
