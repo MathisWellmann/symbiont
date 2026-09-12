@@ -11,6 +11,7 @@
 //! | `build_revision` | [`BuildRevisionTool`] | the host, with [`crate::with_revision_tools`] |
 //! | `edit_revision` | [`EditRevisionTool`] | the host, with [`crate::with_revision_tools`] |
 //! | `submit_revision` | [`SubmitRevisionTool`] | the host, with [`crate::with_revision_tools`] |
+//! | `evaluate_revision` | [`EvaluateRevisionTool`] | the host, with `.tool(..)` and its own evaluation closure |
 //!
 //! The documentation tools answer from state the process already holds and
 //! do no I/O. The revision tools run the pipeline: parse, validate, compile,
@@ -33,6 +34,7 @@ mod build;
 pub(crate) mod context;
 mod doc;
 mod edit;
+mod evaluate;
 mod pipeline;
 mod revision;
 mod submit;
@@ -52,6 +54,11 @@ pub use doc::{
 pub use edit::{
     EditRevisionArgs,
     EditRevisionTool,
+};
+pub use evaluate::{
+    EvaluateRevisionArgs,
+    EvaluateRevisionError,
+    EvaluateRevisionTool,
 };
 pub use revision::{
     RevisionSourceArgs,
