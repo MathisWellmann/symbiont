@@ -596,47 +596,10 @@ impl Runtime {
         )
         .record(t0.elapsed().as_secs_f64());
 
-        // Parse Rust from markdown fences and validate signatures. The
-        // candidate that goes on to the build is the block's text as the
-        // agent wrote it, never a re-rendering of the AST: the compiler's
-        // line numbers then point into text the agent has seen. Scoped so the
-        // `syn` AST is dropped before the compile `await` below: `syn` trees
-        // are `!Send`, and holding one across an await would make this future
-        // `!Send`.
-        let candidate = {
-            let t1 = Instant::now();
-            // Recorded before `?` propagates. A rejected candidate must still
-            // report the time its parse and validation took.
-            let candidate = self
-                .candidate_of(&llm_response, edit_base, stages)
-                .inspect_err(|_| {
-                    stages.set_parse_validate(Some(t1.elapsed()));
-                })?;
-
-            // Validate signatures match declarations
-            validate_generated_ast(candidate.ast(), &self.fn_sigs, &self.denied_paths)
-                .inspect_err(|_| {
-                    stages.set_parse_validate(Some(t1.elapsed()));
-                })?;
-            // Reject stub bodies outright, and candidates that implement
-            // nothing: an echo of every declared default body. A candidate
-            // that genuinely evolves one function while leaving others at
-            // their defaults is a partial evolution and passes.
-            check_implementation_bodies(candidate.ast(), &self.default_bodies).inspect_err(
-                |_| {
-                    stages.set_parse_validate(Some(t1.elapsed()));
-                },
-            )?;
-            stages.set_parse_validate(Some(t1.elapsed()));
-
-            histogram!(
-                PIPELINE_STAGE_DURATION,
-                "stage" => stage::PARSE_VALIDATE
-            )
-            .record(t1.elapsed().as_secs_f64());
-
-            candidate.into_source()
-        };
+        // Parse Rust from markdown fences and validate signatures.
+        let candidate = self.parse_and_validate(stages, |stages| {
+            self.candidate_of(&llm_response, edit_base, stages)
+        })?;
 
         // Compile, load and retain the new revision. Whether it also becomes
         // the active one is up to the caller.
@@ -647,6 +610,46 @@ impl Runtime {
         info!("Built revision {revision}. LLM generation: {llm_time}ms.");
 
         Ok(revision)
+    }
+
+    /// The parse and validate stage: `parse` yields the candidate, which
+    /// must then match the declared signatures and implement something. On
+    /// success the result is the candidate's source, ready for the build.
+    ///
+    /// The candidate that goes on to the build is the text as the agent
+    /// wrote it, never a re-rendering of the AST: the compiler's line numbers
+    /// then point into text the agent has seen. The `syn` AST never leaves
+    /// this method: `syn` trees are `!Send`, and holding one across the
+    /// compile `await` would make the calling future `!Send`.
+    ///
+    /// The stage's duration is recorded in `stages` whether it passes or not:
+    /// a rejected candidate must still report the time its parse and
+    /// validation took.
+    pub(crate) fn parse_and_validate(
+        &self,
+        stages: &mut StageTimings,
+        parse: impl FnOnce(&mut StageTimings) -> Result<Candidate>,
+    ) -> Result<String> {
+        let t1 = Instant::now();
+        let result = parse(stages).and_then(|candidate| {
+            // Validate signatures match declarations
+            validate_generated_ast(candidate.ast(), &self.fn_sigs, &self.denied_paths)?;
+            // Reject stub bodies outright, and candidates that implement
+            // nothing: an echo of every declared default body. A candidate
+            // that genuinely evolves one function while leaving others at
+            // their defaults is a partial evolution and passes.
+            check_implementation_bodies(candidate.ast(), &self.default_bodies)?;
+            Ok(candidate.into_source())
+        });
+        stages.set_parse_validate(Some(t1.elapsed()));
+        if result.is_ok() {
+            histogram!(
+                PIPELINE_STAGE_DURATION,
+                "stage" => stage::PARSE_VALIDATE
+            )
+            .record(t1.elapsed().as_secs_f64());
+        }
+        result
     }
 
     /// The candidate a response describes: the whole code block, or the
@@ -682,6 +685,33 @@ impl Runtime {
                 err: error.to_string(),
             }),
         }
+    }
+
+    /// Write the corrective nudge for `e` to `out`: the text of
+    /// [`Error::nudge`], followed by the definitions of the host types a
+    /// compile error shows the agent misusing (see [`Runtime::api_hints`]).
+    /// Returns the names of those types, for the trace.
+    ///
+    /// The same text goes to the agent whether the failure came from a
+    /// response or from a tool call, so a repair reads the same either way.
+    ///
+    /// Hands `e` back when it is not a failure the agent can repair
+    /// (provider, IO, dylib load).
+    pub(crate) async fn render_nudge(
+        &self,
+        e: Error,
+        out: &mut String,
+    ) -> std::result::Result<Vec<String>, Error> {
+        // The host types an invented API was called on. Read before the
+        // error is consumed by the nudge; rendered after it, so the
+        // definitions follow the errors they explain.
+        let (api_hints, hinted_types) = match &e {
+            Error::CompilationFailed { diagnostics, .. } => self.api_hints(diagnostics).await,
+            _ => (String::new(), Vec::new()),
+        };
+        e.nudge(out)?;
+        out.push_str(&api_hints);
+        Ok(hinted_types)
     }
 
     /// The definitions of the host types that `diagnostics` show the agent
@@ -731,7 +761,7 @@ impl Runtime {
     /// `record` receives the result of the build stage for the trace. This
     /// method writes it before every early return. A candidate that the
     /// compiler rejects therefore still reports the time its compile took.
-    async fn build_and_register(
+    pub(crate) async fn build_and_register(
         &self,
         candidate: String,
         record: &mut Option<BuildRecord>,
@@ -1763,38 +1793,29 @@ impl Runtime {
                             tools = ToolAccess::Withdrawn;
                         }
 
-                        // The host types an invented API was called on. Read
-                        // before the error is consumed by the nudge; rendered
-                        // after it, so the definitions follow the errors they
-                        // explain.
-                        let (api_hints, hinted_types) = match &e {
-                            Error::CompilationFailed { diagnostics, .. } => {
-                                self.api_hints(diagnostics).await
-                            }
-                            _ => (String::new(), Vec::new()),
-                        };
-
                         // Add a nudge prompt.
-                        if let Err(e) = e.nudge(&mut prompt) {
-                            warn!("Unhandled error: {e}");
-                            let reason = e.to_string();
-                            trace.push_attempt(
-                                attempts,
-                                attempt_prompt,
-                                run_trace!(),
-                                stages,
-                                candidate,
-                                LadderEvent::Terminal {
-                                    reason: reason.clone(),
-                                },
-                                t_attempt.elapsed(),
-                            );
-                            return Err(EvolveError::new(
-                                e,
-                                finish!(TraceOutcome::Failed { reason }),
-                            ));
-                        }
-                        prompt.push_str(&api_hints);
+                        let hinted_types = match self.render_nudge(e, &mut prompt).await {
+                            Ok(hinted_types) => hinted_types,
+                            Err(e) => {
+                                warn!("Unhandled error: {e}");
+                                let reason = e.to_string();
+                                trace.push_attempt(
+                                    attempts,
+                                    attempt_prompt,
+                                    run_trace!(),
+                                    stages,
+                                    candidate,
+                                    LadderEvent::Terminal {
+                                        reason: reason.clone(),
+                                    },
+                                    t_attempt.elapsed(),
+                                );
+                                return Err(EvolveError::new(
+                                    e,
+                                    finish!(TraceOutcome::Failed { reason }),
+                                ));
+                            }
+                        };
 
                         trace.push_attempt(
                             attempts,
