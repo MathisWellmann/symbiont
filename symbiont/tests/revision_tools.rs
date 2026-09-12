@@ -24,6 +24,7 @@ use symbiont::{
     BuildRecord,
     BuildRevisionArgs,
     BuildRevisionTool,
+    DocMode,
     EditRevisionArgs,
     EditRevisionTool,
     EvaluateRevisionArgs,
@@ -35,6 +36,7 @@ use symbiont::{
     Runtime,
     SubmitRevisionArgs,
     SubmitRevisionTool,
+    ThinkingLevel,
     ToolBuildOutcome,
 };
 
@@ -386,6 +388,49 @@ async fn revision_tools_drive_the_pipeline_from_inside_a_run() {
         "omitting the revision evaluates the active one: {}",
         verdicts[4]
     );
+
+    // -- `with_revision_tools` registers the set and explains it -----------
+
+    let builder = symbiont::agent_builder(
+        None,
+        DocMode::Inline,
+        "http://127.0.0.1:8321/v1",
+        "",
+        "model",
+        ThinkingLevel::Disabled,
+    )
+    .await
+    .expect("building a local agent needs no network");
+    let agent = symbiont::with_revision_tools(builder, rt).build();
+    let mut names: Vec<String> = agent
+        .tool_definitions(None)
+        .await
+        .expect("the tool server answers")
+        .into_iter()
+        .map(|def| def.name)
+        .collect();
+    names.sort();
+    assert_eq!(
+        names,
+        [
+            "build_revision",
+            "edit_revision",
+            "revision_source",
+            "submit_revision"
+        ]
+    );
+    let spec = agent.run_spec();
+    let preamble = spec.preamble.expect("the builder set a preamble");
+    assert!(
+        preamble.contains("# Output contract"),
+        "the base prompt stays"
+    );
+    assert!(preamble.contains("# Revision tools"), "{preamble}");
+    assert!(
+        preamble.contains("at most 10 candidates to the\ncompiler per task"),
+        "the budget is the runtime's: {preamble}"
+    );
+    assert_eq!(spec.max_turns, Some(symbiont::DOC_TOOLS_MAX_TURNS));
 }
 
 /// Two variants, both evaluated with the host's tool, then the better one.

@@ -9,6 +9,7 @@ pub use agent_builder::{
     agent_builder,
     agent_from_env,
     init_agent,
+    with_revision_tools,
 };
 pub(crate) use inference_gate::{
     GatePermit,

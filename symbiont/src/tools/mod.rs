@@ -22,7 +22,7 @@
 //! a response's build waits for.
 //!
 //! The revision tools need the lane they are called from. The ladder
-//! attaches it to the run's task (see [`ToolContext`](context::ToolContext)),
+//! attaches it to the run's task (see `context::ToolContext`),
 //! so the tools work inside [`crate::Runtime::evolve`] and refuse elsewhere.
 //!
 //! Tool errors go through an explicit [`rig_core::tool::ToolExecutionError`]

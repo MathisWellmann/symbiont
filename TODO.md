@@ -2,10 +2,14 @@
   host crate with a `prelude` (`struct-support-example`, an invented `step_by` on `GameState`).
   It cannot be a workspace test: the nested dylib build resolves the workspace's git
   dependencies afresh and needs the network, so it belongs with the CI smoke tests.
-- Repair rounds, phase 2: expose the edit verbs as a rig `PortableTool` in the tool `DocMode`s
-  that only *stages* edits into the per-request `ToolContext` and returns the instant
-  parse/validate result; the ladder applies staged edits after `run()` and compiles as today.
-  Never put `cargo` inside an inference-gate scope. Measure the response-format version first.
+- Revision tools, follow-ups (`build_revision`/`edit_revision`/`submit_revision` exist, see
+  `symbiont::tools`): the inference-gate priority is `Priority::attempt(n)` and does not rise
+  within a run, so a lane deep in tool repairs loses the prefix-cache advantage a response
+  repair round gets; consider bumping it by `ToolContext` builds. Measure the tool flow against
+  the response flow on the eval matrix before making it the default of `agent_builder`. The
+  DSH exporter does not yet map `StageTimings::tool_builds` to `tool/call` + `tool/result`.
+  (A compile inside a tool call holds no inference slot: the gate admits per request, and
+  rig calls tools between requests. The build slot is the only contention.)
 - Show multi function evolution with example.
 - Show example of using external dependency in generated dylibs, if configured.
 - Proper eval pipeline to compare model performance across tasks. My own benchmark suite so to say, aka `symbiont-eval`

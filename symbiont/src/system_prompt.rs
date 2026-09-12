@@ -245,6 +245,47 @@ turn only when a result names something new that you also need.
 
 ";
 
+/// The prompt section that [`crate::with_revision_tools`] appends: how the
+/// revision tools change the output contract.
+///
+/// `max_builds` is the lane's build budget,
+/// [`Runtime::MAX_TOOL_BUILDS`](crate::Runtime::MAX_TOOL_BUILDS).
+pub(crate) fn revision_tools_section(max_builds: usize) -> String {
+    format!(
+        "\n# Revision tools
+
+Four tools let you build and choose code without pasting it into your reply.
+They change the output contract above: a reply that chose a revision with
+`submit_revision` needs no code block.
+
+- `build_revision` compiles a complete candidate (every required function)
+  and registers it as a numbered revision, without activating it. The answer
+  names the revision, or gives the same diagnostics a rejected reply gets:
+  compiler errors numbered `[E1]`, `[E2]`, ... with line numbers into your
+  code, a signature mismatch, or a forbidden construct.
+- `edit_revision` applies edits to the candidate you last built or had
+  rejected, in the forms described under Repairing a compile error (`E<n> =>`
+  anchors, `SEARCH`/`REPLACE` hunks, a replacement function), and builds the
+  result. Pass `base` to edit a registered revision instead.
+- `revision_source` shows the registered source of a revision.
+- `submit_revision` chooses the revision the harness activates. Only a
+  revision you built in this task qualifies.
+
+Workflow: build a candidate; if it is rejected, repair it with
+`edit_revision`; when you have one or more registered revisions, compare
+them with whatever evaluation tools the host provides, call
+`submit_revision` with the best one, and end your reply with a short
+summary. A rejected candidate is not a failure of the task; repairing it is
+the task. Do not send code the harness already rejected: it answers from
+memory without building. You can send at most {max_builds} candidates to the
+compiler per task; the answer of each build tells you how many you have used.
+
+You may still answer with a single ```rust code block instead of using the
+tools; the harness builds it as before.
+"
+    )
+}
+
 /// The note for a host crate without a `prelude` module.
 const NO_PRELUDE_NOTE: &str = "The host crate does not expose a `prelude` module, so `use host::prelude::*;` imports nothing. No host API is available beyond explicit `host::...` paths.\n";
 
