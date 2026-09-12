@@ -9,6 +9,7 @@
 //! | `api_doc` | [`ApiDocTool`] | [`crate::agent_builder`] in a [`DocMode`](crate::DocMode) with tools |
 //! | `revision_source` | [`RevisionSourceTool`] | the host, with `.tool(..)` or [`crate::with_revision_tools`] |
 //! | `build_revision` | [`BuildRevisionTool`] | the host, with [`crate::with_revision_tools`] |
+//! | `edit_revision` | [`EditRevisionTool`] | the host, with [`crate::with_revision_tools`] |
 //! | `submit_revision` | [`SubmitRevisionTool`] | the host, with [`crate::with_revision_tools`] |
 //!
 //! The documentation tools answer from state the process already holds and
@@ -31,6 +32,7 @@
 mod build;
 pub(crate) mod context;
 mod doc;
+mod edit;
 mod pipeline;
 mod revision;
 mod submit;
@@ -46,6 +48,10 @@ pub use doc::{
     ApiDocTool,
     ApiIndexArgs,
     ApiIndexTool,
+};
+pub use edit::{
+    EditRevisionArgs,
+    EditRevisionTool,
 };
 pub use revision::{
     RevisionSourceArgs,

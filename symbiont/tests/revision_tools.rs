@@ -24,6 +24,8 @@ use symbiont::{
     BuildRecord,
     BuildRevisionArgs,
     BuildRevisionTool,
+    EditRevisionArgs,
+    EditRevisionTool,
     Profile,
     Revision,
     RevisionToolError,
@@ -38,6 +40,10 @@ type Verdicts = Arc<Mutex<Vec<String>>>;
 
 async fn build(rt: &'static Runtime, code: &str) -> Result<String, RevisionToolError> {
     PortableTool::call(&BuildRevisionTool::new(rt), BuildRevisionArgs::new(code)).await
+}
+
+async fn edit(rt: &'static Runtime, args: EditRevisionArgs) -> Result<String, RevisionToolError> {
+    PortableTool::call(&EditRevisionTool::new(rt), args).await
 }
 
 async fn submit(revision: u64) -> Result<String, RevisionToolError> {
@@ -267,6 +273,134 @@ async fn revision_tools_drive_the_pipeline_from_inside_a_run() {
         "{:?}",
         info.trace().attempts()[0].ladder()
     );
+
+    // -- `edit_revision`: anchors on the last verdict, hunks on a revision --
+
+    let verdicts: Verdicts = Arc::default();
+    let seen = Arc::clone(&verdicts);
+    let agent = ScriptedAgent::new([Turn::with_tools(move || edit_repair_and_vary(rt, seen))]);
+    let info = rt
+        .evolve(&agent, "Scale the input.")
+        .await
+        .expect("the edited candidate is chosen");
+    assert_eq!(info.revision(), Revision::new(6));
+    assert_eq!(tool_step(1.0), 8.0);
+    let verdicts = verdicts.lock().expect("not poisoned").clone();
+    assert_eq!(verdicts.len(), 7, "{verdicts:#?}");
+    assert!(verdicts[0].contains("nothing to edit"), "{}", verdicts[0]);
+    assert!(
+        verdicts[1].contains("[E1] replaces `scale`"),
+        "the verdict names the anchor: {}",
+        verdicts[1]
+    );
+    assert!(
+        verdicts[2].starts_with("Registered revision 5."),
+        "the anchor repaired the last candidate: {}",
+        verdicts[2]
+    );
+    assert!(
+        verdicts[3].starts_with("Registered revision 6."),
+        "the hunk edited a registered revision: {}",
+        verdicts[3]
+    );
+    assert!(
+        verdicts[4].contains("could not be applied"),
+        "a search without a match is the edit nudge: {}",
+        verdicts[4]
+    );
+    assert!(
+        verdicts[5].contains("revision 99 is not registered"),
+        "{}",
+        verdicts[5]
+    );
+    assert_eq!(
+        rt.revision_code(Revision::new(6)).as_deref(),
+        Some("fn tool_step(x: f64) -> f64 { x * 8.0 }")
+    );
+    let stages = info.trace().attempts()[0].stages();
+    let tools: Vec<&str> = stages
+        .tool_builds()
+        .iter()
+        .map(|build| build.tool().as_str())
+        .collect();
+    assert_eq!(
+        tools,
+        [
+            "build_revision",
+            "edit_revision",
+            "edit_revision",
+            "edit_revision"
+        ],
+        "a refused call is no build"
+    );
+    assert_eq!(
+        stages.tool_builds()[1]
+            .stages()
+            .edits()
+            .map(|edits| edits.anchors),
+        Some(1)
+    );
+    assert_eq!(
+        stages.tool_builds()[2]
+            .stages()
+            .edits()
+            .map(|edits| edits.hunks),
+        Some(1)
+    );
+}
+
+/// A broken candidate, repaired by an anchor on its verdict, then varied
+/// by a hunk against the registered revision; two refusals on the way.
+async fn edit_repair_and_vary(rt: &'static Runtime, seen: Verdicts) -> String {
+    let record = |verdict: String| seen.lock().expect("not poisoned").push(verdict);
+    // A fresh lane has nothing to edit yet.
+    record(
+        edit(rt, EditRevisionArgs::new("E1 => 7.0"))
+            .await
+            .expect_err("no base yet")
+            .to_string(),
+    );
+    // An undefined name: the compiler underlines exactly `scale`.
+    record(
+        build(rt, "fn tool_step(x: f64) -> f64 { x * scale }")
+            .await
+            .expect("rejected"),
+    );
+    record(
+        edit(rt, EditRevisionArgs::new("E1 => 7.0"))
+            .await
+            .expect("registered"),
+    );
+    record(
+        edit(
+            rt,
+            EditRevisionArgs::against(
+                Revision::new(5),
+                "<<<<<<< SEARCH\n7.0\n=======\n8.0\n>>>>>>> REPLACE",
+            ),
+        )
+        .await
+        .expect("registered"),
+    );
+    record(
+        edit(
+            rt,
+            EditRevisionArgs::new("<<<<<<< SEARCH\n9.0\n=======\n10.0\n>>>>>>> REPLACE"),
+        )
+        .await
+        .expect("a failed edit is an answer"),
+    );
+    record(
+        edit(
+            rt,
+            EditRevisionArgs::against(Revision::new(99), "E1 => 1.0"),
+        )
+        .await
+        .expect_err("not registered")
+        .to_string(),
+    );
+    record(submit(6).await.expect("built here"));
+    "Revision 6 scales by eight.".to_string()
 }
 
 /// Two candidates through the tool; the model then tries to choose a

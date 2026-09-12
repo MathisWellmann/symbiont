@@ -35,6 +35,15 @@ pub(crate) struct Fence {
 }
 
 impl Fence {
+    /// A block with this info-string `tag` and this `body`, as if it had
+    /// been fenced in a response.
+    pub(crate) fn new(tag: &str, body: &str) -> Self {
+        Self {
+            tag: tag.to_string(),
+            body: body.trim().to_string(),
+        }
+    }
+
     /// The block's content with outer whitespace trimmed.
     pub(crate) fn body(&self) -> &str {
         &self.body
