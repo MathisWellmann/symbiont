@@ -20,6 +20,7 @@ use syn::{
 
 use crate::{
     Result,
+    Revision,
     error::Error,
 };
 
@@ -331,9 +332,46 @@ impl<'ast> Visit<'ast> for VerbatimScan {
     }
 }
 
+/// The revision a response chooses in text: a line reading `revision: N`
+/// (also `revision N`, in any case, with or without backticks). The last
+/// such line wins.
+///
+/// This is the fallback of `submit_revision` for a run whose tools were
+/// withdrawn (see [`crate::Runtime::evolve_lane`]). The form is strict on
+/// purpose: it must not match prose that mentions a revision.
+pub(crate) fn submission_line(text: &str) -> Option<Revision> {
+    text.lines().rev().find_map(|line| {
+        let line = line.trim().trim_matches('`').trim();
+        let rest = line
+            .get(..8)
+            .filter(|head| head.eq_ignore_ascii_case("revision"))
+            .map(|_| &line[8..])?;
+        let number = rest.trim_start().strip_prefix(':').unwrap_or(rest).trim();
+        number.parse::<u64>().ok().map(Revision::new)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_submission_line_is_a_lone_revision_number() {
+        assert_eq!(submission_line("revision: 7"), Some(Revision::new(7)));
+        assert_eq!(
+            submission_line("Done.\n\n`Revision 12`\n"),
+            Some(Revision::new(12))
+        );
+        assert_eq!(
+            submission_line("revision: 3\nrevision: 4"),
+            Some(Revision::new(4)),
+            "the last line wins"
+        );
+        assert_eq!(submission_line("I built revision 7 and it works."), None);
+        assert_eq!(submission_line("revision: seven"), None);
+        assert_eq!(submission_line("revisions: 7"), None);
+        assert_eq!(submission_line("rev 7"), None);
+    }
 
     /// The single block of a well-behaved response, i.e. the one
     /// [`parse_rust_code`] settles on when there is nothing else to choose

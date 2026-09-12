@@ -218,6 +218,14 @@ enum Compiled {
     Registered(Revision, Vec<AppliedFix>),
 }
 
+/// What a response answered with; see [`Runtime::answer_of`].
+enum Answer {
+    /// A registered revision the agent chose.
+    Chosen(Revision),
+    /// The source of a validated candidate, for the build.
+    Candidate(String),
+}
+
 /// Cached pointer to the dylib's `__symbiont_take_panic` function.
 /// Updated on each reload alongside the evolvable function pointers.
 pub(crate) static TAKE_PANIC_PTR: AtomicPtr<()> = AtomicPtr::new(std::ptr::null_mut());
@@ -618,11 +626,13 @@ impl Runtime {
         )
         .record(t0.elapsed().as_secs_f64());
 
-        // Parse Rust from markdown fences and validate signatures.
-        let edit_base = tools_ctx.edit_base();
-        let candidate = self.parse_and_validate(stages, |stages| {
-            self.candidate_of(&llm_response, edit_base.as_ref(), stages)
-        })?;
+        let candidate = match self.answer_of(&llm_response, tools_ctx, stages)? {
+            Answer::Chosen(revision) => {
+                info!("Agent chose revision {revision}. LLM generation: {llm_time}ms.");
+                return Ok(revision);
+            }
+            Answer::Candidate(candidate) => candidate,
+        };
 
         // Compile, load and retain the new revision. Whether it also becomes
         // the active one is up to the caller.
@@ -633,6 +643,49 @@ impl Runtime {
         info!("Built revision {revision}. LLM generation: {llm_time}ms.");
 
         Ok(revision)
+    }
+
+    /// What a response answers with, in order of precedence:
+    ///
+    /// 1. The revision the agent chose with `submit_revision` during the
+    ///    run. It is built and registered already. The choice wins over a
+    ///    code block in the same reply: the agent named what it wants, and
+    ///    the block is most likely a quote of it.
+    /// 2. The code block, parsed and validated (see
+    ///    [`Runtime::parse_and_validate`]), as before the tools existed.
+    /// 3. Without a code block, a `revision: N` line naming a revision the
+    ///    tools built: the text form of the choice, for a run whose tools
+    ///    were withdrawn.
+    ///
+    /// A reply with none of these fails with [`Error::UnsubmittedRevisions`]
+    /// when the tools built revisions in this lane, so the nudge asks for
+    /// the choice, and with [`Error::NoRustCode`] otherwise.
+    fn answer_of(
+        &self,
+        response: &str,
+        tools_ctx: &ToolContext,
+        stages: &mut StageTimings,
+    ) -> Result<Answer> {
+        if let Some(revision) = tools_ctx.take_submitted() {
+            return Ok(Answer::Chosen(revision));
+        }
+        let edit_base = tools_ctx.edit_base();
+        match self.parse_and_validate(stages, |stages| {
+            self.candidate_of(response, edit_base.as_ref(), stages)
+        }) {
+            Ok(candidate) => Ok(Answer::Candidate(candidate)),
+            Err(Error::NoRustCode) => {
+                let built = tools_ctx.built();
+                if built.is_empty() {
+                    return Err(Error::NoRustCode);
+                }
+                match crate::parser::submission_line(response) {
+                    Some(revision) if built.contains(&revision) => Ok(Answer::Chosen(revision)),
+                    _ => Err(Error::UnsubmittedRevisions { built }),
+                }
+            }
+            Err(e) => Err(e),
+        }
     }
 
     /// The parse and validate stage: `parse` yields the candidate, which
@@ -1535,7 +1588,7 @@ impl Runtime {
                         // standing), and a transport failure is not one
                         // either; neither moves the reference.
                         let answered = candidate.is_some()
-                            || matches!(e, Error::NoRustCode)
+                            || matches!(e, Error::NoRustCode | Error::UnsubmittedRevisions { .. })
                             || e.exhausted_tool_turns();
                         let repeated = candidate.as_deref().is_some_and(|code| !code.is_empty())
                             && last_failed_code == candidate;
@@ -1843,6 +1896,22 @@ impl Runtime {
                                 ));
                             }
                         };
+                        // Without tools the agent cannot call `submit_revision`
+                        // for the revisions it built with them. Name the text
+                        // form of the choice, so those builds are not lost.
+                        if tools == ToolAccess::Withdrawn {
+                            let built = tools_ctx.built();
+                            if !built.is_empty() {
+                                write!(
+                                    prompt,
+                                    " You built revisions {} with the tools before they were \
+                                     withdrawn. To activate one of them, reply with the single \
+                                     line `revision: N` instead of code.",
+                                    crate::tools::revision_list(&built)
+                                )
+                                .expect(EXPECT_WRITE);
+                            }
+                        }
 
                         trace.push_attempt(
                             attempts,
