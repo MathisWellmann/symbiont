@@ -12,8 +12,8 @@ use serde_json::Value;
 /// Controls whether and how much reasoning ("thinking") the model performs
 /// before responding. This translates across various inference providers and servers:
 /// - **llama-server / llama.cpp & vLLM**: `chat_template_kwargs.enable_thinking`, `chat_template_kwargs.thinking`, `enable_thinking`, and `reasoning_effort`.
-/// - **OpenAI / vLLM / Groq**: `reasoning_effort` (`"none"`, `"low"`, `"medium"`, `"high"`).
-/// - **OpenRouter**: `reasoning.effort` (`"none"`, `"low"`, `"medium"`, `"high"`, `"max"`).
+/// - **OpenAI / vLLM / Groq**: `reasoning_effort` (`"none"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`).
+/// - **OpenRouter**: `reasoning.effort` (`"none"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`, `"max"`).
 /// - **Google Gemini**: `thinking_level` (`"MINIMAL"`, `"LOW"`, `"MEDIUM"`, `"HIGH"`) or `thinking_budget`.
 /// - **Anthropic**: `thinking` (`disabled`, `adaptive`, or token budget).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -27,6 +27,8 @@ pub enum ThinkingLevel {
     Medium,
     /// Deep reasoning effort.
     High,
+    /// Extra-high reasoning effort (`xhigh`), above `high` but below `max`.
+    XHigh,
     /// Maximum reasoning effort supported by the model/provider.
     Max,
 }
@@ -91,6 +93,18 @@ impl ThinkingLevel {
                     "effort": "high",
                 },
             }),
+            Self::XHigh => serde_json::json!({
+                "enable_thinking": true,
+                "reasoning_effort": "xhigh",
+                "chat_template_kwargs": {
+                    "enable_thinking": true,
+                    "thinking": true,
+                    "reasoning_effort": "xhigh",
+                },
+                "reasoning": {
+                    "effort": "xhigh",
+                },
+            }),
             Self::Max => serde_json::json!({
                 "enable_thinking": true,
                 "reasoning_effort": "high",
@@ -124,6 +138,7 @@ impl std::fmt::Display for ThinkingLevel {
             Self::Low => f.write_str("low"),
             Self::Medium => f.write_str("medium"),
             Self::High => f.write_str("high"),
+            Self::XHigh => f.write_str("xhigh"),
             Self::Max => f.write_str("max"),
         }
     }
