@@ -75,6 +75,23 @@ pub enum RevisionToolError {
         /// The revisions the lane registered through the tools.
         built: Vec<Revision>,
     },
+    /// The agent asked to edit a revision that is not registered.
+    #[error(
+        "revision {requested} is not registered; registered revisions: 0..={latest}. Omit `base` \
+         to edit the candidate you last built or had rejected."
+    )]
+    UnknownRevision {
+        /// The revision the agent asked for.
+        requested: Revision,
+        /// The highest registered revision.
+        latest: Revision,
+    },
+    /// The agent asked to edit the last candidate, and there is none yet.
+    #[error(
+        "nothing to edit: no candidate was built or rejected in this lane yet. Send a complete \
+         candidate to `build_revision` first, or pass `base` to edit a registered revision."
+    )]
+    NoEditBase,
     /// The harness itself failed (IO, dylib load): nothing the agent can
     /// repair.
     #[error("the harness failed: {0}")]
@@ -90,7 +107,9 @@ impl RevisionToolError {
             Self::OutsideEvolve | Self::BudgetExhausted { .. } => {
                 ToolExecutionError::permission_denied(text).with_retryable(false)
             }
-            Self::NotBuiltHere { .. } => ToolExecutionError::not_found(text).with_retryable(false),
+            Self::NotBuiltHere { .. } | Self::UnknownRevision { .. } | Self::NoEditBase => {
+                ToolExecutionError::not_found(text).with_retryable(false)
+            }
             Self::Harness(_) => ToolExecutionError::other(text).with_retryable(false),
         }
     }

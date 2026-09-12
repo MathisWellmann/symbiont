@@ -153,6 +153,8 @@ pub use tools::{
     ApiIndexTool,
     BuildRevisionArgs,
     BuildRevisionTool,
+    EditRevisionArgs,
+    EditRevisionTool,
     RevisionSourceArgs,
     RevisionSourceError,
     RevisionSourceTool,

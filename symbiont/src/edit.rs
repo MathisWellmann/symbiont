@@ -469,6 +469,29 @@ fn parse_hunk(lines: &[&str], start: usize) -> Result<(Hunk, usize), EditError> 
     ))
 }
 
+/// The fences of an edit sent as plain text, as through a tool argument:
+/// its own fences when it has any, else the whole text as one block, tagged
+/// `rust-edit` when it opens with a hunk or an anchor and `rust` otherwise
+/// (an item replacement, or a complete candidate).
+pub(crate) fn fences_of_text(text: &str) -> Vec<Fence> {
+    let fences = crate::parser::fences(text);
+    if !fences.is_empty() {
+        return fences;
+    }
+    let first_line = text
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("");
+    let tag = if first_line.trim_start().starts_with(SEARCH_MARKER)
+        || parse_anchor_head(first_line).is_some()
+    {
+        "rust-edit"
+    } else {
+        "rust"
+    };
+    vec![Fence::new(tag, text)]
+}
+
 /// `E<n> => rest`: the anchor number and whatever follows the arrow.
 fn parse_anchor_head(line: &str) -> Option<(usize, &str)> {
     let rest = line.trim_start().strip_prefix('E')?;
@@ -810,6 +833,32 @@ mod tests {
 
     fn resolve_response(base: &EditBase, response: &str) -> Result<Resolved, EditError> {
         resolve(base, &fences(response), &["sort"])
+    }
+
+    #[test]
+    fn plain_text_edits_are_fenced_by_their_opening_line() {
+        let hunk = "<<<<<<< SEARCH\nlen / 2\n=======\nlen as f64 / 2.0\n>>>>>>> REPLACE";
+        assert_eq!(fences_of_text(hunk), vec![Fence::new("rust-edit", hunk)]);
+        let anchor = "\n  E1 => len as f64 / 2.0\n";
+        assert_eq!(
+            fences_of_text(anchor),
+            vec![Fence::new("rust-edit", anchor)]
+        );
+        let item = "fn helper(x: f64) -> f64 { x * 3.0 }";
+        assert_eq!(fences_of_text(item), vec![Fence::new("rust", item)]);
+        // Text that fences itself keeps its own fences.
+        let fenced = "```rust-edit\nE1 => 2.0\n```\n```rust\nfn helper(x: f64) -> f64 { x }\n```";
+        assert_eq!(fences_of_text(fenced), fences(fenced));
+        // The plain forms resolve like their fenced counterparts.
+        let resolved = resolve(
+            &base_with_error_at("len / 2"),
+            &fences_of_text(anchor),
+            &["sort"],
+        );
+        assert!(
+            matches!(resolved, Ok(Resolved::Edited { ref source, .. }) if source.contains("len as f64 / 2.0")),
+            "{resolved:?}"
+        );
     }
 
     fn edited(result: Result<Resolved, EditError>) -> String {

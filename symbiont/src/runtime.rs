@@ -132,6 +132,7 @@ use crate::{
     },
     parser::{
         Candidate,
+        Fence,
         parse_candidate,
         parse_rust_code,
     },
@@ -740,9 +741,25 @@ impl Runtime {
         let Some(base) = edit_base else {
             return parse_rust_code(response);
         };
-        let fences = crate::parser::fences(response);
+        self.edited_candidate(base, &crate::parser::fences(response), stages, || {
+            parse_rust_code(response)
+        })
+    }
+
+    /// The candidate `fences` describe against `base`: the base with the
+    /// edits applied, or, when the fences carry no edits, whatever `whole`
+    /// parses as the complete candidate. An edit is recorded in `stages` for
+    /// the trace; an edit that does not apply is [`Error::EditFailed`] with
+    /// the base unchanged.
+    pub(crate) fn edited_candidate(
+        &self,
+        base: &EditBase,
+        fences: &[Fence],
+        stages: &mut StageTimings,
+        whole: impl FnOnce() -> Result<Candidate>,
+    ) -> Result<Candidate> {
         let declared: Vec<&str> = self.decls.iter().map(|decl| decl.name).collect();
-        match edit::resolve(base, &fences, &declared) {
+        match edit::resolve(base, fences, &declared) {
             Ok(edit::Resolved::Edited { source, edits }) => {
                 counter!(EVOLVE_EDITS).increment(edits.total() as u64);
                 info!(
@@ -755,7 +772,7 @@ impl Runtime {
                 stages.set_edits(Some(edits));
                 parse_candidate(source)
             }
-            Ok(edit::Resolved::Whole) => parse_rust_code(response),
+            Ok(edit::Resolved::Whole) => whole(),
             Err(error) => Err(Error::EditFailed {
                 code: base.source().to_string(),
                 err: error.to_string(),
