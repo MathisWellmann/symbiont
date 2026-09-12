@@ -220,6 +220,15 @@ pub struct StageTimings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[getset(get = "pub", set = "pub(crate)")]
     edits: Option<EditRecord>,
+
+    /// The candidates the agent built through the revision tools during
+    /// this attempt's run (see [`crate::tools`]), in call order. Each one
+    /// went through the same parse, validate and build as a response, and
+    /// carries its own record of those stages. Empty for an agent without
+    /// the tools. Absent from traces written before symbiont 0.39.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[getset(get = "pub", set = "pub(crate)")]
+    tool_builds: Vec<ToolBuild>,
 }
 
 impl StageTimings {
@@ -269,8 +278,84 @@ impl StageTimings {
             }
             None => {}
         }
+        if !self.tool_builds.is_empty() {
+            let outcomes: Vec<String> = self
+                .tool_builds
+                .iter()
+                .map(|build| format!("{} {}", build.tool, build.outcome.render()))
+                .collect();
+            parts.push(format!(
+                "{} tool build(s): {}",
+                self.tool_builds.len(),
+                outcomes.join("; ")
+            ));
+        }
         if !parts.is_empty() {
             writeln!(out, "stages: {}", parts.join(", ")).expect(EXPECT_WRITE);
+        }
+    }
+}
+
+/// One candidate the agent built through a revision tool (see
+/// [`crate::tools`]) inside an attempt's run.
+///
+/// A tool build is a complete pipeline pass of its own: parse, validate,
+/// compile, register. Unlike a response, its verdict goes back to the agent
+/// as the tool's result within the same run, so a run may hold several of
+/// these before it answers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Getters, TypedBuilder)]
+#[getset(get = "pub")]
+pub struct ToolBuild {
+    /// The tool that was called: `build_revision` or `edit_revision`.
+    #[builder(setter(into))]
+    tool: String,
+    /// The candidate the pipeline saw: the code as sent, or the base with
+    /// the edits applied. `None` when the edits did not apply.
+    #[builder(default)]
+    candidate: Option<String>,
+    /// The stages the candidate went through. `llm` and `tool_builds` are
+    /// always empty here.
+    stages: StageTimings,
+    /// What the tool answered.
+    outcome: ToolBuildOutcome,
+    /// Wall time of the tool call.
+    duration: Duration,
+}
+
+/// The verdict of one tool build.
+// Tagged `outcome`, not `kind`: `Rejected` carries a `kind` field, which
+// serde forbids beside an internal tag of the same name.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum ToolBuildOutcome {
+    /// The candidate built and is registered under this revision.
+    Registered {
+        /// The registered revision. An existing one when the candidate was
+        /// byte-identical to it.
+        revision: Revision,
+    },
+    /// The pipeline rejected the candidate and the tool answered with the
+    /// same nudge a rejected response gets.
+    Rejected {
+        /// Failure kind, with the labels of
+        /// [`crate::observability::EVOLVE_FAILURES`].
+        kind: String,
+        /// The text the agent read.
+        verdict: String,
+    },
+    /// The candidate was byte-identical to one the compiler already
+    /// rejected in this lane. The tool answered with the earlier verdict
+    /// and spent no build.
+    Repeated,
+}
+
+impl ToolBuildOutcome {
+    /// A one-line summary.
+    pub(crate) fn render(&self) -> String {
+        match self {
+            Self::Registered { revision } => format!("registered revision {revision}"),
+            Self::Rejected { kind, .. } => format!("rejected ({kind})"),
+            Self::Repeated => "repeated".to_string(),
         }
     }
 }

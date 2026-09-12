@@ -58,6 +58,7 @@
 //! | [`REVISIONS_LOADED`]        | gauge     | —                      |
 //! | [`REVISION_ACTIVATIONS`]    | counter   | `source`               |
 //! | [`REVISION_DEDUP_HITS`]     | counter   | —                      |
+//! | [`TOOL_BUILDS`]             | counter   | `tool`, `outcome`      |
 //! | [`DYLIB_SIZE_BYTES`]        | histogram | —                      |
 //! | [`DYLIB_SOURCE_BYTES`]      | histogram | —                      |
 //!
@@ -206,6 +207,13 @@ pub const COMPILE_AUTOFIXES: &str = "symbiont_compile_autofixes_total";
 /// (see the `edit` module). Against `symbiont_evolve_attempts` this says
 /// how often the model repairs by editing rather than by rewriting.
 pub const EVOLVE_EDITS: &str = "symbiont_evolve_edits_total";
+/// Candidates the agent built through the revision tools (`build_revision`,
+/// `edit_revision`; see the `tools` module), by `tool` and `outcome`
+/// (`registered`, `rejected`, `repeated`, `budget`). Against `symbiont_evolve_attempts`
+/// this says how much of the repair work moved from response rounds into
+/// tool calls; a high `repeated` share says the model resends code the
+/// compiler already rejected.
+pub const TOOL_BUILDS: &str = "symbiont_tool_builds_total";
 /// Size in bytes of each successfully loaded dylib.
 pub const DYLIB_SIZE_BYTES: &str = "symbiont_dylib_size_bytes";
 /// Size in bytes of the generated Rust source per revision. Detects code
@@ -402,6 +410,11 @@ pub fn describe_metrics() {
         EVOLVE_EDITS,
         Unit::Count,
         "Edits applied to the previous candidate by repair rounds"
+    );
+    describe_counter!(
+        TOOL_BUILDS,
+        Unit::Count,
+        "Candidates built through the revision tools, by tool and outcome"
     );
     describe_histogram!(
         DYLIB_SIZE_BYTES,
