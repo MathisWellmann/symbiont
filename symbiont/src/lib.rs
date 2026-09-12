@@ -102,6 +102,7 @@ pub use inference::{
     agent_builder,
     agent_from_env,
     init_agent,
+    with_revision_tools,
 };
 pub use init_tracing::init_tracing;
 pub use profile::Profile;

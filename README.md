@@ -175,6 +175,16 @@ cargo run -p fractal-studio-example --release
   harness applies rustc's `MachineApplicable` suggestions itself (a missing `&`, `2` where `2.0` is due) and
   attaches the definition of any host type the agent called a non-existent method on.
   See [edit.rs](symbiont/src/edit.rs) and [diagnostics.rs](symbiont/src/diagnostics.rs).
+- **Revision tools**:
+  `with_revision_tools(builder, runtime)` gives the agent the pipeline as tool calls: `build_revision`
+  compiles a candidate and answers with its revision number or the compiler's verdict inside the same
+  run, `edit_revision` repairs the last candidate with the edit forms above, `revision_source` reads
+  any revision back, and `submit_revision` chooses the one the harness activates. The agent can build
+  several variants, compare them with a host-supplied `EvaluateRevisionTool`, and submit the best,
+  instead of answering with one code block per attempt. The retry ladder stays: a lane that builds
+  but does not choose is nudged for the choice, a lane without code is nudged for code, and
+  `Runtime::MAX_TOOL_BUILDS` bounds the compiles a lane can spend through the tools.
+  See [tools](symbiont/src/tools/mod.rs) and the [revision_tools test](symbiont/tests/revision_tools.rs).
 
 ## When Symbiont wins
 
