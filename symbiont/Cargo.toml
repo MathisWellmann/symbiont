@@ -16,6 +16,7 @@ website = "https://symbiont.rs"
 workspace = true
 
 [dependencies]
+dsh-log = { version = "0.39.0", path = "../dsh-log" }
 symbiont-macros = { version = "0.39.0", path = "../symbiont-macros" }
 
 rig-agent.workspace = true
@@ -55,14 +56,10 @@ tracing-test = "0.2"
 [features]
 default = []
 # Used to write the agent traces into a `deepseek-harness` compatible file.
-dsh-export = ["dep:zstd"]
+dsh-export = ["dsh-log/zstd"]
 # Prometheus exporter for long-running host binaries; pull this in and call
 # `symbiont::observability::init_observability()` at startup.
 prometheus = ["dep:metrics-exporter-prometheus"]
-
-[dependencies.zstd]
-optional = true
-version = "0.13"
 
 [dependencies.metrics-exporter-prometheus]
 default-features = false

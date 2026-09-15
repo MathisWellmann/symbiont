@@ -73,12 +73,13 @@
 //! ```
 mod export;
 mod log;
-pub mod types;
 #[cfg(feature = "dsh-export")]
 mod zstd;
 
 use std::time::Duration;
 
+/// The record types of the harness log, from the `dsh-log` crate.
+pub use dsh_log::types;
 pub use export::{
     DshSession,
     write_dsh_session,
@@ -87,7 +88,7 @@ use rig_core::completion::Usage;
 #[cfg(feature = "dsh-export")]
 pub use zstd::export_dsh_session;
 
-use crate::dsh::types::TokenUsage;
+use self::types::TokenUsage;
 
 /// A duration as whole milliseconds, saturating rather than wrapping.
 fn millis_of(duration: Duration) -> u64 {
