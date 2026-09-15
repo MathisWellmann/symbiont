@@ -1,7 +1,6 @@
 [workspace]
 exclude = ["assets", "website"]
 members = [
-  "dsh-log",
   "examples/batched-evolution",
   "examples/counter",
   "examples/evolving-trader",
@@ -14,6 +13,7 @@ members = [
   "examples/tictactoe",
   "examples/tool-calling",
   "symbiont",
+  "symbiont-dsh-log",
   "symbiont-macros",
 ]
 resolver = "2"

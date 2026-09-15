@@ -5,7 +5,7 @@ description = "serde types and zstd container of the DeepSeek Harness (dsh) sess
 edition = "2024"
 keywords = ["agent", "deepseek", "harness", "jsonl", "llm"]
 license = "MPL-2.0"
-name = "dsh-log"
+name = "symbiont-dsh-log"
 repository = "https://github.com/MathisWellmann/symbiont"
 version.workspace = true
 
