@@ -1,0 +1,27 @@
+[package]
+authors = ["MathisWellmann <wellmannmathis@gmail.com>"]
+categories = ["artificial-intelligence", "encoding"]
+description = "serde types and zstd container of the DeepSeek Harness (dsh) session log."
+edition = "2024"
+keywords = ["agent", "deepseek", "harness", "jsonl", "llm"]
+license = "MPL-2.0"
+name = "dsh-log"
+repository = "https://github.com/MathisWellmann/symbiont"
+version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde.workspace = true
+
+serde_json = "1"
+
+[dependencies.zstd]
+optional = true
+version = "0.13"
+
+[features]
+default = []
+# Write and read the `session.jsonl.zstd` frame container.
+zstd = ["dep:zstd"]

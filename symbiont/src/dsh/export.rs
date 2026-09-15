@@ -128,7 +128,7 @@ fn fresh_nonce() -> u64 {
 /// reads. The [`EvolutionTrace`] stays the machine-readable record; see the
 /// [module docs](crate::dsh) for the full mapping.
 #[must_use]
-fn dsh_lines(trace: &EvolutionTrace, session: &DshSession<'_>) -> Vec<LogLine> {
+pub(super) fn dsh_lines(trace: &EvolutionTrace, session: &DshSession<'_>) -> Vec<LogLine> {
     let mut log = Log::new(epoch_millis(session.started_at));
 
     log.header(trace, session);
@@ -166,11 +166,9 @@ pub fn write_dsh_session<W: Write>(
     session: &DshSession<'_>,
     mut out: W,
 ) -> io::Result<()> {
-    for line in dsh_lines(trace, session) {
-        let json = serde_json::to_string(&line).map_err(io::Error::other)?;
-        writeln!(out, "{json}")?;
-    }
-    Ok(())
+    out.write_all(&dsh_log::container::encode_jsonl(&dsh_lines(
+        trace, session,
+    ))?)
 }
 
 /// Milliseconds since the Unix epoch, saturating at `0` for a pre-epoch time.

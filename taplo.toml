@@ -1,3 +1,5 @@
+exclude = [".direnv/**"]
+
 # For more options see: https://taplo.tamasfe.dev/configuration/formatter-options.html
 [formatting]
 indent_entries = false

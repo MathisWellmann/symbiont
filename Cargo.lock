@@ -1843,6 +1843,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
 
 [[package]]
+name = "dsh-log"
+version = "0.39.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "zstd",
+]
+
+[[package]]
 name = "dunce"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6374,6 +6383,7 @@ dependencies = [
  "bytes",
  "criterion",
  "derive_more",
+ "dsh-log",
  "futures-util",
  "getset",
  "http",
@@ -6400,7 +6410,6 @@ dependencies = [
  "tracing-subscriber",
  "tracing-test",
  "typed-builder",
- "zstd",
 ]
 
 [[package]]
