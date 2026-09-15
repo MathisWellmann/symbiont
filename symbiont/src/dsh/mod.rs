@@ -78,7 +78,7 @@ mod zstd;
 
 use std::time::Duration;
 
-/// The record types of the harness log, from the `dsh-log` crate.
+/// The record types of the harness log, from the `symbiont-dsh-log` crate.
 pub use dsh_log::types;
 pub use export::{
     DshSession,
