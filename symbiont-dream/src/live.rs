@@ -104,11 +104,14 @@ impl<O> Live<O> {
     /// input order.
     ///
     /// The batch is recorded as executed; legality is the policy's job and
-    /// an outcome that was paid for is never discarded here.
+    /// an outcome that was paid for is never discarded here. A round that
+    /// records no node (empty `outcomes`, or an error on the first action)
+    /// is not added to the trajectory.
     ///
     /// # Errors
     /// [`Error::UnknownNode`] if an action references a node that is not in
-    /// the tree. Nodes recorded before the offending action stay recorded.
+    /// the tree. Nodes recorded before the offending action stay recorded, as
+    /// a partial round.
     pub fn commit_round<I>(&mut self, outcomes: I) -> Result<Vec<NodeId>, Error>
     where
         I: IntoIterator<Item = (Action, O)>,
@@ -121,7 +124,7 @@ impl<O> Live<O> {
             {
                 Ok(id) => id,
                 Err(e) => {
-                    self.rounds.push(record);
+                    self.push_round(record);
                     return Err(e);
                 }
             };
@@ -130,8 +133,14 @@ impl<O> Live<O> {
             record.revealed.push(id);
         }
         let ids = record.revealed.clone();
-        self.rounds.push(record);
+        self.push_round(record);
         Ok(ids)
+    }
+
+    fn push_round(&mut self, record: RoundRecord) {
+        if !record.revealed.is_empty() {
+            self.rounds.push(record);
+        }
     }
 
     /// End the run. The trajectory carries the same round structure a replay
