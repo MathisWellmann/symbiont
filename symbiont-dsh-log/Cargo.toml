@@ -23,5 +23,5 @@ version = "0.13"
 
 [features]
 default = []
-# Write and read the `session.jsonl.zstd` frame container.
+# Write and read the `session.v3.jsonl.zstd` frame container.
 zstd = ["dep:zstd"]

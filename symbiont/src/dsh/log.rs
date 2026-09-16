@@ -45,6 +45,7 @@ use crate::{
             SessionHeaderLine,
             SessionTitleData,
             StepStartData,
+            SystemMessageData,
             TitleSource,
             TokenUsage,
             ToolCallData,
@@ -92,12 +93,12 @@ impl Log {
     /// Write the `session` header record: the log's first line.
     pub(super) fn header(&mut self, trace: &EvolutionTrace, session: &DshSession<'_>) {
         self.lines.push(LogLine::Session(SessionHeaderLine {
-            version: 0,
+            version: 3,
             id: session.resolved_id(trace),
             created_at: self.time_ms,
             cwd: session.cwd().map(ToString::to_string),
             parent_session: None,
-            seed_length: None,
+            is_seeded: false,
             origin: None,
             delegation_depth: 0,
             agent_preset: Some("standard".to_string()),
@@ -126,6 +127,13 @@ impl Log {
 
         let mut step = 1;
         self.step_start(turn, step);
+
+        // The system prompt is the first surface event of a v3 session, so it
+        // lands in the first step, where it is protected against compaction
+        // rewrites that would not carry it forward.
+        if turn == 1 {
+            self.system_message(trace, turn, step);
+        }
 
         // The header is log-only and must sit inside an open turn. It does not
         // change across a lane, so the first turn is the only one to carry it.
@@ -235,7 +243,9 @@ impl Log {
         self.lines.push(LogLine::TurnStart(event));
         self.step_start(turn, 1);
         if turn == 1 {
-            // A trace with no attempt at all still needs its header.
+            // A trace with no attempt at all still needs its system message
+            // and header.
+            self.system_message(trace, turn, 1);
             self.request_header(trace, session);
         }
         self.session_title(trace);
@@ -296,7 +306,6 @@ impl Log {
                     stop: None,
                 },
                 adapter_defaults: None,
-                system: Some(trace.system_prompt().clone()),
                 // The tool schemas live on the caller's agent, not in the
                 // trace, so the header claims none rather than an empty set.
                 tools: None,
@@ -313,6 +322,27 @@ impl Log {
             });
             self.lines.push(LogLine::RequestContext(event));
         }
+    }
+
+    /// Write the rendered system prompt of one step. V3 carries it as a
+    /// surface message rather than a `request/header` field, and it must be
+    /// the first surface event of the session.
+    fn system_message(&mut self, trace: &EvolutionTrace, turn: u64, step: u64) {
+        let message = self.message(
+            Role::System,
+            vec![ContentBlock::Text {
+                text: trace.system_prompt().clone(),
+            }],
+            MessageSource::plugin(PLUGIN, ContextForm::Instructions),
+        );
+        let event = self
+            .event(SystemMessageData {
+                turn,
+                step,
+                message,
+            })
+            .on_surface();
+        self.lines.push(LogLine::SystemMessage(event));
     }
 
     /// Write a plain user turn.
@@ -369,6 +399,9 @@ impl Log {
             .event(AssistantMessageData {
                 turn,
                 step,
+                // No stream recording: the exporter assembles the message
+                // after the fact, so the chunk array is empty by definition.
+                stream: Vec::new(),
                 message,
                 usage,
             })

@@ -10,7 +10,8 @@
 //!
 //! | symbiont                                              | dsh                                  |
 //! | ------------------------------------------------------| -------------------------------------|
-//! | [`EvolutionTrace`]'s system prompt                        | `request/header` → `header.system`   |
+//! | [`EvolutionTrace`]'s system prompt                    | `system/message` in the first step,  |
+//! |                                                   | the first surface event of the log   |
 //! | [`AttemptTrace`]                                      | one turn (`turn/start` … `turn/end`) |
 //! | one assistant message plus the tool calls it made     | one step                             |
 //! | [`EvolutionTrace::history`] user text                 | `user/message`                       |
