@@ -130,7 +130,9 @@ pub enum Termination {
 /// What happened in one decision round.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RoundRecord {
-    /// Actions that were accepted and executed.
+    /// Actions that were accepted and executed. Empty when the policy
+    /// submitted a batch and every action of it was rejected; the round still
+    /// counts, see [`Trajectory::rounds`].
     pub batch: Vec<Action>,
     /// Nodes revealed (replay) or recorded (live) by this batch.
     pub revealed: Vec<NodeId>,
@@ -141,7 +143,11 @@ pub struct RoundRecord {
 /// The rounds of one rollout and how it ended.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Trajectory {
-    /// Decision rounds in order. Every entry was a non-empty batch.
+    /// Decision rounds in order, one per non-empty batch the policy
+    /// *submitted*. A batch whose actions were all rejected is still a
+    /// decision the policy spent: it counts towards `K₂` and the stall
+    /// limit, deflates the parallelism term, and keeps its `rejected` list
+    /// for diagnosis.
     pub rounds: Vec<RoundRecord>,
     /// Why the rollout ended.
     pub termination: Termination,
@@ -223,7 +229,8 @@ impl<'a, O> Replay<'a, O> {
     /// Apply one batch. Returns the termination if the replay is over.
     ///
     /// Illegal, duplicate and over-budget actions are dropped (or, in strict
-    /// mode, end the replay). Each accepted action reveals at most one
+    /// mode, end the replay); a batch rejected in full is recorded as a round
+    /// that revealed nothing. Each accepted action reveals at most one
     /// recorded child: the earliest unrevealed child of `from` whose context
     /// is fully revealed. Repeated root actions open successive branches.
     pub fn step(&mut self, batch: Vec<Action>) -> Option<Termination> {

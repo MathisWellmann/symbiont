@@ -161,6 +161,88 @@ fn leaves_only_rejects_interior_nodes_and_duplicates() {
 }
 
 #[test]
+fn fully_rejected_batch_still_costs_a_round() {
+    let tree = record(
+        &mut ParallelRefining {
+            branches: 1,
+            refinements: 1,
+        },
+        1,
+    );
+    let child = tree.children(NodeId::ROOT).next().expect("child").id;
+    let config = ReplayConfig::with_workers(1).stall_limit(2);
+    let mut sim = symbiont_dream::Replay::new(&tree, config);
+
+    // `child` is unrevealed, so the whole batch is illegal.
+    assert_eq!(sim.step(vec![Action::expand(child)]), None);
+    assert_eq!(sim.view().round(), 1);
+    assert_eq!(sim.view().revealed_count(), 0);
+    // A second wasted decision hits the stall limit.
+    assert_eq!(
+        sim.step(vec![Action::expand(child)]),
+        Some(Termination::Stalled)
+    );
+
+    let trajectory = sim.finish();
+    assert_eq!(trajectory.round_count(), 2);
+    assert_eq!(trajectory.revealed_count(), 0);
+    assert_eq!(trajectory.rejected_count(), 2);
+    assert!(trajectory.rounds.iter().all(|r| r.batch.is_empty()));
+    let score = quality()
+        .parallelism_weight(1.0)
+        .score(&tree, &trajectory)
+        .expect("same tree");
+    assert_eq!(score.parallelism, 0.0);
+}
+
+#[test]
+fn live_does_not_record_rounds_without_nodes() {
+    let mut live = Live::new(obs(0.0), 2);
+    let ghost = NodeId::ROOT;
+    let unknown = {
+        // Build an id well beyond anything this test's tree will hold.
+        let mut scratch = DiscoveryTree::new(obs(0.0));
+        (0..5)
+            .map(|_| scratch.push(ghost, vec![], obs(0.0)).expect("root"))
+            .last()
+            .expect("five pushes")
+    };
+
+    // Empty commit: no round.
+    assert_eq!(live.commit_round(Vec::new()), Ok(Vec::new()));
+    assert_eq!(live.round_count(), 0);
+
+    // Error on the first action: no round, nothing recorded.
+    assert_eq!(
+        live.commit_round([(Action::expand(unknown), obs(1.0))]),
+        Err(Error::UnknownNode(unknown))
+    );
+    assert_eq!(live.round_count(), 0);
+    assert_eq!(live.tree().node_count(), 1);
+
+    // Error on the second action: the first stays as a partial round.
+    let ghost_child = NodeId::ROOT;
+    assert_eq!(
+        live.commit_round([
+            (Action::expand(ghost_child), obs(1.0)),
+            (Action::expand(unknown), obs(2.0)),
+        ]),
+        Err(Error::UnknownNode(unknown))
+    );
+    assert_eq!(live.round_count(), 1);
+    assert_eq!(live.tree().node_count(), 2);
+
+    let (tree, trajectory) = live.finish(Termination::External);
+    assert_eq!(trajectory.round_count(), 1);
+    assert_eq!(trajectory.revealed_count(), 1);
+    assert!(trajectory.rounds.iter().all(|r| !r.revealed.is_empty()));
+    // The partial round's node is scorable.
+    let score = quality().score(&tree, &trajectory).expect("same tree");
+    assert_eq!(score.best_quality, 1.0);
+    assert_eq!(score.revealed, 1);
+}
+
+#[test]
 fn strict_mode_terminates_on_illegal_batch() {
     let tree = record(
         &mut ParallelRefining {
