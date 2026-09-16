@@ -6404,6 +6404,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "symbiont-dream"
+version = "0.40.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "symbiont-dsh-log"
 version = "0.40.0"
 dependencies = [
