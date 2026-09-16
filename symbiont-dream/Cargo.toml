@@ -1,0 +1,19 @@
+[package]
+authors = ["MathisWellmann <wellmannmathis@gmail.com>"]
+categories = ["algorithms", "artificial-intelligence"]
+description = "Discovery trees as replay simulators: the core of Dream-RSI (arXiv:2609.14858), generic over the recorded observation."
+edition = "2024"
+keywords = ["agent", "exploration", "replay", "search", "self-improvement"]
+license = "MPL-2.0"
+name = "symbiont-dream"
+repository = "https://github.com/MathisWellmann/symbiont"
+version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde.workspace = true
+
+[dev-dependencies]
+serde_json = "1"

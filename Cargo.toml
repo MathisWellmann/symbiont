@@ -13,6 +13,7 @@ members = [
   "examples/tictactoe",
   "examples/tool-calling",
   "symbiont",
+  "symbiont-dream",
   "symbiont-dsh-log",
   "symbiont-macros",
 ]
