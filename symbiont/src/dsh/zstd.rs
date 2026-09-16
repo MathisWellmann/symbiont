@@ -13,7 +13,7 @@ use crate::{
 
 /// Write `trace` into `sessions_root` as a zstd session artifact, under the
 /// directory layout the harness's JSONL backend expects
-/// (`<root>/<project-key>/<session-id>/session.jsonl.zstd`), and return the
+/// (`<root>/<project-key>/<session-id>/session.v3.jsonl.zstd`), and return the
 /// path written.
 ///
 /// `sessions_root` is `$DSH_HOME/sessions`, which is `~/.dsh/sessions` by

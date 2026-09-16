@@ -209,15 +209,16 @@ mod tests {
 
     /// The first line is the `session` header the harness's shape guard
     /// accepts: a numeric `version` it reads, a string `id`, an epoch
-    /// `createdAt` and a non-negative `delegationDepth`.
+    /// `createdAt`, a `isSeeded` flag and a non-negative `delegationDepth`.
     #[test]
     fn first_line_is_a_loadable_header() {
         let header = &export(&sample_trace())[0];
 
         assert_eq!(header["type"], "session");
-        assert_eq!(header["version"], 0);
+        assert_eq!(header["version"], 3);
         assert!(header["id"].as_str().is_some_and(|id| !id.is_empty()));
         assert_eq!(header["createdAt"], 1_700_000_000_000_u64);
+        assert_eq!(header["isSeeded"], false);
         assert_eq!(header["delegationDepth"], 0);
         assert_eq!(header["cwd"], "/tmp/project");
     }
@@ -370,16 +371,46 @@ mod tests {
     }
 
     /// The system prompt is the reason this exporter takes an argument the
-    /// trace does not hold. It has to reach the request header.
+    /// trace does not hold. V3 carries it as the first surface event, a
+    /// `system/message` in the first step, and the request header must no
+    /// longer claim one.
     #[test]
-    fn the_system_prompt_reaches_the_request_header() {
+    fn the_system_prompt_reaches_the_system_message() {
         let lines = export(&sample_trace());
+        let system = lines
+            .iter()
+            .find(|event| event["type"] == "system/message")
+            .expect("a system message");
+
+        assert_eq!(
+            system["data"]["message"]["content"][0]["text"],
+            "you write rust"
+        );
+        assert_eq!(system["data"]["message"]["role"], "system");
+        assert_eq!(system["data"]["message"]["source"]["kind"], "plugin");
+        assert_eq!(system["surfaceOp"], "append");
+
+        // It is the first event that lands on the transcript.
+        let first_surface = lines
+            .iter()
+            .find(|event| event["surfaceOp"] == "append")
+            .expect("a surface event");
+        assert!(
+            first_surface["type"] == "system/message",
+            "the system prompt must open the transcript, found {}",
+            first_surface["type"]
+        );
+
         let header = lines
             .iter()
             .find(|event| event["type"] == "request/header")
             .expect("a request header");
-
-        assert_eq!(header["data"]["header"]["system"], "you write rust");
+        assert!(
+            !header["data"]["header"]
+                .as_object()
+                .is_some_and(|h| h.contains_key("system")),
+            "v3 retired the header's system field",
+        );
         assert_eq!(
             header["data"]["header"]["config"]["model"],
             "Qwen/Qwen3.8-27B-FP8"
@@ -404,6 +435,8 @@ mod tests {
         assert_eq!(
             surface,
             vec![
+                // the system prompt opens the transcript
+                "system/message",
                 // attempt 1: prompt, the tool-calling turn, its result, the answer
                 "user/message",
                 "assistant/message",

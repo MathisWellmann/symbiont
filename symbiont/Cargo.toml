@@ -16,8 +16,8 @@ website = "https://symbiont.rs"
 workspace = true
 
 [dependencies]
-dsh-log = { version = "0.39.0", path = "../symbiont-dsh-log", package = "symbiont-dsh-log" }
-symbiont-macros = { version = "0.39.0", path = "../symbiont-macros" }
+dsh-log = { version = "0.40.0", path = "../symbiont-dsh-log", package = "symbiont-dsh-log" }
+symbiont-macros = { version = "0.40.0", path = "../symbiont-macros" }
 
 rig-agent.workspace = true
 rig-core.workspace = true

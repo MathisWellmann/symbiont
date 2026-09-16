@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 //! The on-disk container of a session log and the harness's path layout.
 //!
-//! A session lives at `<sessions_root>/<project-key>/<session-id>/session.jsonl.zstd`.
+//! A session lives at `<sessions_root>/<project-key>/<session-id>/session.v3.jsonl.zstd`.
 //! The file is not a compressed file but a **concatenation of independently
 //! decodable, checksummed zstd frames**: the first frame holds the header line
 //! alone, every later frame holds one append batch of JSONL records. That is
@@ -26,8 +26,8 @@ use serde::{
     de::DeserializeOwned,
 };
 
-/// File name of a session artifact inside its session directory.
-pub const SESSION_FILE_NAME: &str = "session.jsonl.zstd";
+/// File name of a session artifact inside its session directory (format v3).
+pub const SESSION_FILE_NAME: &str = "session.v3.jsonl.zstd";
 
 /// The harness's project-directory name for `cwd`: separator runs collapse to
 /// `-`, anything outside `[A-Za-z0-9._-]` becomes `~XXXX` over UTF-16 code
@@ -159,7 +159,7 @@ pub fn zstd_frame(input: &[u8]) -> io::Result<Vec<u8>> {
     writer.finish()
 }
 
-/// One `session.jsonl.zstd` artifact: a header frame followed by append
+/// One `session.v3.jsonl.zstd` artifact: a header frame followed by append
 /// batches.
 #[cfg(feature = "zstd")]
 #[derive(Debug, Clone, PartialEq, Eq)]

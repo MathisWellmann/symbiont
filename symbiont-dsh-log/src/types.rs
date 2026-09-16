@@ -1,6 +1,8 @@
-//! Rust/serde mirror of the DeepSeek Harness (DSH) session trajectory format.
+//! Rust/serde mirror of the DeepSeek Harness (DSH) session trajectory format,
+//! generation v3 — the current format the harness writes natively and reads
+//! without migration (older generations are migrated in memory by the viewer).
 //!
-//! On disk: `~/.dsh/sessions/<project-key>/<session-dir>/session.jsonl.zstd`
+//! On disk: `~/.dsh/sessions/<project-key>/<session-dir>/session.v3.jsonl.zstd`
 //! where `<project-key>` is the cwd with `/` replaced by `-`.
 //! The file is a concatenation of independent, checksummed Zstandard frames:
 //! one frame holds the header line only, each later frame holds one append batch of JSONL records.
@@ -46,6 +48,10 @@ pub enum LogLine {
     /// The `data` payload is the whole user-role message.
     #[serde(rename = "user/message")]
     UserMessage(Event<Message>),
+    /// The rendered system prompt of one step; must be the first surface event
+    /// of a session, inside the step it names (`source.kind == "plugin"`).
+    #[serde(rename = "system/message")]
+    SystemMessage(Event<SystemMessageData>),
     #[serde(rename = "assistant/message")]
     /// The assembled assistant message of one step.
     AssistantMessage(Event<AssistantMessageData>),
@@ -62,7 +68,7 @@ pub enum LogLine {
     /// Route metadata of the next model request.
     RequestContext(Event<RequestContextData>),
 
-    // ---- plugin-merged events (observed on disk, v0) ----
+    // ---- plugin-merged events (observed on disk) ----
     #[serde(rename = "session/title")]
     /// A session title snapshot.
     SessionTitle(Event<SessionTitleData>),
@@ -90,7 +96,7 @@ pub enum LogLine {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionHeaderLine {
-    /// On-disk format version; `0` for all current logs.
+    /// On-disk format version; `3` for the current format.
     pub version: u32,
     /// Session id (free-form branded string).
     pub id: String,
@@ -102,9 +108,9 @@ pub struct SessionHeaderLine {
     /// Session this one was forked from (seed lineage).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_session: Option<String>,
-    /// How many leading events were inherited through a seed.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub seed_length: Option<u64>,
+    /// Whether the session was seeded from a parent (inherited leading
+    /// events); required on disk.
+    pub is_seeded: bool,
     /// Only present for subagent children.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<Origin>,
@@ -327,6 +333,22 @@ pub struct StepStartData {
     pub step: u64,
 }
 
+/// `system/message` — the rendered system prompt of one step.
+///
+/// V3 carries the system prompt as a surface message (v0 embedded it in
+/// `request/header`'s `system`, which v3 rejects). It must be the first
+/// surface event of the session and sit inside the step it names.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemMessageData {
+    /// The turn the step belongs to.
+    pub turn: u64,
+    /// The step the prompt is anchored in.
+    pub step: u64,
+    /// The prompt: `role == "system"`, `source.kind == "plugin"`.
+    pub message: Message,
+}
+
 /// `assistant/message` — assembled assistant message for one step.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -335,6 +357,10 @@ pub struct AssistantMessageData {
     pub turn: u64,
     /// The step within the turn.
     pub step: u64,
+    /// The packed model-stream records (chunk timings, deltas, finish state).
+    /// Required in v3; producers that assemble the message after the call
+    /// returns log an empty array.
+    pub stream: Vec<Value>,
     /// The assembled assistant message.
     pub message: Message,
     /// Present when the adapter reported token accounting.
@@ -412,6 +438,10 @@ pub enum RequestHeaderReason {
 }
 
 /// Logged request state outside derived history.
+///
+/// V3 retired the header's `system` member: the rendered system prompt is a
+/// [`LogLine::SystemMessage`] event, and `request/header` carrying one is
+/// refused by the harness.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EpochHeader {
@@ -420,9 +450,6 @@ pub struct EpochHeader {
     /// Effective config fields materialized from the exact adapter.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub adapter_defaults: Option<LlmCallConfigAdapterDefaults>,
-    /// Rendered system prompt text; absent for a system-less request.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub system: Option<String>,
     /// Assembled tool schemas; absent for a tool-less request.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<ToolSchema>>,
@@ -535,8 +562,8 @@ pub enum Role {
 /// - `plugin`→ `{ plugin, form?, ... }` where `form` is a
 ///   [`ContextForm`] (`snapshot` carries `sections`, `notice` a `summary`)
 ///   plus plugin extras (e.g. `compactionId` from the compact plugin).
-/// - `user`  → usually empty; client plugins may add fields such as
-///   `rpcId` / `clientTimeZone`.
+/// - `user`  → no required fields; v3 admits producer extras such as
+///   `rpcId` / `clientTimeZone` / custom members.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MessageSource {
@@ -987,16 +1014,45 @@ mod tests {
 
     #[test]
     fn header_parses() {
-        let line = r#"{"type":"session","version":0,"id":"s1","createdAt":1787764689062,"cwd":"/x","delegationDepth":0,"agentPreset":"standard"}"#;
+        let line = r#"{"type":"session","version":3,"id":"s1","createdAt":1787764689062,"cwd":"/x","isSeeded":false,"delegationDepth":0,"agentPreset":"standard"}"#;
         let l: LogLine = serde_json::from_str(line).expect("a header line parses");
         match l {
             LogLine::Session(h) => {
-                assert_eq!(h.version, 0);
+                assert_eq!(h.version, 3);
+                assert!(!h.is_seeded);
                 assert_eq!(h.delegation_depth, 0);
                 assert_eq!(h.agent_preset.as_deref(), Some("standard"));
             }
             other => panic!("a `session` line decodes to a header, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn system_message_roundtrip() {
+        let event = Event::new(
+            2,
+            1787764689062,
+            SystemMessageData {
+                turn: 1,
+                step: 1,
+                message: Message {
+                    id: "sys-1".to_string(),
+                    role: Role::System,
+                    content: vec![ContentBlock::Text {
+                        text: "you are jeff".to_string(),
+                    }],
+                    source: MessageSource::plugin("persona", ContextForm::Instructions),
+                },
+            },
+        )
+        .on_surface();
+        let json = serde_json::to_value(&LogLine::SystemMessage(event)).expect("serializes");
+        assert_eq!(json["type"], "system/message");
+        assert_eq!(json["data"]["message"]["role"], "system");
+        assert_eq!(json["data"]["message"]["source"]["kind"], "plugin");
+        assert_eq!(json["surfaceOp"], "append");
+        let back: LogLine = serde_json::from_value(json).expect("parses back");
+        assert!(matches!(back, LogLine::SystemMessage(..)));
     }
 
     #[test]
