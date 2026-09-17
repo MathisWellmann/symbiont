@@ -2,6 +2,10 @@
 //! Dreaming: evaluate candidate policies over the recorded history and pick
 //! the one to deploy next.
 
+use getset::{
+    CopyGetters,
+    Getters,
+};
 use serde::{
     Deserialize,
     Serialize,
@@ -25,22 +29,28 @@ use crate::{
 };
 
 /// One policy replayed over one world.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Getters)]
 pub struct WorldEvaluation {
     /// What the policy did.
-    pub trajectory: Trajectory,
+    #[getset(get = "pub")]
+    trajectory: Trajectory,
+
     /// What it was worth.
-    pub score: ReplayScore,
+    #[getset(get = "pub")]
+    score: ReplayScore,
 }
 
 /// One policy replayed over every world of the history.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Getters, CopyGetters)]
 pub struct Evaluation {
     /// Per-world results, in history order.
-    pub worlds: Vec<WorldEvaluation>,
+    #[getset(get = "pub")]
+    worlds: Vec<WorldEvaluation>,
+
     /// Mean of [`ReplayScore::value`] over the worlds; `NaN` for an empty
     /// history.
-    pub mean_value: f64,
+    #[getset(get_copy = "pub")]
+    mean_value: f64,
 }
 
 /// Replay `policy` over every world in `history` and average the objective.
@@ -65,7 +75,7 @@ where
     let mean_value = if worlds.is_empty() {
         f64::NAN
     } else {
-        worlds.iter().map(|w| w.score.value).sum::<f64>() / worlds.len() as f64
+        worlds.iter().map(|w| w.score.value()).sum::<f64>() / worlds.len() as f64
     };
     Ok(Evaluation { worlds, mean_value })
 }

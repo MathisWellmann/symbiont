@@ -2,6 +2,7 @@
 //! The replay objective (eq. 1 of the paper), parameterised by how the
 //! consumer reads quality and cost out of an observation.
 
+use getset::CopyGetters;
 use serde::{
     Deserialize,
     Serialize,
@@ -111,18 +112,29 @@ impl<'f, O> Objective<'f, O> {
 }
 
 /// The terms of one scored trajectory.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, CopyGetters)]
 pub struct ReplayScore {
     /// Best quality among the root and the revealed nodes.
-    pub best_quality: f64,
+    #[getset(get_copy = "pub")]
+    best_quality: f64,
+
     /// Summed cost of the revealed nodes.
-    pub total_cost: f64,
+    #[getset(get_copy = "pub")]
+    total_cost: f64,
+
     /// Revealed non-root nodes `N`.
-    pub revealed: usize,
+    #[getset(get_copy = "pub")]
+    revealed: usize,
+
     /// Decision rounds `k*`.
-    pub rounds: usize,
+    #[getset(get_copy = "pub")]
+    rounds: usize,
+
     /// `N / max(1, k*)`.
-    pub parallelism: f64,
+    #[getset(get_copy = "pub")]
+    parallelism: f64,
+
     /// The combined value `V`.
-    pub value: f64,
+    #[getset(get_copy = "pub")]
+    value: f64,
 }

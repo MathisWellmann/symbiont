@@ -120,7 +120,7 @@ impl<O> Live<O> {
         for (action, observation) in outcomes {
             let id = match self
                 .tree
-                .push(action.from, action.context.clone(), observation)
+                .push(action.from(), action.context().clone(), observation)
             {
                 Ok(id) => id,
                 Err(e) => {
@@ -129,16 +129,16 @@ impl<O> Live<O> {
                 }
             };
             self.revealed.push(true);
-            record.batch.push(action);
-            record.revealed.push(id);
+            record.batch_mut().push(action);
+            record.revealed_mut().push(id);
         }
-        let ids = record.revealed.clone();
+        let ids = record.revealed().clone();
         self.push_round(record);
         Ok(ids)
     }
 
     fn push_round(&mut self, record: RoundRecord) {
-        if !record.revealed.is_empty() {
+        if !record.revealed().is_empty() {
             self.rounds.push(record);
         }
     }
@@ -147,12 +147,6 @@ impl<O> Live<O> {
     /// produces, so the live run can be scored by the same objective.
     #[must_use]
     pub fn finish(self, termination: Termination) -> (DiscoveryTree<O>, Trajectory) {
-        (
-            self.tree,
-            Trajectory {
-                rounds: self.rounds,
-                termination,
-            },
-        )
+        (self.tree, Trajectory::new(self.rounds, termination))
     }
 }
