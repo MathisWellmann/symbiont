@@ -5,7 +5,7 @@ description = "Discovery trees as replay simulators: the core of Dream-RSI (arXi
 edition = "2024"
 keywords = ["agent", "exploration", "replay", "search", "self-improvement"]
 license = "MPL-2.0"
-name = "symbiont-dream"
+name = "symbiont-dream-rsi"
 repository = "https://github.com/MathisWellmann/symbiont"
 version.workspace = true
 

@@ -6404,7 +6404,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "symbiont-dream"
+name = "symbiont-dream-rsi"
 version = "0.40.0"
 dependencies = [
  "serde",
