@@ -4,6 +4,10 @@
 
 use std::fmt;
 
+use getset::{
+    CopyGetters,
+    Getters,
+};
 use serde::{
     Deserialize,
     Serialize,
@@ -42,43 +46,38 @@ impl fmt::Display for NodeId {
 }
 
 /// Errors of the structural layer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum Error {
     /// A referenced node is not part of the tree.
+    #[error("node {0} is not part of the tree.")]
     UnknownNode(NodeId),
     /// The tree holds `u32::MAX` nodes already.
+    #[error("the tree cannot hold more nodes.")]
     Capacity,
 }
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::UnknownNode(id) => write!(f, "node {id} is not part of the tree"),
-            Self::Capacity => f.write_str("the tree cannot hold more nodes"),
-        }
-    }
-}
-
-impl std::error::Error for Error {}
 
 /// One recorded generate–evaluate attempt.
 ///
 /// The crate reads only the edges. `observation` is whatever the consumer
 /// measured: a score, a report, a failure class, a cost, all of them.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Getters, CopyGetters)]
 pub struct Node<O> {
     /// This node's id.
-    pub id: NodeId,
+    #[getset(get_copy = "pub")]
+    id: NodeId,
     /// The node this attempt resumed from. `None` only for the root.
-    pub primary: Option<NodeId>,
+    #[getset(get_copy = "pub")]
+    primary: Option<NodeId>,
     /// Other nodes the attempt was shown besides `primary`.
     ///
     /// Replay reveals this node only once every context node is revealed,
     /// so a policy is never credited with an outcome that depended on
     /// information it had not yet paid for.
-    pub context: Vec<NodeId>,
+    #[getset(get = "pub")]
+    context: Vec<NodeId>,
     /// What the consumer recorded for this attempt.
-    pub observation: O,
+    #[getset(get = "pub")]
+    observation: O,
 }
 
 impl<O> Node<O> {

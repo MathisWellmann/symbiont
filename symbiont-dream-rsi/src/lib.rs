@@ -45,7 +45,7 @@
 //! # Example
 //!
 //! ```
-//! use symbiont_dream::{
+//! use symbiont_dream_rsi::{
 //!     Action, History, Live, NodeId, Objective, ParallelRefining, Policy, ReplayConfig,
 //!     Termination, View, evaluate, replay, select_best,
 //! };
@@ -61,7 +61,7 @@
 //!     let score = if a.from.is_root() {
 //!         5.0 - view.children(NodeId::ROOT).count() as f64
 //!     } else {
-//!         parent.observation.score + 1.0
+//!         parent.observation().score + 1.0
 //!     };
 //!     Obs { score, agent_calls: 1 }
 //! }
@@ -100,7 +100,7 @@
 //!     view.frontier()
 //!         .into_iter()
 //!         .max_by(|&a, &b| {
-//!             let q = |id: NodeId| view.get(id).map_or(f64::MIN, |n| n.observation.score);
+//!             let q = |id: NodeId| view.get(id).map_or(f64::MIN, |n| n.observation().score);
 //!             q(a).total_cmp(&q(b))
 //!         })
 //!         .map(|id| vec![Action::expand(id)])

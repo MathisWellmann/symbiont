@@ -87,13 +87,13 @@ impl<'f, O> Objective<'f, O> {
         tree: &DiscoveryTree<O>,
         trajectory: &Trajectory,
     ) -> Result<ReplayScore, Error> {
-        let mut best_quality = self.quality_of(&tree.root().observation);
+        let mut best_quality = self.quality_of(&tree.root().observation());
         let mut total_cost = 0.0;
         let mut revealed = 0_usize;
         for id in trajectory.revealed() {
             let node = tree.get(id).ok_or(Error::UnknownNode(id))?;
-            best_quality = best_quality.max(self.quality_of(&node.observation));
-            total_cost += self.cost_of(&node.observation);
+            best_quality = best_quality.max(self.quality_of(&node.observation()));
+            total_cost += self.cost_of(&node.observation());
             revealed += 1;
         }
         let rounds = trajectory.round_count();

@@ -129,7 +129,7 @@ impl<'a, O> View<'a, O> {
         self.tree
             .nodes()
             .iter()
-            .filter(move |n| revealed.get(n.id.index()).copied().unwrap_or(false))
+            .filter(move |n| revealed.get(n.id().index()).copied().unwrap_or(false))
     }
 
     /// Number of revealed nodes, not counting the root.
@@ -147,7 +147,7 @@ impl<'a, O> View<'a, O> {
         let revealed = self.revealed;
         self.tree
             .children(id)
-            .filter(move |n| revealed.get(n.id.index()).copied().unwrap_or(false))
+            .filter(move |n| revealed.get(n.id().index()).copied().unwrap_or(false))
     }
 
     /// `true` if a revealed node continues from `id`.
@@ -161,8 +161,8 @@ impl<'a, O> View<'a, O> {
     #[must_use]
     pub fn frontier(&self) -> Vec<NodeId> {
         self.observed()
-            .filter(|n| !n.is_root() && !self.has_children(n.id))
-            .map(|n| n.id)
+            .filter(|n| !n.is_root() && !self.has_children(n.id()))
+            .map(|n| n.id())
             .collect()
     }
 
@@ -176,7 +176,7 @@ impl<'a, O> View<'a, O> {
                 legal.extend(self.frontier());
                 legal
             }
-            ExpansionRule::AnyRevealed => self.observed().map(|n| n.id).collect(),
+            ExpansionRule::AnyRevealed => self.observed().map(|n| n.id()).collect(),
         }
     }
 
