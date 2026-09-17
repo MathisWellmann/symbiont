@@ -28,10 +28,10 @@ use crate::{
 /// included: they cost budget and they are what a policy learns to avoid.
 ///
 /// ```
-/// use symbiont_dream::{Action, Live, NodeId, Policy, Termination};
+/// use symbiont_dream_rsi::{Action, Live, NodeId, Policy, Termination};
 ///
 /// let mut live = Live::new(0.0_f64, 2);
-/// let mut policy = |view: &symbiont_dream::View<'_, f64>| -> Vec<Action> {
+/// let mut policy = |view: &symbiont_dream_rsi::View<'_, f64>| -> Vec<Action> {
 ///     if view.round() == 0 { vec![Action::expand(NodeId::ROOT); 2] } else { Vec::new() }
 /// };
 /// loop {

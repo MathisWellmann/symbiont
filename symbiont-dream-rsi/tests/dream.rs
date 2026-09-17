@@ -1,8 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 //! End-to-end behaviour of the replay world: recording, prefix-only views,
 //! reveal rules, context gating, the objective, and policy selection.
+#![expect(
+    unused_crate_dependencies,
+    reason = "Integration tests don't use them all"
+)]
 
-use symbiont_dream::{
+use symbiont_dream_rsi::{
     Action,
     DiscoveryTree,
     Error,
@@ -14,8 +18,10 @@ use symbiont_dream::{
     Objective,
     ParallelRefining,
     Policy,
+    Replay,
     ReplayConfig,
     Termination,
+    Trajectory,
     View,
     replay,
     select_best,
@@ -38,7 +44,7 @@ fn agent(view: &View<'_, Obs>, action: &Action) -> Obs {
         obs(5.0 - view.children(NodeId::ROOT).count() as f64)
     } else {
         let parent = view.get(action.from).expect("action from the view");
-        obs(parent.observation.score + 1.0)
+        obs(parent.observation().score + 1.0)
     }
 }
 
@@ -80,7 +86,7 @@ fn live_run_records_parallel_refining_grid() {
     let deepest = tree
         .nodes()
         .iter()
-        .filter_map(|n| tree.depth(n.id))
+        .filter_map(|n| tree.depth(n.id()))
         .max()
         .expect("nodes exist");
     assert_eq!(deepest, 3);
@@ -109,7 +115,7 @@ fn view_is_prefix_only() {
         },
         2,
     );
-    let mut sim = symbiont_dream::Replay::new(&tree, ReplayConfig::with_workers(2));
+    let mut sim = Replay::new(&tree, ReplayConfig::with_workers(2));
     let view = sim.view();
     assert_eq!(view.observed().count(), 1);
     assert_eq!(view.legal_actions(), vec![NodeId::ROOT]);
@@ -118,7 +124,7 @@ fn view_is_prefix_only() {
         .children(NodeId::ROOT)
         .next()
         .expect("root has children")
-        .id;
+        .id();
     assert!(view.get(first_child).is_none());
     assert!(!view.is_legal(first_child));
     assert_eq!(view.depth(first_child), None);
@@ -141,7 +147,7 @@ fn leaves_only_rejects_interior_nodes_and_duplicates() {
         },
         1,
     );
-    let mut sim = symbiont_dream::Replay::new(&tree, ReplayConfig::with_workers(2));
+    let mut sim = Replay::new(&tree, ReplayConfig::with_workers(2));
     sim.step(vec![Action::expand(NodeId::ROOT)]);
     let leaf = sim.view().frontier()[0];
     sim.step(vec![Action::expand(leaf)]);
@@ -169,9 +175,9 @@ fn fully_rejected_batch_still_costs_a_round() {
         },
         1,
     );
-    let child = tree.children(NodeId::ROOT).next().expect("child").id;
+    let child = tree.children(NodeId::ROOT).next().expect("child").id();
     let config = ReplayConfig::with_workers(1).stall_limit(2);
-    let mut sim = symbiont_dream::Replay::new(&tree, config);
+    let mut sim = Replay::new(&tree, config);
 
     // `child` is unrevealed, so the whole batch is illegal.
     assert_eq!(sim.step(vec![Action::expand(child)]), None);
@@ -252,9 +258,9 @@ fn strict_mode_terminates_on_illegal_batch() {
         1,
     );
     let config = ReplayConfig::with_workers(1).strict(true);
-    let mut sim = symbiont_dream::Replay::new(&tree, config);
+    let mut sim = Replay::new(&tree, config);
     let unrevealed = NodeId::ROOT;
-    let child = tree.children(unrevealed).next().expect("child").id;
+    let child = tree.children(unrevealed).next().expect("child").id();
     assert_eq!(
         sim.step(vec![Action::expand(child)]),
         Some(Termination::IllegalBatch)
@@ -301,7 +307,7 @@ fn context_gates_reveal_until_dependencies_are_revealed() {
     let b = tree.push(NodeId::ROOT, vec![], obs(2.0)).expect("root");
     let c = tree.push(a, vec![b], obs(9.0)).expect("a and b");
 
-    let mut sim = symbiont_dream::Replay::new(&tree, ReplayConfig::with_workers(2));
+    let mut sim = Replay::new(&tree, ReplayConfig::with_workers(2));
     sim.step(vec![Action::expand(NodeId::ROOT)]);
     assert!(sim.view().is_revealed(a));
     // `b` is not revealed, so `c` is out of support.
@@ -323,7 +329,7 @@ fn exact_context_matching_requires_the_same_set() {
     tree.push(a, vec![b], obs(9.0)).expect("a and b");
 
     let config = ReplayConfig::with_workers(2).matching(MatchRule::ExactContext);
-    let mut sim = symbiont_dream::Replay::new(&tree, config);
+    let mut sim = Replay::new(&tree, config);
     sim.step(vec![Action::expand(NodeId::ROOT); 2]);
     // Plain refinement of `a` does not match the recorded crossover.
     sim.step(vec![Action::expand(a)]);
@@ -403,7 +409,7 @@ fn selection_never_regresses_from_the_incumbent() {
         if view.round() == 0 {
             return vec![Action::expand(NodeId::ROOT)];
         }
-        let q = |id| view.get(id).map_or(f64::MIN, |n| n.observation.score);
+        let q = |id| view.get(id).map_or(f64::MIN, |n| n.observation().score);
         view.frontier()
             .into_iter()
             .max_by(|&a, &b| q(a).total_cmp(&q(b)))
@@ -459,8 +465,7 @@ fn tree_and_trajectory_round_trip_through_serde() {
     assert_eq!(back, tree);
 
     let json = serde_json::to_string(&trajectory).expect("serialize trajectory");
-    let back: symbiont_dream::Trajectory =
-        serde_json::from_str(&json).expect("deserialize trajectory");
+    let back: Trajectory = serde_json::from_str(&json).expect("deserialize trajectory");
     assert_eq!(back, trajectory);
 }
 
@@ -473,11 +478,11 @@ fn map_projects_observations_and_keeps_structure() {
         },
         2,
     );
-    let scores = tree.clone().map(|n| n.observation.score);
+    let scores = tree.clone().map(|n| n.observation().score);
     assert_eq!(scores.node_count(), tree.node_count());
     for (a, b) in scores.nodes().iter().zip(tree.nodes()) {
-        assert_eq!(a.id, b.id);
-        assert_eq!(a.primary, b.primary);
-        assert_eq!(a.observation, b.observation.score);
+        assert_eq!(a.id(), b.id());
+        assert_eq!(a.primary(), b.primary());
+        assert_eq!(*a.observation(), b.observation().score);
     }
 }

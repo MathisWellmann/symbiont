@@ -6407,8 +6407,10 @@ dependencies = [
 name = "symbiont-dream-rsi"
 version = "0.40.0"
 dependencies = [
+ "getset",
  "serde",
  "serde_json",
+ "thiserror 2.0.20",
 ]
 
 [[package]]

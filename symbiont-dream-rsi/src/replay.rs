@@ -310,14 +310,14 @@ impl<'a, O> Replay<'a, O> {
             let next = self
                 .tree
                 .children(action.from)
-                .filter(|c| !self.revealed[c.id.index()] && !taken.contains(&c.id))
-                .filter(|c| c.context.iter().all(|&d| self.revealed[d.index()]))
+                .filter(|c| !self.revealed[c.id().index()] && !taken.contains(&c.id()))
+                .filter(|c| c.context().iter().all(|&d| self.revealed[d.index()]))
                 .find(|c| match self.config.matching {
                     MatchRule::Primary => true,
-                    MatchRule::ExactContext => same_set(&c.context, &action.context),
+                    MatchRule::ExactContext => same_set(&c.context(), &action.context),
                 });
             if let Some(child) = next {
-                taken.push(child.id);
+                taken.push(child.id());
             }
         }
         taken
