@@ -40,10 +40,10 @@ fn obs(score: f64) -> Obs {
 /// Deterministic stand-in agent: fresh branches score `5 - #branches`,
 /// refinements add one.
 fn agent(view: &View<'_, Obs>, action: &Action) -> Obs {
-    if action.from.is_root() {
+    if action.from().is_root() {
         obs(5.0 - view.children(NodeId::ROOT).count() as f64)
     } else {
-        let parent = view.get(action.from).expect("action from the view");
+        let parent = view.get(action.from()).expect("action from the view");
         obs(parent.observation().score + 1.0)
     }
 }
@@ -100,7 +100,7 @@ fn replaying_the_recording_policy_reveals_everything() {
     };
     let tree = record(&mut policy, 3);
     let trajectory = replay(&tree, &mut policy, &ReplayConfig::with_workers(3));
-    assert_eq!(trajectory.termination, Termination::Exhausted);
+    assert_eq!(trajectory.termination(), Termination::Exhausted);
     assert_eq!(trajectory.revealed_count(), 9);
     assert_eq!(trajectory.round_count(), 3);
     assert_eq!(trajectory.rejected_count(), 0);
@@ -161,9 +161,9 @@ fn leaves_only_rejects_interior_nodes_and_duplicates() {
     ]);
     assert_eq!(term, Some(Termination::Exhausted));
     let trajectory = sim.finish();
-    let last = trajectory.rounds.last().expect("three rounds");
-    assert_eq!(last.batch.len(), 1);
-    assert_eq!(last.rejected.len(), 2);
+    let last = trajectory.rounds().last().expect("three rounds");
+    assert_eq!(last.batch().len(), 1);
+    assert_eq!(last.rejected().len(), 2);
 }
 
 #[test]
@@ -193,12 +193,12 @@ fn fully_rejected_batch_still_costs_a_round() {
     assert_eq!(trajectory.round_count(), 2);
     assert_eq!(trajectory.revealed_count(), 0);
     assert_eq!(trajectory.rejected_count(), 2);
-    assert!(trajectory.rounds.iter().all(|r| r.batch.is_empty()));
+    assert!(trajectory.rounds().iter().all(|r| r.batch().is_empty()));
     let score = quality()
         .parallelism_weight(1.0)
         .score(&tree, &trajectory)
         .expect("same tree");
-    assert_eq!(score.parallelism, 0.0);
+    assert_eq!(score.parallelism(), 0.0);
 }
 
 #[test]
@@ -241,11 +241,11 @@ fn live_does_not_record_rounds_without_nodes() {
     let (tree, trajectory) = live.finish(Termination::External);
     assert_eq!(trajectory.round_count(), 1);
     assert_eq!(trajectory.revealed_count(), 1);
-    assert!(trajectory.rounds.iter().all(|r| !r.revealed.is_empty()));
+    assert!(trajectory.rounds().iter().all(|r| !r.revealed().is_empty()));
     // The partial round's node is scorable.
     let score = quality().score(&tree, &trajectory).expect("same tree");
-    assert_eq!(score.best_quality, 1.0);
-    assert_eq!(score.revealed, 1);
+    assert_eq!(score.best_quality(), 1.0);
+    assert_eq!(score.revealed(), 1);
 }
 
 #[test]
@@ -291,12 +291,12 @@ fn any_revealed_allows_fan_out_from_one_parent() {
     };
     let leaves = replay(&tree, &mut everything, &ReplayConfig::with_workers(4));
     assert_eq!(leaves.revealed_count(), 2);
-    assert_eq!(leaves.termination, Termination::Stalled);
+    assert_eq!(leaves.termination(), Termination::Stalled);
 
     let config = ReplayConfig::with_workers(4).expansion(ExpansionRule::AnyRevealed);
     let any = replay(&tree, &mut everything, &config);
     assert_eq!(any.revealed_count(), 3);
-    assert_eq!(any.termination, Termination::Exhausted);
+    assert_eq!(any.termination(), Termination::Exhausted);
 }
 
 #[test]
@@ -350,12 +350,12 @@ fn objective_combines_quality_cost_and_parallelism() {
     let objective = quality().cost_weight(0.5).parallelism_weight(1.0);
     let score = objective.score(&tree, &trajectory).expect("same tree");
     // Branch scores 5 and 4, refined to 6 and 5. Four nodes over two rounds.
-    assert_eq!(score.best_quality, 6.0);
-    assert_eq!(score.total_cost, 4.0);
-    assert_eq!(score.revealed, 4);
-    assert_eq!(score.rounds, 2);
-    assert_eq!(score.parallelism, 2.0);
-    assert_eq!(score.value, 6.0 - 0.5 * 4.0 + 2.0);
+    assert_eq!(score.best_quality(), 6.0);
+    assert_eq!(score.total_cost(), 4.0);
+    assert_eq!(score.revealed(), 4);
+    assert_eq!(score.rounds(), 2);
+    assert_eq!(score.parallelism(), 2.0);
+    assert_eq!(score.value(), 6.0 - 0.5 * 4.0 + 2.0);
 
     // The root alone scores the baseline.
     let empty = replay(
@@ -363,10 +363,10 @@ fn objective_combines_quality_cost_and_parallelism() {
         &mut |_: &View<'_, Obs>| Vec::<Action>::new(),
         &ReplayConfig::default(),
     );
-    assert_eq!(empty.termination, Termination::PolicyStopped);
+    assert_eq!(empty.termination(), Termination::PolicyStopped);
     let score = objective.score(&tree, &empty).expect("same tree");
-    assert_eq!(score.best_quality, 0.0);
-    assert_eq!(score.value, 0.0);
+    assert_eq!(score.best_quality(), 0.0);
+    assert_eq!(score.value(), 0.0);
 }
 
 #[test]
@@ -430,11 +430,11 @@ fn selection_never_regresses_from_the_incumbent() {
             .evaluate(&mut idle, &objective, &config)
             .expect("valid"),
     ];
-    assert_eq!(evals[0].worlds.len(), 2);
-    assert_eq!(evals[0].worlds[0].score.best_quality, 7.0);
-    assert_eq!(evals[1].worlds[0].score.best_quality, 7.0);
-    assert_eq!(evals[1].worlds[0].score.revealed, 3);
-    assert!(evals[1].mean_value > evals[0].mean_value);
+    assert_eq!(evals[0].worlds().len(), 2);
+    assert_eq!(evals[0].worlds()[0].score().best_quality(), 7.0);
+    assert_eq!(evals[1].worlds()[0].score().best_quality(), 7.0);
+    assert_eq!(evals[1].worlds()[0].score().revealed(), 3);
+    assert!(evals[1].mean_value() > evals[0].mean_value());
     assert_eq!(select_best(&evals), Some(1));
 
     // Identical candidates tie towards the incumbent.

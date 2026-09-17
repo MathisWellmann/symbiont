@@ -2,6 +2,11 @@
 //! A recorded tree as a simulator: a policy walks it, the replay reveals the
 //! recorded continuations, nothing is generated or evaluated.
 
+use getset::{
+    CopyGetters,
+    Getters,
+    MutGetters,
+};
 use serde::{
     Deserialize,
     Serialize,
@@ -128,32 +133,47 @@ pub enum Termination {
 }
 
 /// What happened in one decision round.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Getters, MutGetters)]
 pub struct RoundRecord {
     /// Actions that were accepted and executed. Empty when the policy
     /// submitted a batch and every action of it was rejected; the round still
     /// counts, see [`Trajectory::rounds`].
-    pub batch: Vec<Action>,
+    #[getset(get = "pub", get_mut = "pub(crate)")]
+    batch: Vec<Action>,
+
     /// Nodes revealed (replay) or recorded (live) by this batch.
-    pub revealed: Vec<NodeId>,
+    #[getset(get = "pub", get_mut = "pub(crate)")]
+    revealed: Vec<NodeId>,
+
     /// Actions dropped as illegal, duplicate or beyond the worker budget.
-    pub rejected: Vec<Action>,
+    #[getset(get = "pub")]
+    rejected: Vec<Action>,
 }
 
 /// The rounds of one rollout and how it ended.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Getters, CopyGetters)]
 pub struct Trajectory {
     /// Decision rounds in order, one per non-empty batch the policy
     /// *submitted*. A batch whose actions were all rejected is still a
     /// decision the policy spent: it counts towards `K₂` and the stall
     /// limit, deflates the parallelism term, and keeps its `rejected` list
     /// for diagnosis.
-    pub rounds: Vec<RoundRecord>,
+    #[getset(get = "pub")]
+    rounds: Vec<RoundRecord>,
+
     /// Why the rollout ended.
-    pub termination: Termination,
+    #[getset(get_copy = "pub")]
+    termination: Termination,
 }
 
 impl Trajectory {
+    pub(crate) fn new(rounds: Vec<RoundRecord>, termination: Termination) -> Self {
+        Self {
+            rounds,
+            termination,
+        }
+    }
+
     /// Number of decision rounds `k*`.
     #[must_use]
     pub fn round_count(&self) -> usize {
@@ -292,8 +312,8 @@ impl<'a, O> Replay<'a, O> {
         let mut rejected = Vec::new();
         for action in batch {
             let duplicate =
-                !action.from.is_root() && accepted.iter().any(|a| a.from == action.from);
-            if duplicate || !view.is_legal(action.from) || accepted.len() >= self.config.workers {
+                !action.from().is_root() && accepted.iter().any(|a| a.from() == action.from());
+            if duplicate || !view.is_legal(action.from()) || accepted.len() >= self.config.workers {
                 rejected.push(action);
             } else {
                 accepted.push(action);
@@ -309,12 +329,12 @@ impl<'a, O> Replay<'a, O> {
         for action in accepted {
             let next = self
                 .tree
-                .children(action.from)
+                .children(action.from())
                 .filter(|c| !self.revealed[c.id().index()] && !taken.contains(&c.id()))
                 .filter(|c| c.context().iter().all(|&d| self.revealed[d.index()]))
                 .find(|c| match self.config.matching {
                     MatchRule::Primary => true,
-                    MatchRule::ExactContext => same_set(&c.context(), &action.context),
+                    MatchRule::ExactContext => same_set(&c.context(), action.context()),
                 });
             if let Some(child) = next {
                 taken.push(child.id());

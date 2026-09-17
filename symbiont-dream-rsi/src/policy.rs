@@ -2,6 +2,10 @@
 //! The decision interface shared by online exploration and offline replay:
 //! what a policy may see ([`View`]) and what it may do ([`Action`]).
 
+use getset::{
+    CopyGetters,
+    Getters,
+};
 use serde::{
     Deserialize,
     Serialize,
@@ -19,18 +23,21 @@ use crate::tree::{
 /// Online the consumer turns this into a prompt. In replay only `from` is
 /// matched against recorded children by default; see
 /// [`MatchRule`](crate::replay::MatchRule).
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Getters, CopyGetters)]
 pub struct Action {
     /// The node whose state the attempt resumes.
-    pub from: NodeId,
+    #[getset(get_copy = "pub")]
+    from: NodeId,
+
     /// Other revealed nodes the attempt is shown.
-    pub context: Vec<NodeId>,
+    #[getset(get = "pub")]
+    context: Vec<NodeId>,
 }
 
 impl Action {
     /// Continue from `from` without extra context.
     #[must_use]
-    pub const fn expand(from: NodeId) -> Self {
+    pub fn expand(from: NodeId) -> Self {
         Self {
             from,
             context: Vec::new(),
