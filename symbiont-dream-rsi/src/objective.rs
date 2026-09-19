@@ -66,15 +66,11 @@ impl<'f, O> Objective<'f, O> {
         self
     }
 
-    /// Quality of one observation.
-    #[must_use]
-    pub fn quality_of(&self, observation: &O) -> f64 {
+    fn quality_of(&self, observation: &O) -> f64 {
         (self.quality)(observation)
     }
 
-    /// Cost of one observation.
-    #[must_use]
-    pub fn cost_of(&self, observation: &O) -> f64 {
+    fn cost_of(&self, observation: &O) -> f64 {
         (self.cost)(observation)
     }
 

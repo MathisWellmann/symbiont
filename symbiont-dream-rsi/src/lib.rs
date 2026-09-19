@@ -39,7 +39,7 @@
 //! | [`Live`] | records a live run through that interface, producing a tree and a [`Trajectory`] |
 //! | [`Replay`], [`replay()`] | walks a recorded tree with a policy, revealing recorded continuations |
 //! | [`Objective`], [`ReplayScore`] | eq. 1 of the paper: best quality − β₁·cost + β₂·parallelism |
-//! | [`History`], [`evaluate`], [`select_best`] | replay candidates over every world, average, pick the incumbent-or-better |
+//! | [`History`], [`select_best`] | replay candidates over every world, average, pick the incumbent-or-better |
 //! | [`ParallelRefining`] | the paper's initial policy, as a reference implementation |
 //!
 //! # Example
@@ -47,7 +47,7 @@
 //! ```
 //! use symbiont_dream_rsi::{
 //!     Action, History, Live, NodeId, Objective, ParallelRefining, Policy, ReplayConfig,
-//!     Termination, View, evaluate, replay, select_best,
+//!     Termination, View, select_best,
 //! };
 //!
 //! // The consumer's observation: here just a score and a cost.
@@ -131,19 +131,18 @@
 #[cfg(test)]
 use serde_json as _;
 
-pub mod dream;
-pub mod live;
-pub mod objective;
-pub mod policies;
-pub mod policy;
-pub mod replay;
-pub mod tree;
+mod dream;
+mod live;
+mod objective;
+mod policies;
+mod policy;
+mod replay;
+mod tree;
 
 pub use dream::{
     Evaluation,
     History,
     WorldEvaluation,
-    evaluate,
     select_best,
 };
 pub use live::Live;

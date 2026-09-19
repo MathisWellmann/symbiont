@@ -53,33 +53,6 @@ pub struct Evaluation {
     mean_value: f64,
 }
 
-/// Replay `policy` over every world in `history` and average the objective.
-///
-/// # Errors
-/// Propagates [`Objective::score`] errors.
-pub fn evaluate<O, P>(
-    history: &[DiscoveryTree<O>],
-    policy: &mut P,
-    objective: &Objective<'_, O>,
-    config: &ReplayConfig,
-) -> Result<Evaluation, Error>
-where
-    P: Policy<O> + ?Sized,
-{
-    let mut worlds = Vec::with_capacity(history.len());
-    for world in history {
-        let trajectory = replay(world, policy, config);
-        let score = objective.score(world, &trajectory)?;
-        worlds.push(WorldEvaluation { trajectory, score });
-    }
-    let mean_value = if worlds.is_empty() {
-        f64::NAN
-    } else {
-        worlds.iter().map(|w| w.score.value()).sum::<f64>() / worlds.len() as f64
-    };
-    Ok(Evaluation { worlds, mean_value })
-}
-
 /// Index of the evaluation with the highest mean value.
 ///
 /// Ties go to the earliest index and `NaN` never wins, so placing the
@@ -142,7 +115,7 @@ impl<O> History<O> {
         self.worlds.is_empty()
     }
 
-    /// [`evaluate`] over this history.
+    /// Replay `policy` over every world and average the objective.
     ///
     /// # Errors
     /// Propagates [`Objective::score`] errors.
@@ -155,6 +128,17 @@ impl<O> History<O> {
     where
         P: Policy<O> + ?Sized,
     {
-        evaluate(&self.worlds, policy, objective, config)
+        let mut worlds = Vec::with_capacity(self.worlds.len());
+        for world in &self.worlds {
+            let trajectory = replay(world, policy, config);
+            let score = objective.score(world, &trajectory)?;
+            worlds.push(WorldEvaluation { trajectory, score });
+        }
+        let mean_value = if worlds.is_empty() {
+            f64::NAN
+        } else {
+            worlds.iter().map(|w| w.score.value()).sum::<f64>() / worlds.len() as f64
+        };
+        Ok(Evaluation { worlds, mean_value })
     }
 }

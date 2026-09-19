@@ -116,7 +116,7 @@ impl<O> Live<O> {
     where
         I: IntoIterator<Item = (Action, O)>,
     {
-        let mut record = RoundRecord::default();
+        let mut record = RoundRecord::empty();
         for (action, observation) in outcomes {
             let id = match self
                 .tree
@@ -144,7 +144,9 @@ impl<O> Live<O> {
     }
 
     /// End the run. The trajectory carries the same round structure a replay
-    /// produces, so the live run can be scored by the same objective.
+    /// produces, so the live run can be scored by the same objective. Live
+    /// runs end with [`Termination::PolicyStopped`] or
+    /// [`Termination::External`]; the other variants describe replays.
     #[must_use]
     pub fn finish(self, termination: Termination) -> (DiscoveryTree<O>, Trajectory) {
         (self.tree, Trajectory::new(self.rounds, termination))
