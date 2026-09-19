@@ -34,6 +34,7 @@ use crate::{
 /// let mut policy = |view: &symbiont_dream_rsi::View<'_, f64>| -> Vec<Action> {
 ///     if view.round() == 0 { vec![Action::expand(NodeId::ROOT); 2] } else { Vec::new() }
 /// };
+/// policy.reset();
 /// loop {
 ///     let batch = policy.select_batch(&live.view());
 ///     if batch.is_empty() {

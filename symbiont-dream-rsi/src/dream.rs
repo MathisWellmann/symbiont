@@ -47,27 +47,27 @@ pub struct Evaluation {
     #[getset(get = "pub")]
     worlds: Vec<WorldEvaluation>,
 
-    /// Mean of [`ReplayScore::value`] over the worlds; `NaN` for an empty
+    /// Mean of [`ReplayScore::value`] over the worlds; `None` for an empty
     /// history.
     #[getset(get_copy = "pub")]
-    mean_value: f64,
+    mean_value: Option<f64>,
 }
 
 /// Index of the evaluation with the highest mean value.
 ///
-/// Ties go to the earliest index and `NaN` never wins, so placing the
-/// incumbent policy at index 0 guarantees the selection is never worse than
-/// it on the fixed history.
+/// Ties go to the earliest index and an evaluation without a mean (empty
+/// history or `NaN`) never wins, so placing the incumbent policy at index 0
+/// guarantees the selection is never worse than it on the fixed history.
 #[must_use]
 pub fn select_best(evaluations: &[Evaluation]) -> Option<usize> {
     let mut best: Option<(usize, f64)> = None;
     for (i, e) in evaluations.iter().enumerate() {
-        if e.mean_value.is_nan() {
+        let Some(mean) = e.mean_value.filter(|m| !m.is_nan()) else {
             continue;
-        }
+        };
         match best {
-            Some((_, v)) if v >= e.mean_value => {}
-            _ => best = Some((i, e.mean_value)),
+            Some((_, v)) if v >= mean => {}
+            _ => best = Some((i, mean)),
         }
     }
     best.map(|(i, _)| i)
@@ -135,9 +135,9 @@ impl<O> History<O> {
             worlds.push(WorldEvaluation { trajectory, score });
         }
         let mean_value = if worlds.is_empty() {
-            f64::NAN
+            None
         } else {
-            worlds.iter().map(|w| w.score.value()).sum::<f64>() / worlds.len() as f64
+            Some(worlds.iter().map(|w| w.score.value()).sum::<f64>() / worlds.len() as f64)
         };
         Ok(Evaluation { worlds, mean_value })
     }
