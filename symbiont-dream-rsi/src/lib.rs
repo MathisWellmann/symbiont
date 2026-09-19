@@ -57,8 +57,8 @@
 //! // A stand-in for "run the agent and evaluate": refining adds 1, fresh
 //! // branches start at 5 and get weaker.
 //! fn agent(view: &View<'_, Obs>, a: &Action) -> Obs {
-//!     let parent = view.get(a.from).expect("actions come from the view");
-//!     let score = if a.from.is_root() {
+//!     let parent = view.get(a.from()).expect("actions come from the view");
+//!     let score = if a.from().is_root() {
 //!         5.0 - view.children(NodeId::ROOT).count() as f64
 //!     } else {
 //!         parent.observation().score + 1.0
@@ -113,8 +113,8 @@
 //! ];
 //! // Same best score (7.0) for 3 calls instead of 9: the greedy candidate wins.
 //! assert_eq!(select_best(&evals), Some(1));
-//! assert_eq!(evals[1].worlds[0].score.best_quality, 7.0);
-//! assert_eq!(evals[1].worlds[0].score.revealed, 3);
+//! assert_eq!(evals[1].worlds()[0].score().best_quality(), 7.0);
+//! assert_eq!(evals[1].worlds()[0].score().revealed(), 3);
 //!
 //! // 3. Deploy the winner for the next live run; its tree joins the history.
 //! ```

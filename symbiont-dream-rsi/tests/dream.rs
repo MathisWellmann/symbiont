@@ -470,6 +470,24 @@ fn tree_and_trajectory_round_trip_through_serde() {
 }
 
 #[test]
+fn lineage_rejects_primary_cycles_in_deserialized_trees() {
+    let json = r#"{"nodes":[
+        {"id":0,"primary":null,"context":[],"observation":0.0},
+        {"id":1,"primary":2,"context":[],"observation":0.0},
+        {"id":2,"primary":1,"context":[],"observation":0.0}
+    ]}"#;
+    let tree: DiscoveryTree<f64> = serde_json::from_str(json).expect("deserialize tree");
+    let ids: Vec<NodeId> = tree.nodes().iter().map(|n| n.id()).collect();
+    assert_eq!(tree.lineage(ids[1]), None);
+    assert_eq!(tree.depth(ids[2]), None);
+    assert_eq!(tree.lineage(NodeId::ROOT), Some(vec![NodeId::ROOT]));
+
+    let json = r#"{"nodes":[{"id":0,"primary":0,"context":[],"observation":0.0}]}"#;
+    let tree: DiscoveryTree<f64> = serde_json::from_str(json).expect("deserialize tree");
+    assert_eq!(tree.lineage(NodeId::ROOT), None);
+}
+
+#[test]
 fn map_projects_observations_and_keeps_structure() {
     let tree = record(
         &mut ParallelRefining {
