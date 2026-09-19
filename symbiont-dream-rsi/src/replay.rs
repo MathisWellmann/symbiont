@@ -2,6 +2,8 @@
 //! A recorded tree as a simulator: a policy walks it, the replay reveals the
 //! recorded continuations, nothing is generated or evaluated.
 
+use std::num::NonZeroUsize;
+
 use getset::{
     CopyGetters,
     Getters,
@@ -38,30 +40,35 @@ pub enum MatchRule {
 }
 
 /// Parameters of one replay.
+///
+/// The counts are at least 1: a limit of 0 rounds or 0 workers would end
+/// every replay before its first decision, so the builders raise 0 to 1.
+/// Defaults: 1 worker, 1000 rounds, stall limit 4, [`ExpansionRule::LeavesOnly`],
+/// [`MatchRule::Primary`], not strict.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReplayConfig {
     /// Maximum batch size `W`.
-    pub workers: usize,
+    workers: NonZeroUsize,
     /// Round limit `K₂`: replay stops after this many non-empty batches.
-    pub max_rounds: usize,
+    max_rounds: NonZeroUsize,
     /// Consecutive non-empty batches that reveal nothing before the replay
     /// gives up with [`Termination::Stalled`].
-    pub stall_limit: usize,
+    stall_limit: NonZeroUsize,
     /// Which revealed nodes may be continued from.
-    pub expansion: ExpansionRule,
+    expansion: ExpansionRule,
     /// How actions are matched to recorded children.
-    pub matching: MatchRule,
-    /// Terminate on the first batch that contains an illegal, duplicate or
+    matching: MatchRule,
+    /// Terminate on the first batch that contains an illegal, repeated or
     /// over-budget action instead of dropping the offenders.
-    pub strict: bool,
+    strict: bool,
 }
 
 impl Default for ReplayConfig {
     fn default() -> Self {
         Self {
-            workers: 1,
-            max_rounds: 1_000,
-            stall_limit: 4,
+            workers: at_least_one(1),
+            max_rounds: at_least_one(1_000),
+            stall_limit: at_least_one(4),
             expansion: ExpansionRule::default(),
             matching: MatchRule::default(),
             strict: false,
@@ -69,27 +76,34 @@ impl Default for ReplayConfig {
     }
 }
 
+const fn at_least_one(n: usize) -> NonZeroUsize {
+    match NonZeroUsize::new(n) {
+        Some(n) => n,
+        None => NonZeroUsize::MIN,
+    }
+}
+
 impl ReplayConfig {
-    /// Default configuration with `workers` parallel slots.
+    /// Default configuration with `workers` parallel slots (at least 1).
     #[must_use]
     pub fn with_workers(workers: usize) -> Self {
         Self {
-            workers,
+            workers: at_least_one(workers),
             ..Self::default()
         }
     }
 
-    /// Set the round limit.
+    /// Set the round limit (at least 1).
     #[must_use]
     pub const fn max_rounds(mut self, max_rounds: usize) -> Self {
-        self.max_rounds = max_rounds;
+        self.max_rounds = at_least_one(max_rounds);
         self
     }
 
-    /// Set the stall limit.
+    /// Set the stall limit (at least 1).
     #[must_use]
     pub const fn stall_limit(mut self, stall_limit: usize) -> Self {
-        self.stall_limit = stall_limit;
+        self.stall_limit = at_least_one(stall_limit);
         self
     }
 
@@ -235,7 +249,7 @@ impl<'a, O> Replay<'a, O> {
             self.tree,
             &self.revealed,
             self.config.expansion,
-            self.config.workers,
+            self.config.workers.get(),
             self.rounds.len(),
         )
     }
@@ -284,9 +298,9 @@ impl<'a, O> Replay<'a, O> {
             self.end(Termination::IllegalBatch)
         } else if self.revealed.iter().all(|&r| r) {
             self.end(Termination::Exhausted)
-        } else if self.rounds.len() >= self.config.max_rounds {
+        } else if self.rounds.len() >= self.config.max_rounds.get() {
             self.end(Termination::RoundLimit)
-        } else if self.stalled >= self.config.stall_limit {
+        } else if self.stalled >= self.config.stall_limit.get() {
             self.end(Termination::Stalled)
         } else {
             None
@@ -317,7 +331,10 @@ impl<'a, O> Replay<'a, O> {
             let repeat = reject_repeats
                 && !action.from().is_root()
                 && accepted.iter().any(|a| a.from() == action.from());
-            if repeat || !view.is_legal(action.from()) || accepted.len() >= self.config.workers {
+            if repeat
+                || !view.is_legal(action.from())
+                || accepted.len() >= self.config.workers.get()
+            {
                 rejected.push(action);
             } else {
                 accepted.push(action);
