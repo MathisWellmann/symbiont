@@ -147,7 +147,7 @@ pub enum Termination {
 }
 
 /// What happened in one decision round.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Getters, MutGetters)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Getters, MutGetters)]
 pub struct RoundRecord {
     /// Actions that were accepted and executed. Empty when the policy
     /// submitted a batch and every action of it was rejected; the round still
@@ -162,6 +162,16 @@ pub struct RoundRecord {
     /// Actions dropped as illegal, duplicate or beyond the worker budget.
     #[getset(get = "pub")]
     rejected: Vec<Action>,
+}
+
+impl RoundRecord {
+    pub(crate) const fn empty() -> Self {
+        Self {
+            batch: Vec::new(),
+            revealed: Vec::new(),
+            rejected: Vec::new(),
+        }
+    }
 }
 
 /// The rounds of one rollout and how it ended.

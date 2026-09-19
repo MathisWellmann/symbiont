@@ -22,7 +22,7 @@ use crate::tree::{
 ///
 /// Online the consumer turns this into a prompt. In replay only `from` is
 /// matched against recorded children by default; see
-/// [`MatchRule`](crate::replay::MatchRule).
+/// [`MatchRule`](crate::MatchRule).
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Getters, CopyGetters)]
 pub struct Action {
     /// The node whose state the attempt resumes.
