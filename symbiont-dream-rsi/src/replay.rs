@@ -248,11 +248,13 @@ impl<'a, O> Replay<'a, O> {
 
     /// Apply one batch. Returns the termination if the replay is over.
     ///
-    /// Illegal, duplicate and over-budget actions are dropped (or, in strict
-    /// mode, end the replay); a batch rejected in full is recorded as a round
-    /// that revealed nothing. Each accepted action reveals at most one
-    /// recorded child: the earliest unrevealed child of `from` whose context
-    /// is fully revealed. Repeated root actions open successive branches.
+    /// Illegal and over-budget actions are dropped (or, in strict mode, end
+    /// the replay), as are repeated non-root `from` ids under
+    /// [`ExpansionRule::LeavesOnly`]; a batch rejected in full is recorded as
+    /// a round that revealed nothing. Each accepted action reveals at most
+    /// one recorded child: the earliest unrevealed child of `from` whose
+    /// context is fully revealed. Repeated actions from the same node reveal
+    /// successive children.
     pub fn step(&mut self, batch: Vec<Action>) -> Option<Termination> {
         if let Some(t) = self.termination {
             return Some(t);
@@ -310,10 +312,12 @@ impl<'a, O> Replay<'a, O> {
         let view = self.view();
         let mut accepted: Vec<Action> = Vec::new();
         let mut rejected = Vec::new();
+        let reject_repeats = self.config.expansion == ExpansionRule::LeavesOnly;
         for action in batch {
-            let duplicate =
-                !action.from().is_root() && accepted.iter().any(|a| a.from() == action.from());
-            if duplicate || !view.is_legal(action.from()) || accepted.len() >= self.config.workers {
+            let repeat = reject_repeats
+                && !action.from().is_root()
+                && accepted.iter().any(|a| a.from() == action.from());
+            if repeat || !view.is_legal(action.from()) || accepted.len() >= self.config.workers {
                 rejected.push(action);
             } else {
                 accepted.push(action);

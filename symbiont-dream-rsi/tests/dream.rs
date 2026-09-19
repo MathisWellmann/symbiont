@@ -297,6 +297,26 @@ fn any_revealed_allows_fan_out_from_one_parent() {
     let any = replay(&tree, &mut everything, &config);
     assert_eq!(any.revealed_count(), 3);
     assert_eq!(any.termination(), Termination::Exhausted);
+
+    // The recording policy replays its own round structure: both children of
+    // `a` in one batch, nothing rejected.
+    let mut recorder = |view: &View<'_, Obs>| -> Vec<Action> {
+        match view.round() {
+            0 => vec![Action::expand(NodeId::ROOT)],
+            1 => vec![Action::expand(a); 2],
+            _ => Vec::new(),
+        }
+    };
+    let fan_out = replay(&tree, &mut recorder, &config.clone().strict(true));
+    assert_eq!(fan_out.termination(), Termination::Exhausted);
+    assert_eq!(fan_out.round_count(), 2);
+    assert_eq!(fan_out.rejected_count(), 0);
+    assert_eq!(fan_out.rounds()[1].revealed().len(), 2);
+
+    // Under LeavesOnly the repeat is still dropped: a chain grows at its tip.
+    let chain = replay(&tree, &mut recorder, &ReplayConfig::with_workers(4));
+    assert_eq!(chain.rounds()[1].rejected().len(), 1);
+    assert_eq!(chain.rounds()[1].revealed().len(), 1);
 }
 
 #[test]
