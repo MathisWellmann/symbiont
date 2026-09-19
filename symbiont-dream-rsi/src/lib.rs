@@ -70,6 +70,7 @@
 //! let workers = 3;
 //! let mut incumbent = ParallelRefining { branches: 3, refinements: 2 };
 //! let mut live = Live::new(Obs { score: 0.0, agent_calls: 0 }, workers);
+//! Policy::<Obs>::reset(&mut incumbent);
 //! loop {
 //!     let batch = incumbent.select_batch(&live.view());
 //!     if batch.is_empty() {

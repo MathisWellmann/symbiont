@@ -238,7 +238,11 @@ impl<'a, O> View<'a, O> {
 /// The same policy drives the live run and the replay; only the transition
 /// after a batch differs. An empty batch means *stop*.
 pub trait Policy<O> {
-    /// Clear per-rollout state. Called once before every live run or replay.
+    /// Clear per-rollout state.
+    ///
+    /// [`replay`](crate::replay) calls this before every replay. [`Live`](crate::Live)
+    /// never sees the policy, so the consumer must call it before every live
+    /// run. Stateless policies can keep the no-op default.
     fn reset(&mut self) {}
 
     /// Select up to [`View::workers`] actions from [`View::legal_actions`].

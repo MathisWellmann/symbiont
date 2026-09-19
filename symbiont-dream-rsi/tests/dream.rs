@@ -10,6 +10,7 @@ use symbiont_dream_rsi::{
     Action,
     DiscoveryTree,
     Error,
+    Evaluation,
     ExpansionRule,
     History,
     Live,
@@ -501,6 +502,39 @@ fn selection_never_regresses_from_the_incumbent() {
     ];
     assert_eq!(select_best(&evals), Some(0));
     assert_eq!(select_best(&[]), None);
+
+    // An empty history has no mean and never wins.
+    let empty = History::<Obs>::new()
+        .evaluate(&mut incumbent, &objective, &config)
+        .expect("valid");
+    assert_eq!(empty.mean_value(), None);
+    assert_eq!(select_best(&[empty]), None);
+}
+
+#[test]
+fn evaluation_round_trips_through_serde() {
+    let mut policy = ParallelRefining {
+        branches: 2,
+        refinements: 1,
+    };
+    let objective = Objective::new(|o: &Obs| o.score);
+    let config = ReplayConfig::with_workers(2);
+
+    let empty = History::<Obs>::new()
+        .evaluate(&mut policy, &objective, &config)
+        .expect("valid");
+    let json = serde_json::to_string(&empty).expect("serialize empty evaluation");
+    let back: Evaluation = serde_json::from_str(&json).expect("deserialize empty evaluation");
+    assert_eq!(back, empty);
+
+    let mut history = History::new();
+    history.push(record(&mut policy, 2));
+    let eval = history
+        .evaluate(&mut policy, &objective, &config)
+        .expect("valid");
+    let json = serde_json::to_string(&eval).expect("serialize evaluation");
+    let back: Evaluation = serde_json::from_str(&json).expect("deserialize evaluation");
+    assert_eq!(back, eval);
 }
 
 #[test]
