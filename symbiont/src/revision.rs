@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: MPL-2.0
 //! The revision registry types: every dylib that was successfully compiled,
-//! loaded, and hot-swapped is retained for the lifetime of the process
-//! (keep-all), so earlier evolutions stay callable later without parsing or
-//! compiling anything again.
+//! loaded, and hot-swapped is retained until the host unloads it with
+//! [`crate::Runtime::unload_revision`], so earlier evolutions stay callable
+//! later without parsing or compiling anything again.
 
 use std::{
     ffi::CString,
     fmt,
+    mem::ManuallyDrop,
+    path::PathBuf,
     sync::{
         Arc,
         atomic::Ordering,
@@ -22,6 +24,11 @@ use serde::{
     Serialize,
 };
 
+use tracing::{
+    debug,
+    warn,
+};
+
 use crate::{
     Error,
     EvolvableDecl,
@@ -33,9 +40,10 @@ use crate::{
 ///
 /// Revision ids are dense: [`Revision::INITIAL`] (id `0`) is the initial build
 /// compiled from the `evolvable!` default bodies, and every successful
-/// [`crate::Runtime::evolve`] registers the next id. All registered revisions
-/// stay loaded for the lifetime of the process, so any of them can be pointed
-/// at again later.
+/// [`crate::Runtime::evolve`] registers the next id. Registered revisions stay
+/// loaded until the host unloads them ([`crate::Runtime::unload_revision`]),
+/// so any loaded one can be pointed at again later. Ids are never reused: an
+/// unloaded revision leaves its id behind as a tombstone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct Revision(u64);
 
@@ -66,12 +74,21 @@ impl fmt::Display for Revision {
 
 /// A retained, loaded dylib revision: the library handle, its resolved
 /// symbols, and the clean source it was compiled from.
+///
+/// The entry is dropped once the registry has released it
+/// ([`crate::Runtime::unload_revision`]) and the last [`RevisionFn`] handle
+/// pinning it is gone. Dropping unmaps the library and deletes its
+/// versioned file, in that order — Windows refuses to delete a mapped DLL.
 pub(crate) struct RevisionEntry {
-    /// Keeps the mapped library alive for the lifetime of the runtime
-    /// (keep-all policy). Never unloading means the resolved pointers below
-    /// stay valid forever, and a call racing a swap executes old but
-    /// still-mapped code instead of unmapped pages.
-    _library: Library,
+    /// Keeps the mapped library alive for as long as this entry exists. As
+    /// long as it is mapped, the resolved pointers below stay valid, and a
+    /// call racing a swap executes old but still-mapped code instead of
+    /// unmapped pages. `ManuallyDrop` so [`Drop`] can unmap before it
+    /// deletes the file.
+    library: ManuallyDrop<Library>,
+    /// The versioned `.so` / `.dylib` / `.dll` this library was loaded from,
+    /// deleted when the entry drops.
+    so_path: PathBuf,
     /// Resolved function pointers, parallel to the runtime's `decls` slice.
     fn_ptrs: Box<[*const ()]>,
     /// This revision's `__symbiont_take_panic` symbol.
@@ -81,15 +98,34 @@ pub(crate) struct RevisionEntry {
     source: String,
 }
 
-// SAFETY: The raw pointers are symbol addresses inside `_library`, which is
-// owned by this entry and never unloaded. They are only ever read and called
-// through the fn signatures that were validated at generation time.
+// SAFETY: The raw pointers are symbol addresses inside `library`, which is
+// owned by this entry and stays mapped for as long as the entry exists. They
+// are only ever read and called through the fn signatures that were
+// validated at generation time.
 unsafe impl Send for RevisionEntry {}
 unsafe impl Sync for RevisionEntry {}
 
+impl Drop for RevisionEntry {
+    fn drop(&mut self) {
+        // SAFETY: `library` is dropped exactly once, here, and never touched
+        // again afterwards.
+        unsafe { ManuallyDrop::drop(&mut self.library) };
+        match std::fs::remove_file(&self.so_path) {
+            Ok(()) => debug!("Unmapped and deleted {}.", self.so_path.display()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => warn!(
+                "Unmapped {} but could not delete it: {e}",
+                self.so_path.display()
+            ),
+        }
+    }
+}
+
 impl RevisionEntry {
     /// Resolve all declared symbols plus `__symbiont_take_panic` in `library`
-    /// and retain the library together with the resolved pointers.
+    /// and retain the library together with the resolved pointers. `so_path`
+    /// is the file `library` was loaded from; it is deleted when the entry
+    /// drops.
     ///
     /// # Safety
     ///
@@ -98,6 +134,7 @@ impl RevisionEntry {
     /// validating generated code against the declarations before compiling.
     pub(crate) unsafe fn resolve(
         library: Library,
+        so_path: PathBuf,
         decls: &[EvolvableDecl],
         source: String,
     ) -> Result<Self> {
@@ -123,7 +160,8 @@ impl RevisionEntry {
         };
 
         Ok(Self {
-            _library: library,
+            library: ManuallyDrop::new(library),
+            so_path,
             fn_ptrs,
             take_panic,
             source,
@@ -198,7 +236,9 @@ pub(crate) unsafe fn read_panic_buffer(ptr: *const ()) -> Option<String> {
 /// `decide_fn(rev)` for an evolvable `fn decide(..)`). The handle pins its
 /// revision's dylib via reference counting, so calls through it stay valid for
 /// as long as the handle (or a clone of it) lives — independent of which
-/// revision is currently active and of any further evolutions.
+/// revision is currently active, of any further evolutions, and of
+/// [`crate::Runtime::unload_revision`], which only unmaps the dylib once the
+/// last handle is gone.
 ///
 /// Calls through a handle never read the swappable dispatch pointers, so they
 /// are exempt from the feedback-loop contract: they may safely run
@@ -274,9 +314,12 @@ impl<F: Copy> RevisionFn<F> {
     /// The bare typed function pointer.
     ///
     /// Hoist it out of hot loops: the returned pointer is a plain `fn` whose
-    /// calls carry no dispatch overhead. It is valid for the lifetime of the
-    /// process — the registry retains every revision (keep-all), and this
-    /// handle additionally pins it.
+    /// calls carry no dispatch overhead. It is valid for as long as the
+    /// revision stays mapped: for the lifetime of the process unless the host
+    /// calls [`crate::Runtime::unload_revision`] on this revision, in which
+    /// case it is valid for as long as this handle (or a clone) lives. Keep
+    /// the handle alive for as long as you call the pointer; that is the
+    /// contract `unload_revision` asks the host to uphold.
     pub fn get(&self) -> F {
         self.f
     }

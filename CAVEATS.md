@@ -23,9 +23,10 @@ in LLM-generated code before compilation.
 
 If the host held a reference or pointer to data allocated inside
 the dylib, reloading used to unmap the old code and data pages,
-leaving the pointer dangling. The keep-all revision registry now
-retains every loaded dylib for the lifetime of the process, which
-removes the unmap hazard — but the design rule stands: evolvable
+leaving the pointer dangling. The revision registry now retains
+every loaded dylib until the host explicitly unloads it with
+`Runtime::unload_revision`, which removes the unmap hazard from
+the evolve path — but the design rule stands: evolvable
 function signatures use only caller-owned memory (`&mut [f64]`,
 `&mut usize`, etc.). Each revision has its own instance of any
 static data, so a pointer into dylib-owned memory would silently
@@ -129,11 +130,15 @@ The harness does **not** detect this automatically. It is the
 caller's responsibility to implement timeout detection, for
 example by running the evolvable function in a separate thread
 with `recv_timeout`. If a timeout fires, the abandoned thread
-continues executing in the background. The keep-all revision
-registry keeps every loaded dylib mapped, so such a thread keeps
-running valid code even after further evolutions — it still burns
-a CPU core, so callers should bound how many abandoned threads
-they tolerate.
+continues executing in the background. The revision registry keeps
+every loaded dylib mapped until the host unloads it, so such a
+thread keeps running valid code even after further evolutions — it
+still burns a CPU core, so callers should bound how many abandoned
+threads they tolerate. Never `unload_revision` a revision an
+abandoned thread may still be executing: that unmaps code under
+it. The hung call still counts as in flight, so the debug-build
+assertion in `unload_revision` and `activate_revision` catches
+this; release builds do not.
 
 ## Panic runtime isolation
 

@@ -103,6 +103,17 @@ pub enum Error {
         latest: Revision,
     },
 
+    /// The revision was registered once but the host has since unloaded it
+    /// with [`crate::Runtime::unload_revision`]; its id is a tombstone.
+    #[error("Revision {revision} was unloaded and cannot be activated again")]
+    RevisionUnloaded { revision: Revision },
+
+    /// [`crate::Runtime::unload_revision`] was asked to unload the revision
+    /// the dispatch pointers currently execute. Activate another revision
+    /// first.
+    #[error("Revision {revision} is the active revision and cannot be unloaded")]
+    UnloadActiveRevision { revision: Revision },
+
     #[error("Evolution failed after {attempts} attempts. Last error: {last_error}")]
     MaxRetriesExceeded {
         attempts: usize,
