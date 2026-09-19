@@ -490,21 +490,49 @@ fn tree_and_trajectory_round_trip_through_serde() {
 }
 
 #[test]
-fn lineage_rejects_primary_cycles_in_deserialized_trees() {
-    let json = r#"{"nodes":[
-        {"id":0,"primary":null,"context":[],"observation":0.0},
-        {"id":1,"primary":2,"context":[],"observation":0.0},
-        {"id":2,"primary":1,"context":[],"observation":0.0}
-    ]}"#;
-    let tree: DiscoveryTree<f64> = serde_json::from_str(json).expect("deserialize tree");
-    let ids: Vec<NodeId> = tree.nodes().iter().map(|n| n.id()).collect();
-    assert_eq!(tree.lineage(ids[1]), None);
-    assert_eq!(tree.depth(ids[2]), None);
-    assert_eq!(tree.lineage(NodeId::ROOT), Some(vec![NodeId::ROOT]));
+fn deserialization_rejects_malformed_trees() {
+    fn parse(nodes: &str) -> Result<DiscoveryTree<f64>, String> {
+        serde_json::from_str(&format!(r#"{{"nodes":[{nodes}]}}"#)).map_err(|e| e.to_string())
+    }
+    let root = r#"{"id":0,"primary":null,"context":[],"observation":0.0}"#;
+    let node = |id: u32, primary: u32, context: &str| {
+        format!(r#"{{"id":{id},"primary":{primary},"context":[{context}],"observation":0.0}}"#)
+    };
 
-    let json = r#"{"nodes":[{"id":0,"primary":0,"context":[],"observation":0.0}]}"#;
-    let tree: DiscoveryTree<f64> = serde_json::from_str(json).expect("deserialize tree");
-    assert_eq!(tree.lineage(NodeId::ROOT), None);
+    // Well-formed: a child and a crossover referencing earlier nodes.
+    let ok = parse(&format!("{root},{},{}", node(1, 0, ""), node(2, 1, "0"))).expect("valid tree");
+    assert_eq!(ok.node_count(), 3);
+    assert_eq!(ok.lineage(NodeId::ROOT), Some(vec![NodeId::ROOT]));
+
+    let cases = [
+        (String::new(), Error::Empty.to_string()),
+        (
+            format!("{root},{}", node(2, 0, "")),
+            "position 1".to_owned(),
+        ),
+        (node(0, 0, ""), Error::RootWithParent.to_string()),
+        (
+            format!(r#"{root},{{"id":1,"primary":null,"context":[],"observation":0.0}}"#),
+            "no primary parent".to_owned(),
+        ),
+        // Primary cycle 1 <-> 2 shows up as a forward edge on node 1.
+        (
+            format!("{root},{},{}", node(1, 2, ""), node(2, 1, "")),
+            "n1 references n2".to_owned(),
+        ),
+        // Self-loop through context.
+        (
+            format!("{root},{}", node(1, 0, "1")),
+            "n1 references n1".to_owned(),
+        ),
+    ];
+    for (nodes, expected) in cases {
+        let err = parse(&nodes).expect_err("malformed tree");
+        assert!(
+            err.contains(&expected),
+            "{err:?} should contain {expected:?}"
+        );
+    }
 }
 
 #[test]

@@ -54,6 +54,31 @@ pub enum Error {
     /// The tree holds `u32::MAX` nodes already.
     #[error("the tree cannot hold more nodes.")]
     Capacity,
+    /// A deserialized tree has no nodes; the root must exist.
+    #[error("the tree has no root.")]
+    Empty,
+    /// A deserialized node's id does not match its position.
+    #[error("node {id} is stored at position {position}.")]
+    MisplacedId {
+        /// Where the node is stored.
+        position: usize,
+        /// The id it claims.
+        id: NodeId,
+    },
+    /// The deserialized root has a primary parent.
+    #[error("the root must not have a primary parent.")]
+    RootWithParent,
+    /// A deserialized non-root node has no primary parent.
+    #[error("node {0} has no primary parent.")]
+    Orphan(NodeId),
+    /// A deserialized edge points at the node itself or a later node.
+    #[error("node {node} references {target}, which is not an earlier node.")]
+    ForwardEdge {
+        /// The node holding the edge.
+        node: NodeId,
+        /// Where the edge points.
+        target: NodeId,
+    },
 }
 
 /// One recorded generate–evaluate attempt.
@@ -93,9 +118,60 @@ impl<O> Node<O> {
 ///
 /// Trees are append-only. Queries are linear scans; runs have hundreds of
 /// nodes, not millions.
+///
+/// Every tree upholds these invariants, deserialized ones included: the root
+/// is at position 0 and has no primary parent, every other node has one,
+/// ids equal positions, and every edge points at an earlier node. So there
+/// are no cycles and no dangling references.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "RawTree<O>")]
 pub struct DiscoveryTree<O> {
     nodes: Vec<Node<O>>,
+}
+
+/// The wire form of a tree before validation.
+#[derive(Deserialize)]
+struct RawTree<O> {
+    nodes: Vec<Node<O>>,
+}
+
+impl<O> TryFrom<RawTree<O>> for DiscoveryTree<O> {
+    type Error = Error;
+
+    fn try_from(raw: RawTree<O>) -> Result<Self, Error> {
+        let nodes = raw.nodes;
+        if nodes.is_empty() {
+            return Err(Error::Empty);
+        }
+        for (position, node) in nodes.iter().enumerate() {
+            if node.id.index() != position {
+                return Err(Error::MisplacedId {
+                    position,
+                    id: node.id,
+                });
+            }
+            let earlier = |target: NodeId| {
+                if target < node.id {
+                    Ok(())
+                } else {
+                    Err(Error::ForwardEdge {
+                        node: node.id,
+                        target,
+                    })
+                }
+            };
+            match (position, node.primary) {
+                (0, None) => {}
+                (0, Some(_)) => return Err(Error::RootWithParent),
+                (_, None) => return Err(Error::Orphan(node.id)),
+                (_, Some(primary)) => earlier(primary)?,
+            }
+            for &dep in &node.context {
+                earlier(dep)?;
+            }
+        }
+        Ok(Self { nodes })
+    }
 }
 
 impl<O> DiscoveryTree<O> {
@@ -180,20 +256,13 @@ impl<O> DiscoveryTree<O> {
         self.lineage(id).map(|path| path.len() - 1)
     }
 
-    /// The primary chain from `id` up to and including the root.
-    ///
-    /// Returns `None` if `id` is unknown or the chain never reaches the root.
-    /// The latter cannot happen for trees built through [`DiscoveryTree::push`]
-    /// but can for deserialized ones, whose edges are not validated; the walk
-    /// is bounded by the node count so a cycle cannot spin forever.
+    /// The primary chain from `id` up to and including the root, or `None`
+    /// if `id` is unknown.
     #[must_use]
     pub fn lineage(&self, id: NodeId) -> Option<Vec<NodeId>> {
         let mut path = vec![id];
         let mut cur = self.get(id)?;
         while let Some(parent) = cur.primary {
-            if path.len() >= self.nodes.len() {
-                return None;
-            }
             path.push(parent);
             cur = self.get(parent)?;
         }
