@@ -64,11 +64,13 @@ impl From<NodeId> for Action {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ExpansionRule {
     /// The root and the revealed leaves (paper semantics: every branch is a
-    /// chain and can only grow at its tip).
+    /// chain and can only grow at its tip). A batch may name a non-root node
+    /// once; only the root may repeat.
     #[default]
     LeavesOnly,
-    /// Any revealed node. Needed when several attempts fan out from one
-    /// parent, as with a batch of lanes seeded from the same revision.
+    /// Any revealed node, any number of times per batch. Needed when several
+    /// attempts fan out from one parent, as with a batch of lanes seeded from
+    /// the same revision.
     AnyRevealed,
 }
 
@@ -241,8 +243,9 @@ pub trait Policy<O> {
 
     /// Select up to [`View::workers`] actions from [`View::legal_actions`].
     ///
-    /// Non-root `from` ids must be distinct; the root may repeat, each
-    /// occurrence opening one more branch.
+    /// Each occurrence of a `from` id continues one more attempt from that
+    /// node. Under [`ExpansionRule::LeavesOnly`] only the root may occur more
+    /// than once; see [`View::rule`].
     fn select_batch(&mut self, view: &View<'_, O>) -> Vec<Action>;
 }
 
