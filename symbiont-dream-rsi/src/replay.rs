@@ -334,7 +334,7 @@ impl<'a, O> Replay<'a, O> {
                 .filter(|c| c.context().iter().all(|&d| self.revealed[d.index()]))
                 .find(|c| match self.config.matching {
                     MatchRule::Primary => true,
-                    MatchRule::ExactContext => same_set(&c.context(), action.context()),
+                    MatchRule::ExactContext => same_set(c.context(), action.context()),
                 });
             if let Some(child) = next {
                 taken.push(child.id());
