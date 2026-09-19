@@ -1119,8 +1119,7 @@ impl Runtime {
                     u64::try_from(revisions.len()).expect("registry length fits in u64") - 1,
                 ),
             })?;
-        slot.as_ref()
-            .ok_or(Error::RevisionUnloaded { revision })
+        slot.as_ref().ok_or(Error::RevisionUnloaded { revision })
     }
 
     /// Number of loaded (non-tombstone) entries in a locked registry.
@@ -1134,14 +1133,19 @@ impl Runtime {
     ///
     /// This is the only operation that mutates the swappable dispatch
     /// pointers, so it is where the feedback-loop contract is enforced.
+    ///
+    /// The dispatch pointers and `active` are both updated while the registry
+    /// lock is held: [`Runtime::unload_revision`] re-checks `active` under
+    /// the write lock, so a revision can never be unmapped after its pointers
+    /// were published but before it was recorded as active.
     fn publish_revision(&self, revision: Revision, source: &'static str) -> Result<()> {
         Self::assert_no_calls_in_flight();
 
         {
             let revisions = self.revisions.read().map_err(|_| Error::MutexPoison)?;
             Self::entry_of(&revisions, revision)?.publish(self.decls);
+            self.active.store(revision.as_u64(), Ordering::Release);
         }
-        self.active.store(revision.as_u64(), Ordering::Release);
 
         gauge!(REVISION_ACTIVE).set(revision.as_u64() as f64);
         counter!(
@@ -2159,14 +2163,18 @@ impl Runtime {
     /// thread exits.
     pub unsafe fn unload_revision(&self, revision: Revision) -> Result<Unloaded> {
         Self::assert_no_calls_in_flight();
-        if revision == self.active_revision() {
-            return Err(Error::UnloadActiveRevision { revision });
-        }
 
         let released = {
             let mut revisions = self.revisions.write().map_err(|_| Error::MutexPoison)?;
-            let latest =
-                Revision::new(u64::try_from(revisions.len()).expect("registry length fits in u64") - 1);
+            // Checked under the lock: `publish_revision` records the active
+            // revision while holding the read lock, so this cannot race with
+            // an activation that already published `revision`'s pointers.
+            if revision == self.active_revision() {
+                return Err(Error::UnloadActiveRevision { revision });
+            }
+            let latest = Revision::new(
+                u64::try_from(revisions.len()).expect("registry length fits in u64") - 1,
+            );
             let slot = usize::try_from(revision.as_u64())
                 .ok()
                 .and_then(|idx| revisions.get_mut(idx))
@@ -2183,6 +2191,13 @@ impl Runtime {
             debug!("Revision {revision} was already unloaded.");
             return Ok(Unloaded::Now);
         };
+        Ok(Self::release_entry(revision, entry))
+    }
+
+    /// Drop the registry's reference to `revision`'s entry, unmapping it now
+    /// or when the last handle drops, and record the outcome. Called after
+    /// the registry lock is released so `dlclose` never runs under it.
+    fn release_entry(revision: Revision, entry: Arc<RevisionEntry>) -> Unloaded {
         // The registry's reference is the one in `entry`; every other one is
         // a `RevisionFn` handle. Dropping `entry` unmaps and deletes the file
         // when the count was one.
@@ -2204,7 +2219,7 @@ impl Runtime {
             }
         )
         .increment(1);
-        Ok(outcome)
+        outcome
     }
 
     /// Unload every loaded revision except the active one and those in
@@ -2214,6 +2229,10 @@ impl Runtime {
     /// round: keep the elite, drop the rest. Ids in `keep` that are unknown or
     /// already unloaded are ignored.
     ///
+    /// The selection is made atomically under the registry lock: the active
+    /// revision is the one at that instant, and either every selected
+    /// revision is released or (on a poisoned lock) none is.
+    ///
     /// # Safety
     ///
     /// Same as [`Runtime::unload_revision`], for every revision it unloads.
@@ -2221,18 +2240,35 @@ impl Runtime {
         &self,
         keep: impl IntoIterator<Item = Revision>,
     ) -> Result<Vec<Revision>> {
+        Self::assert_no_calls_in_flight();
         let keep: std::collections::HashSet<Revision> = keep.into_iter().collect();
-        let active = self.active_revision();
-        let mut unloaded = Vec::new();
-        for revision in self.loaded_revisions() {
-            if revision == active || keep.contains(&revision) {
-                continue;
-            }
-            // SAFETY: forwarded to the caller, see this function's contract.
-            unsafe { self.unload_revision(revision)? };
-            unloaded.push(revision);
-        }
-        Ok(unloaded)
+
+        let released = {
+            let mut revisions = self.revisions.write().map_err(|_| Error::MutexPoison)?;
+            let active = self.active_revision();
+            let released: Vec<(Revision, Arc<RevisionEntry>)> = revisions
+                .iter_mut()
+                .enumerate()
+                .filter_map(|(idx, slot)| {
+                    let revision =
+                        Revision::new(u64::try_from(idx).expect("registry index fits in u64"));
+                    if revision == active || keep.contains(&revision) {
+                        return None;
+                    }
+                    slot.take().map(|entry| (revision, entry))
+                })
+                .collect();
+            gauge!(REVISIONS_LOADED).set(Self::loaded_count(&revisions) as f64);
+            released
+        };
+
+        Ok(released
+            .into_iter()
+            .map(|(revision, entry)| {
+                Self::release_entry(revision, entry);
+                revision
+            })
+            .collect())
     }
 
     /// Re-activate a previously registered revision.
