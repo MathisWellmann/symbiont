@@ -249,6 +249,38 @@ fn live_does_not_record_rounds_without_nodes() {
 }
 
 #[test]
+fn zero_limits_are_raised_to_one() {
+    let tree = record(
+        &mut ParallelRefining {
+            branches: 2,
+            refinements: 1,
+        },
+        2,
+    );
+    // A stall limit of 0 used to end every replay as `Stalled` after its
+    // first round, revealed nodes or not.
+    let config = ReplayConfig::with_workers(0).stall_limit(0).max_rounds(0);
+    assert_eq!(
+        config,
+        ReplayConfig::with_workers(1).stall_limit(1).max_rounds(1)
+    );
+    let mut sim = Replay::new(&tree, config);
+    assert_eq!(
+        sim.step(vec![Action::expand(NodeId::ROOT); 2]),
+        Some(Termination::RoundLimit)
+    );
+    let trajectory = sim.finish();
+    assert_eq!(trajectory.revealed_count(), 1);
+    assert_eq!(trajectory.rejected_count(), 1);
+
+    // The wire format cannot smuggle a zero in either.
+    let json = serde_json::to_string(&ReplayConfig::default()).expect("serialize");
+    let zeroed = json.replace("\"workers\":1", "\"workers\":0");
+    assert_ne!(zeroed, json);
+    assert!(serde_json::from_str::<ReplayConfig>(&zeroed).is_err());
+}
+
+#[test]
 fn strict_mode_terminates_on_illegal_batch() {
     let tree = record(
         &mut ParallelRefining {
