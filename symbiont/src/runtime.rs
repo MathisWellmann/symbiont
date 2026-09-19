@@ -126,6 +126,8 @@ use crate::{
         REVISION_ACTIVATIONS,
         REVISION_ACTIVE,
         REVISION_DEDUP_HITS,
+        REVISION_UNLOADS,
+        REVISIONS_LOADED,
         failure_kind_of,
         inference_error_reason,
         stage,
@@ -156,6 +158,21 @@ use crate::{
 
 /// Singleton runtime instance.
 static RUNTIME: OnceLock<Runtime> = OnceLock::new();
+
+/// What [`Runtime::unload_revision`] did to the revision's dylib.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unloaded {
+    /// Nothing pinned the revision: its dylib was unmapped and its versioned
+    /// file deleted before the call returned.
+    Now,
+    /// The registry released the revision, but [`crate::RevisionFn`] handles
+    /// still pin it. The dylib is unmapped and its file deleted when the last
+    /// of those `handles` drops.
+    Pinned {
+        /// Number of handles (including clones) still alive.
+        handles: usize,
+    },
+}
 
 /// Whether a successfully registered revision should also become the active
 /// one. Batch lanes register without publishing, so the host can evaluate all
@@ -237,20 +254,23 @@ pub(crate) static TAKE_PANIC_PTR: AtomicPtr<()> = AtomicPtr::new(std::ptr::null_
 /// Function dispatch is lock-free: each evolvable function reads its cached
 /// pointer via a single `AtomicPtr::load`.
 ///
-/// Every successfully loaded dylib is retained in a keep-all revision
-/// registry — see [`Revision`]. Earlier evolutions therefore stay loaded and
-/// callable for the lifetime of the process, without ever parsing or
-/// compiling them again.
+/// Every successfully loaded dylib is retained in the revision registry —
+/// see [`Revision`]. Earlier evolutions therefore stay loaded and callable
+/// without ever parsing or compiling them again, until the host decides it
+/// no longer needs one and calls [`Runtime::unload_revision`] (or
+/// [`Runtime::retain_revisions`]) to unmap it and delete its file. Nothing
+/// is unloaded implicitly.
 ///
 /// # Contract
 ///
 /// **All evolvable function calls must have returned before [`Runtime::evolve`]
 /// is called.** This is the natural shape of the feedback loop — run functions,
 /// collect results, evolve, repeat. The contract is enforced with an assertion
-/// in debug builds and is zero-cost in release. Retained revisions are never
-/// unmapped, so a violating in-flight call executes stale but still-mapped
-/// code; the contract remains so a swap cannot tear a multi-function revision
-/// apart mid-use.
+/// in debug builds and is zero-cost in release. Retained revisions are only
+/// unmapped by an explicit `unload_revision`, so a violating in-flight call
+/// executes stale but still-mapped code; the contract remains so a swap cannot
+/// tear a multi-function revision apart mid-use, and so that an unload that
+/// follows a swap never unmaps code that is still running.
 pub struct Runtime {
     /// Path to the temporary dylib crate directory.
     crate_dir: PathBuf,
@@ -265,11 +285,13 @@ pub struct Runtime {
     /// Path prefixes denied in LLM-generated code, from
     /// [`DylibConfig::denied_paths`].
     denied_paths: Vec<String>,
-    /// Every successfully loaded dylib revision, retained for the lifetime of
-    /// the process (keep-all). The index into this vec is the revision id.
-    /// Entries are reference-counted so [`crate::RevisionFn`] handles can pin
-    /// them. The lock is never taken on the hot path.
-    revisions: RwLock<Vec<Arc<RevisionEntry>>>,
+    /// Every dylib revision ever registered, by id: the index into this vec
+    /// is the revision id, so the vec only grows and `len()` is the next id.
+    /// A `None` is the tombstone of a revision the host unloaded; its id is
+    /// never reused. Entries are reference-counted so [`crate::RevisionFn`]
+    /// handles can pin them past an unload. The lock is never taken on the
+    /// hot path.
+    revisions: RwLock<Vec<Option<Arc<RevisionEntry>>>>,
     /// Id of the revision currently published to the dispatch pointers.
     active: AtomicU64,
     /// Declarations (kept for fn_ptr updates on reload).
@@ -453,7 +475,8 @@ impl Runtime {
 
         // Resolve and cache the function pointers of the initial revision
         // (dispatch is lock-free after this point) and register it.
-        let initial = unsafe { RevisionEntry::resolve(lib, decls, candidate)? };
+        let v0_size = std::fs::metadata(&v0_path).ok().map(|meta| meta.len());
+        let initial = unsafe { RevisionEntry::resolve(lib, v0_path, decls, candidate)? };
         initial.publish(decls);
 
         let runtime = Runtime {
@@ -462,7 +485,7 @@ impl Runtime {
             fn_sigs,
             default_bodies,
             denied_paths: config.denied_paths().clone(),
-            revisions: RwLock::new(vec![Arc::new(initial)]),
+            revisions: RwLock::new(vec![Some(Arc::new(initial))]),
             active: AtomicU64::new(Revision::INITIAL.as_u64()),
             decls,
             profile: config.profile(),
@@ -481,11 +504,11 @@ impl Runtime {
             .map_err(|_| Error::AlreadyInitialized)?;
 
         histogram!(DYLIB_SOURCE_BYTES).record(initial_source_bytes as f64);
-        if let Ok(meta) = std::fs::metadata(&v0_path) {
-            histogram!(DYLIB_SIZE_BYTES).record(meta.len() as f64);
+        if let Some(bytes) = v0_size {
+            histogram!(DYLIB_SIZE_BYTES).record(bytes as f64);
         }
         gauge!(REVISION_ACTIVE).set(Revision::INITIAL.as_u64() as f64);
-        gauge!(crate::observability::REVISIONS_LOADED).set(1.0);
+        gauge!(REVISIONS_LOADED).set(1.0);
 
         Ok(RUNTIME.get().expect("just set"))
     }
@@ -938,9 +961,10 @@ impl Runtime {
         };
 
         // Resolve the new revision's symbols and retain it in the registry.
-        // Every earlier library stays loaded (keep-all), so earlier revisions
-        // remain callable for the lifetime of the process.
-        let entry = unsafe { RevisionEntry::resolve(new_lib, self.decls, candidate)? };
+        // Every earlier library stays loaded until the host unloads it, so
+        // earlier revisions remain callable.
+        let entry =
+            unsafe { RevisionEntry::resolve(new_lib, versioned_so, self.decls, candidate)? };
         {
             let mut revisions = self.revisions.write().map_err(|_| Error::MutexPoison)?;
             debug_assert_eq!(
@@ -948,9 +972,8 @@ impl Runtime {
                 id,
                 "the registry grew while the build permit was held"
             );
-            revisions.push(Arc::new(entry));
-            metrics::gauge!(crate::observability::REVISIONS_LOADED)
-                .set(u64::try_from(revisions.len()).expect("registry length fits in u64") as f64);
+            revisions.push(Some(Arc::new(entry)));
+            gauge!(REVISIONS_LOADED).set(Self::loaded_count(&revisions) as f64);
         }
 
         histogram!(DYLIB_SOURCE_BYTES).record(source_bytes as f64);
@@ -1076,8 +1099,33 @@ impl Runtime {
         let revisions = self.revisions.read().map_err(|_| Error::MutexPoison)?;
         Ok(revisions
             .iter()
-            .position(|entry| entry.source() == source)
+            .position(|slot| slot.as_ref().is_some_and(|entry| entry.source() == source))
             .map(|idx| Revision::new(u64::try_from(idx).expect("registry index fits in u64"))))
+    }
+
+    /// Look `revision` up in a locked registry: the loaded entry, or the
+    /// error that tells the caller whether the id was never assigned or has
+    /// been unloaded.
+    fn entry_of(
+        revisions: &[Option<Arc<RevisionEntry>>],
+        revision: Revision,
+    ) -> Result<&Arc<RevisionEntry>> {
+        let slot = usize::try_from(revision.as_u64())
+            .ok()
+            .and_then(|idx| revisions.get(idx))
+            .ok_or_else(|| Error::UnknownRevision {
+                requested: revision,
+                latest: Revision::new(
+                    u64::try_from(revisions.len()).expect("registry length fits in u64") - 1,
+                ),
+            })?;
+        slot.as_ref()
+            .ok_or(Error::RevisionUnloaded { revision })
+    }
+
+    /// Number of loaded (non-tombstone) entries in a locked registry.
+    fn loaded_count(revisions: &[Option<Arc<RevisionEntry>>]) -> usize {
+        revisions.iter().flatten().count()
     }
 
     /// Point every `evolvable!` dispatch wrapper at `revision` and record it as
@@ -1091,16 +1139,7 @@ impl Runtime {
 
         {
             let revisions = self.revisions.read().map_err(|_| Error::MutexPoison)?;
-            let entry = usize::try_from(revision.as_u64())
-                .ok()
-                .and_then(|idx| revisions.get(idx))
-                .ok_or_else(|| Error::UnknownRevision {
-                    requested: revision,
-                    latest: Revision::new(
-                        u64::try_from(revisions.len()).expect("registry length fits in u64") - 1,
-                    ),
-                })?;
-            entry.publish(self.decls);
+            Self::entry_of(&revisions, revision)?.publish(self.decls);
         }
         self.active.store(revision.as_u64(), Ordering::Release);
 
@@ -1114,14 +1153,16 @@ impl Runtime {
     }
 
     /// Assert (debug builds only) that no evolvable function calls are in
-    /// flight. Retained revisions are never unmapped, so a violation is no
-    /// longer a use-after-unload — but a swap concurrent with running calls
-    /// could still publish a torn set of pointers from two different
-    /// revisions, so the feedback-loop contract remains.
+    /// flight. Retained revisions are only unmapped by an explicit
+    /// [`Runtime::unload_revision`], so a violation during a swap is not a
+    /// use-after-unload by itself — but a swap concurrent with running calls
+    /// could publish a torn set of pointers from two different revisions, and
+    /// an unload concurrent with running calls into a just-deactivated
+    /// revision would unmap code under them. Both check here.
     ///
-    /// Only publishing can tear the pointers, which is why registration
-    /// ([`Runtime::build_and_register`]) does not check this — a revision that
-    /// is merely retained is invisible to running calls.
+    /// Only publishing and unloading can hurt running calls, which is why
+    /// registration ([`Runtime::build_and_register`]) does not check this — a
+    /// revision that is merely retained is invisible to running calls.
     fn assert_no_calls_in_flight() {
         #[cfg(debug_assertions)]
         {
@@ -2011,8 +2052,10 @@ impl Runtime {
         Revision::new(self.active.load(Ordering::Acquire))
     }
 
-    /// Number of registered revisions: the initial build plus one per
-    /// successful evolution. Valid revision ids are `0..revision_count()`.
+    /// Number of revisions ever registered: the initial build plus one per
+    /// successful evolution. Ids `0..revision_count()` have all been
+    /// assigned, but some may have been unloaded since; see
+    /// [`Runtime::loaded_revisions`] for the ones that are still mapped.
     pub fn revision_count(&self) -> u64 {
         let revisions = self
             .revisions
@@ -2021,16 +2064,175 @@ impl Runtime {
         u64::try_from(revisions.len()).expect("registry length fits in u64")
     }
 
+    /// The revisions whose dylibs are currently loaded, in ascending id
+    /// order. This is the set [`Runtime::activate_revision`] accepts and the
+    /// set that occupies memory; the active revision is always in it.
+    pub fn loaded_revisions(&self) -> Vec<Revision> {
+        let revisions = self
+            .revisions
+            .read()
+            .expect("revisions RwLock is not poisoned");
+        revisions
+            .iter()
+            .enumerate()
+            .filter(|(_, slot)| slot.is_some())
+            .map(|(idx, _)| Revision::new(u64::try_from(idx).expect("registry index fits in u64")))
+            .collect()
+    }
+
+    /// Whether `revision` is registered and still loaded: `false` both for
+    /// an id that was never assigned and for one that was unloaded.
+    pub fn is_loaded(&self, revision: Revision) -> bool {
+        let revisions = self
+            .revisions
+            .read()
+            .expect("revisions RwLock is not poisoned");
+        usize::try_from(revision.as_u64())
+            .ok()
+            .and_then(|idx| revisions.get(idx))
+            .is_some_and(Option::is_some)
+    }
+
     /// The generated source of `revision` as the agent wrote it (no prelude,
     /// no panic protocol, no export wrappers), or `None` if no such revision
-    /// was registered.
+    /// was registered or it has been unloaded.
     pub fn revision_code(&self, revision: Revision) -> Option<String> {
         let idx = usize::try_from(revision.as_u64()).ok()?;
         let revisions = self
             .revisions
             .read()
             .expect("revisions RwLock is not poisoned");
-        revisions.get(idx).map(|entry| entry.source().to_owned())
+        revisions
+            .get(idx)?
+            .as_ref()
+            .map(|entry| entry.source().to_owned())
+    }
+
+    /// Unload `revision`: release it from the registry so its dylib is
+    /// unmapped and its versioned `.so` / `.dylib` / `.dll` deleted. This is
+    /// how a host bounds the memory and disk a long-running search occupies;
+    /// nothing is ever unloaded implicitly.
+    ///
+    /// The unmap happens now if nothing else pins the revision
+    /// ([`Unloaded::Now`]), or when the last [`crate::RevisionFn`] handle
+    /// into it drops ([`Unloaded::Pinned`]) — handles stay valid either way.
+    /// The id becomes a tombstone: it is never reused, [`Runtime::revision_code`]
+    /// returns `None` for it, [`Runtime::activate_revision`] returns
+    /// [`Error::RevisionUnloaded`], and identical code generated later is
+    /// built again under a new id.
+    ///
+    /// Unloading a revision twice is a no-op that returns
+    /// [`Unloaded::Now`]. Unloading an id that was never assigned returns
+    /// [`Error::UnknownRevision`]. Unloading the active revision is refused
+    /// with [`Error::UnloadActiveRevision`]: the dispatch pointers execute
+    /// it, so [`Runtime::activate_revision`] another one first.
+    ///
+    /// Do not unload revisions an [`Runtime::evolve`] call you have not
+    /// awaited yet may still refer to: a lane that built revisions through
+    /// the tools and then picks one that was unloaded under it fails with
+    /// [`Error::RevisionUnloaded`].
+    ///
+    /// # Safety
+    ///
+    /// Once the revision is unmapped, any pointer into it is dangling. The
+    /// caller guarantees:
+    ///
+    /// - No bare function pointer obtained through [`crate::RevisionFn::get`]
+    ///   from this revision is called after the last handle it came from has
+    ///   been dropped. Keep the handle alive for as long as the pointer is
+    ///   in use, or do not hoist the pointer at all.
+    /// - The feedback-loop contract of [`Runtime::evolve`] holds: no call
+    ///   through the `evolvable!` dispatch wrappers is in flight while this
+    ///   runs. A call that read the dispatch pointer before an
+    ///   `activate_revision` swapped it away from `revision` would otherwise
+    ///   execute unmapped code. Asserted in debug builds.
+    ///
+    /// Hosts that never call this keep the process-lifetime guarantee for
+    /// every pointer, exactly as before.
+    ///
+    /// # Platform notes
+    ///
+    /// On glibc, `dlclose` defers the unmap while a thread that ran the
+    /// dylib's thread-local destructors is alive; generated code that touches
+    /// `std::thread::current()` or spawns threads can trigger that, in which
+    /// case the file is deleted now and the pages are reclaimed when the
+    /// thread exits.
+    pub unsafe fn unload_revision(&self, revision: Revision) -> Result<Unloaded> {
+        Self::assert_no_calls_in_flight();
+        if revision == self.active_revision() {
+            return Err(Error::UnloadActiveRevision { revision });
+        }
+
+        let released = {
+            let mut revisions = self.revisions.write().map_err(|_| Error::MutexPoison)?;
+            let latest =
+                Revision::new(u64::try_from(revisions.len()).expect("registry length fits in u64") - 1);
+            let slot = usize::try_from(revision.as_u64())
+                .ok()
+                .and_then(|idx| revisions.get_mut(idx))
+                .ok_or(Error::UnknownRevision {
+                    requested: revision,
+                    latest,
+                })?;
+            let released = slot.take();
+            gauge!(REVISIONS_LOADED).set(Self::loaded_count(&revisions) as f64);
+            released
+        };
+
+        let Some(entry) = released else {
+            debug!("Revision {revision} was already unloaded.");
+            return Ok(Unloaded::Now);
+        };
+        // The registry's reference is the one in `entry`; every other one is
+        // a `RevisionFn` handle. Dropping `entry` unmaps and deletes the file
+        // when the count was one.
+        let handles = Arc::strong_count(&entry) - 1;
+        drop(entry);
+
+        let outcome = if handles == 0 {
+            info!("Unloaded revision {revision}.");
+            Unloaded::Now
+        } else {
+            info!("Released revision {revision}; {handles} handle(s) still pin its dylib.");
+            Unloaded::Pinned { handles }
+        };
+        counter!(
+            REVISION_UNLOADS,
+            "outcome" => match outcome {
+                Unloaded::Now => "now",
+                Unloaded::Pinned { .. } => "pinned",
+            }
+        )
+        .increment(1);
+        Ok(outcome)
+    }
+
+    /// Unload every loaded revision except the active one and those in
+    /// `keep`, returning the ids that were unloaded (in ascending order).
+    ///
+    /// The bulk form of [`Runtime::unload_revision`] for the end of a search
+    /// round: keep the elite, drop the rest. Ids in `keep` that are unknown or
+    /// already unloaded are ignored.
+    ///
+    /// # Safety
+    ///
+    /// Same as [`Runtime::unload_revision`], for every revision it unloads.
+    pub unsafe fn retain_revisions(
+        &self,
+        keep: impl IntoIterator<Item = Revision>,
+    ) -> Result<Vec<Revision>> {
+        let keep: std::collections::HashSet<Revision> = keep.into_iter().collect();
+        let active = self.active_revision();
+        let mut unloaded = Vec::new();
+        for revision in self.loaded_revisions() {
+            if revision == active || keep.contains(&revision) {
+                continue;
+            }
+            // SAFETY: forwarded to the caller, see this function's contract.
+            unsafe { self.unload_revision(revision)? };
+            unloaded.push(revision);
+        }
+        Ok(unloaded)
     }
 
     /// Re-activate a previously registered revision.
@@ -2046,8 +2248,10 @@ impl Runtime {
     /// implement undo, or to re-deploy a known-good implementation for a
     /// final evaluation.
     ///
-    /// Returns [`Error::UnknownRevision`] if `revision` was never registered;
-    /// the active revision is left unchanged in that case.
+    /// Returns [`Error::UnknownRevision`] if `revision` was never registered
+    /// and [`Error::RevisionUnloaded`] if the host unloaded it with
+    /// [`Runtime::unload_revision`]; the active revision is left unchanged in
+    /// both cases.
     ///
     /// # Contract
     ///
@@ -2076,8 +2280,8 @@ impl Runtime {
 /// is `fn_ptr_static` (identified by pointer identity, no strings involved).
 ///
 /// Returns `None` if the runtime is not initialized, the declaration is not
-/// registered, or `revision` does not exist. The generated accessor casts the
-/// result to the concrete `fn` type it was expanded with.
+/// registered, or `revision` does not exist or was unloaded. The generated
+/// accessor casts the result to the concrete `fn` type it was expanded with.
 ///
 /// Not part of the public API — used by `evolvable!` expansion.
 #[doc(hidden)]
@@ -2094,7 +2298,9 @@ pub fn revision_fn_lookup(
         .revisions
         .read()
         .expect("revisions RwLock is not poisoned");
-    let entry = revisions.get(usize::try_from(revision.as_u64()).ok()?)?;
+    let entry = revisions
+        .get(usize::try_from(revision.as_u64()).ok()?)?
+        .as_ref()?;
     Some(RevisionFn::new_untyped(
         revision,
         entry.fn_ptr_at(idx),

@@ -250,9 +250,15 @@ A `RevisionFn` handle goes one step further: it hoists its revision's function p
 
 Benchmark: `cargo bench -p symbiont --bench dispatch_overhead` (dylib compiled with `Profile::Release`)
 
-On reload, the runtime updates the atomic pointers and retains the old library in the revision registry (keep-all).
+On reload, the runtime updates the atomic pointers and retains the old library in the revision registry.
 Earlier revisions therefore stay callable: `activate_revision` re-publishes their cached pointers without touching the compiler.
 The feedback loop contract still guarantees no evolvable functions are executing while the pointers are swapped.
+
+Nothing is unloaded implicitly, so a long search grows by one mapped dylib per successful evolution.
+The host bounds that with `unsafe fn unload_revision(rev)` (unmap the dylib and delete its `.so`) or `retain_revisions(keep)` (unload everything but the active revision and `keep`).
+`loaded_revisions()` lists what currently occupies memory.
+A `RevisionFn` handle pins its revision past an unload; the dylib goes when the last handle drops.
+The functions are `unsafe` because a bare pointer hoisted with `RevisionFn::get` must not outlive its handle once the revision can be unmapped.
 
 ## Per-evolution timings
 
@@ -283,7 +289,7 @@ These constraints arise from the binary/dylib interaction boundary. The harness 
   It would be UB to hot-swap a different function signature in, when the main binary expects a certain memory layout.
 - **Sequential feedback loop**:
   All evolvable function calls must have returned before `evolve()` or `activate_revision()` is called.
-  Retained revisions are never unmapped, so a violating in-flight call executes stale but still-mapped code rather than UB — the contract remains so a swap cannot publish a torn set of pointers from two different revisions.
+  Retained revisions are only unmapped by an explicit `unload_revision`, so a violating in-flight call executes stale but still-mapped code rather than UB — the contract remains so a swap cannot publish a torn set of pointers from two different revisions, and so an unload after a swap never unmaps code that is still running.
   This matches the intended usage pattern (run functions, collect results, evolve, repeat) and is enforced with an assertion in debug builds at zero cost in release.
   Calls through `RevisionFn` handles are exempt: they pin their revision and never read the swapped pointers, so they may run concurrently with `evolve()` / `activate_revision()` and with each other.
   Multi-threading is possible, but requires extra care.

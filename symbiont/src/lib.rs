@@ -124,6 +124,7 @@ pub use rig_core::message::Message;
 pub use runtime::{
     Publish,
     Runtime,
+    Unloaded,
 };
 // Reachable through `ThinkingLevel::to_additional_params`, so hosts merging
 // provider parameters need it nameable without depending on `serde_json`

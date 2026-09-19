@@ -56,6 +56,7 @@
 //! | [`LLM_RETRY_BACKOFF`]       | histogram | —                      |
 //! | [`REVISION_ACTIVE`]         | gauge     | —                      |
 //! | [`REVISIONS_LOADED`]        | gauge     | —                      |
+//! | [`REVISION_UNLOADS`]        | counter   | `outcome`              |
 //! | [`REVISION_ACTIVATIONS`]    | counter   | `source`               |
 //! | [`REVISION_DEDUP_HITS`]     | counter   | —                      |
 //! | [`TOOL_BUILDS`]             | counter   | `tool`, `outcome`      |
@@ -184,9 +185,15 @@ pub const LLM_TRANSIENT_RETRIES: &str = "symbiont_llm_transient_retries_total";
 pub const LLM_RETRY_BACKOFF: &str = "symbiont_llm_retry_backoff_seconds";
 /// Currently published revision id.
 pub const REVISION_ACTIVE: &str = "symbiont_revision_active";
-/// Revisions kept loaded in the registry. Because revisions are never
-/// unmapped, this is a proxy for resident memory growth.
+/// Revisions currently loaded in the registry: registered and not yet
+/// released by `Runtime::unload_revision`. A proxy for the resident memory
+/// the dylibs occupy; a host that never unloads sees it grow by one per
+/// successful evolution.
 pub const REVISIONS_LOADED: &str = "symbiont_revisions_loaded";
+/// Revisions released by `Runtime::unload_revision`, by `outcome`: `now`
+/// when the dylib was unmapped immediately, `pinned` when `RevisionFn`
+/// handles kept it mapped until they drop.
+pub const REVISION_UNLOADS: &str = "symbiont_revision_unloads_total";
 /// Revision activations, by `source` (`evolve`, `manual`). `manual`
 /// activations are rollbacks or re-deploys via `Runtime::activate_revision`.
 pub const REVISION_ACTIVATIONS: &str = "symbiont_revision_activations_total";
@@ -390,7 +397,12 @@ pub fn describe_metrics() {
     describe_gauge!(
         REVISIONS_LOADED,
         Unit::Count,
-        "Revisions retained in the keep-all registry"
+        "Revisions currently loaded in the registry"
+    );
+    describe_counter!(
+        REVISION_UNLOADS,
+        Unit::Count,
+        "Revisions unloaded by the host, by outcome"
     );
     describe_counter!(
         REVISION_ACTIVATIONS,
