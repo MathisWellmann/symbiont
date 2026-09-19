@@ -181,11 +181,19 @@ impl<O> DiscoveryTree<O> {
     }
 
     /// The primary chain from `id` up to and including the root.
+    ///
+    /// Returns `None` if `id` is unknown or the chain never reaches the root.
+    /// The latter cannot happen for trees built through [`DiscoveryTree::push`]
+    /// but can for deserialized ones, whose edges are not validated; the walk
+    /// is bounded by the node count so a cycle cannot spin forever.
     #[must_use]
     pub fn lineage(&self, id: NodeId) -> Option<Vec<NodeId>> {
         let mut path = vec![id];
         let mut cur = self.get(id)?;
         while let Some(parent) = cur.primary {
+            if path.len() >= self.nodes.len() {
+                return None;
+            }
             path.push(parent);
             cur = self.get(parent)?;
         }
