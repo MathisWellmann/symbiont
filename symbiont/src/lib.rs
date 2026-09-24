@@ -188,6 +188,9 @@ pub struct Agent {
     /// The model the agent uses.
     #[getset(get = "pub")]
     model: String,
+    /// The tool-call turns a run may spend without writing code; see
+    /// [`Agent::with_code_deadline`].
+    code_deadline: Option<usize>,
 }
 
 impl Agent {
@@ -202,7 +205,23 @@ impl Agent {
             inner,
             provider: provider.into(),
             model: model.into(),
+            code_deadline: None,
         }
+    }
+
+    /// Stop a run that spends `turns` tool-call turns in a row without
+    /// writing code, i.e. without calling `build_revision` or
+    /// `edit_revision`.
+    ///
+    /// The runtime treats the stop like an exhausted turn budget: it
+    /// withdraws the tools for the rest of the lane and asks for the code.
+    /// The deadline sits below `default_max_turns`, so a run that only reads
+    /// documentation hears it early, while a run that keeps editing can use
+    /// the whole budget. Without it, only `default_max_turns` bounds a run.
+    #[must_use]
+    pub fn with_code_deadline(mut self, turns: usize) -> Self {
+        self.code_deadline = Some(turns);
+        self
     }
 }
 
