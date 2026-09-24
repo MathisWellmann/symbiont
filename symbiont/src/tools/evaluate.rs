@@ -14,6 +14,7 @@ use crate::{
     EXPECT_WRITE,
     Revision,
     Runtime,
+    tools::context::ToolContext,
 };
 
 /// The error of an `evaluate_revision` call.
@@ -92,24 +93,84 @@ pub struct EvaluateRevisionTool<F> {
     runtime: &'static Runtime,
     description: String,
     evaluate: F,
+    /// Scored evaluations in a row without a new best that end the lane's
+    /// search; `None` never stops it.
+    patience: Option<usize>,
 }
 
-impl<F, Fut> EvaluateRevisionTool<F>
+/// The host's judgement of one revision: the report the agent reads and,
+/// optionally, a score the tool ranks revisions by.
+///
+/// A closure that returns plain text (`Result<String, String>`) reports
+/// without a score. With a score the tool keeps the lane's leaderboard and
+/// can apply the stopping rule of [`EvaluateRevisionTool::with_stopping_rule`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct Evaluation {
+    report: String,
+    score: Option<f64>,
+}
+
+impl Evaluation {
+    /// A report without a score.
+    pub fn new(report: impl Into<String>) -> Self {
+        Self {
+            report: report.into(),
+            score: None,
+        }
+    }
+
+    /// Attach the score the leaderboard ranks by; higher is better. A score
+    /// that is not finite (a revision that could not be scored) is not
+    /// ranked.
+    #[must_use]
+    pub fn with_score(mut self, score: f64) -> Self {
+        self.score = Some(score);
+        self
+    }
+}
+
+impl From<String> for Evaluation {
+    fn from(report: String) -> Self {
+        Self::new(report)
+    }
+}
+
+impl<F, Fut, E> EvaluateRevisionTool<F>
 where
     F: Fn(Revision) -> Fut + Send + Sync,
-    Fut: Future<Output = Result<String, String>> + Send,
+    Fut: Future<Output = Result<E, String>> + Send,
+    E: Into<Evaluation>,
 {
     /// Create the tool over `runtime` with the host's `evaluate` closure.
     ///
     /// `description` is what the model reads about the tool: say what the
     /// evaluation measures and how to read the report, so the model can
     /// compare two reports. The tool adds how to address a revision.
+    ///
+    /// The closure returns the report as text, or an [`Evaluation`] that
+    /// also carries a score.
     pub fn new(runtime: &'static Runtime, description: impl Into<String>, evaluate: F) -> Self {
         Self {
             runtime,
             description: description.into(),
             evaluate,
+            patience: None,
         }
+    }
+
+    /// End a lane's search for variants once `patience` scored revisions it
+    /// built in a row did not beat its best one: the tool says so, and the
+    /// build tools refuse every further candidate, so the agent submits the
+    /// best instead of tuning on.
+    ///
+    /// The v0.34 sliding traces are the reason: a fifth of a lane's model
+    /// time went into revisions built after the one it finally submitted,
+    /// every one of them worse. Only scored evaluations count, so a closure
+    /// that returns plain text never stops a lane.
+    #[must_use]
+    pub fn with_stopping_rule(mut self, patience: usize) -> Self {
+        self.patience = Some(patience.max(1));
+        self
     }
 
     /// The highest registered revision. The registry is never empty: the
@@ -134,10 +195,11 @@ impl EvaluateRevisionArgs {
     }
 }
 
-impl<F, Fut> PortableTool for EvaluateRevisionTool<F>
+impl<F, Fut, E> PortableTool for EvaluateRevisionTool<F>
 where
     F: Fn(Revision) -> Fut + Send + Sync,
-    Fut: Future<Output = Result<String, String>> + Send,
+    Fut: Future<Output = Result<E, String>> + Send,
+    E: Into<Evaluation>,
 {
     const NAME: &'static str = "evaluate_revision";
     type Args = EvaluateRevisionArgs;
@@ -154,6 +216,15 @@ where
              revision, the one your candidates compete with. The first line of the answer names \
              the revision; the report follows.",
         );
+        if let Some(patience) = self.patience {
+            write!(
+                out,
+                " A scored report ends with the leaderboard of this task. After {patience} \
+                 revisions you built in a row score no better than your best one, the search \
+                 stops: the build tools refuse further candidates and you submit the best."
+            )
+            .expect(EXPECT_WRITE);
+        }
         out
     }
 
@@ -183,10 +254,17 @@ where
                 latest: self.latest(),
             });
         }
-        let report = (self.evaluate)(revision)
+        let evaluation: Evaluation = (self.evaluate)(revision)
             .await
-            .map_err(|reason| EvaluateRevisionError::Failed { revision, reason })?;
-        Ok(render(revision, active, &report))
+            .map_err(|reason| EvaluateRevisionError::Failed { revision, reason })?
+            .into();
+        let mut out = render(revision, active, &evaluation.report);
+        // The leaderboard is the lane's: outside an evolution there is none.
+        if let (Some(score), Some(ctx)) = (evaluation.score, ToolContext::current()) {
+            ctx.record_score(revision, score, self.patience)
+                .render(&mut out);
+        }
+        Ok(out)
     }
 }
 

@@ -30,6 +30,7 @@ use symbiont::{
     EvaluateRevisionArgs,
     EvaluateRevisionError,
     EvaluateRevisionTool,
+    Evaluation,
     Profile,
     Revision,
     RevisionToolError,
@@ -196,8 +197,9 @@ async fn revision_tools_drive_the_pipeline_from_inside_a_run() {
         .iter()
         .map(|build| build.outcome())
         .collect();
-    // The refused complete candidates never entered the pipeline.
-    assert_eq!(outcomes.len(), 4);
+    // The refused complete candidates never entered the pipeline, but the
+    // trace shows them.
+    assert_eq!(outcomes.len(), 6);
     assert!(
         matches!(outcomes[0], ToolBuildOutcome::Rejected { kind, .. } if kind == "compile"),
         "{outcomes:?}"
@@ -213,11 +215,26 @@ async fn revision_tools_drive_the_pipeline_from_inside_a_run() {
             revision: Revision::new(1)
         }
     );
-    assert!(
+    for refused in &outcomes[4..] {
+        assert!(
+            matches!(refused, ToolBuildOutcome::Rejected { kind, .. } if kind == "edit_required"),
+            "{outcomes:?}"
+        );
+    }
+    assert_eq!(
         stages
             .tool_builds()
             .iter()
-            .all(|build| build.tool() == "build_revision"),
+            .map(|build| build.tool().as_str())
+            .collect::<Vec<_>>(),
+        [
+            "build_revision",
+            "build_revision",
+            "build_revision",
+            "build_revision",
+            "build_revision",
+            "edit_revision"
+        ],
         "{stages:?}"
     );
     assert!(
@@ -373,9 +390,11 @@ async fn revision_tools_drive_the_pipeline_from_inside_a_run() {
             let distance: f64 = (1..=10)
                 .map(|i| (f.get()(f64::from(i)) - 10.0 * f64::from(i)).abs())
                 .sum();
-            Ok(format!("distance: {distance:.1}"))
+            // The leaderboard ranks higher scores first.
+            Ok(Evaluation::new(format!("distance: {distance:.1}")).with_score(100.0 - distance))
         },
-    );
+    )
+    .with_stopping_rule(3);
     let verdicts: Verdicts = Arc::default();
     let seen = Arc::clone(&verdicts);
     let agent = ScriptedAgent::new([Turn::with_tools(move || {
@@ -389,11 +408,21 @@ async fn revision_tools_drive_the_pipeline_from_inside_a_run() {
     assert_eq!(tool_step(1.0), 10.0);
     let verdicts = verdicts.lock().expect("not poisoned").clone();
     assert_eq!(verdicts.len(), 6, "{verdicts:#?}");
-    assert_eq!(verdicts[2], "Revision 7:\ndistance: 55.0\n");
-    assert_eq!(verdicts[3], "Revision 8:\ndistance: 0.0\n");
     assert!(
-        verdicts[4].starts_with("Revision 6 (active):\n"),
-        "omitting the revision evaluates the active one: {}",
+        verdicts[2].starts_with("Revision 7:\ndistance: 55.0\n\nLeaderboard of this task"),
+        "a scored report ends with the leaderboard: {}",
+        verdicts[2]
+    );
+    assert!(
+        verdicts[3].starts_with("Revision 8:\ndistance: 0.0\n")
+            && verdicts[3].contains("1. revision 8: 100.0000  <- best")
+            && verdicts[3].contains("2. revision 7: 45.0000"),
+        "{}",
+        verdicts[3]
+    );
+    assert!(
+        verdicts[4].starts_with("Revision 6 (active):\n") && verdicts[4].contains("reference only"),
+        "omitting the revision evaluates the active one, listed for reference: {}",
         verdicts[4]
     );
 
@@ -449,7 +478,7 @@ async fn build_evaluate_and_choose<F, Fut>(
 ) -> String
 where
     F: Fn(Revision) -> Fut + Send + Sync,
-    Fut: Future<Output = Result<String, String>> + Send,
+    Fut: Future<Output = Result<Evaluation, String>> + Send,
 {
     let record = |verdict: String| seen.lock().expect("not poisoned").push(verdict);
     record(

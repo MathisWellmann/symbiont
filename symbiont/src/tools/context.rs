@@ -101,6 +101,21 @@ pub enum RevisionToolError {
         /// The revisions the lane registered through the tools.
         built: Vec<Revision>,
     },
+    /// The lane's evaluations stopped improving: the stopping rule ended
+    /// the search for variants.
+    #[error(
+        "the stopping rule ended this search: the last {patience} revisions you evaluated did \
+         not beat revision {best} (score {score}). Do not build another variant. Submit \
+         revision {best} with `submit_revision` and end your reply with a short summary."
+    )]
+    Stopped {
+        /// The best revision the lane built and evaluated.
+        best: Revision,
+        /// Its score, as the leaderboard renders it.
+        score: String,
+        /// Evaluations without improvement that ended the search.
+        patience: usize,
+    },
     /// The agent asked to edit the last candidate, and there is none yet.
     #[error(
         "nothing to edit: no candidate was built or rejected in this lane yet. Send a complete \
@@ -119,7 +134,10 @@ impl RevisionToolError {
     pub(crate) fn model_visible(self) -> ToolExecutionError {
         let text = self.to_string();
         match self {
-            Self::OutsideEvolve | Self::BudgetExhausted { .. } | Self::EditRequired { .. } => {
+            Self::OutsideEvolve
+            | Self::BudgetExhausted { .. }
+            | Self::EditRequired { .. }
+            | Self::Stopped { .. } => {
                 ToolExecutionError::permission_denied(text).with_retryable(false)
             }
             Self::NotBuiltHere { .. } | Self::UnknownRevision { .. } | Self::NoEditBase => {
@@ -176,8 +194,27 @@ struct Inner {
     /// verdict the agent read. A resent candidate gets its verdict back
     /// without a build.
     rejected: HashMap<String, String>,
+    /// The first score each evaluated revision got, in evaluation order.
+    scores: Vec<Scored>,
+    /// Evaluations of revisions built here, since the best one, that did not
+    /// beat it.
+    stale: usize,
+    /// Set once `stale` reached the patience of the evaluating tool: the
+    /// lane builds nothing more.
+    stopped: Option<Scored>,
     /// Build records since the ladder last drained them.
     builds: Vec<ToolBuild>,
+}
+
+impl Inner {
+    /// The refusal of every build once the stopping rule ended the search.
+    fn stopped_refusal(&self) -> Option<RevisionToolError> {
+        self.stopped.map(|best| RevisionToolError::Stopped {
+            best: best.revision,
+            score: render_score(best.score),
+            patience: self.stale,
+        })
+    }
 }
 
 impl ToolContext {
@@ -191,6 +228,9 @@ impl ToolContext {
                 builds_used: 0,
                 max_builds,
                 rejected: HashMap::new(),
+                scores: Vec::new(),
+                stale: 0,
+                stopped: None,
                 builds: Vec::new(),
             })),
         }
@@ -242,8 +282,16 @@ impl ToolContext {
     /// The v0.34 traces of the sliding harness show why: successive full
     /// candidates were a median 97% identical to the one before, and those
     /// re-emissions were two thirds of all output tokens a lane generated.
+    ///
+    /// A lane whose stopping rule ended the search gets
+    /// [`RevisionToolError::Stopped`] instead, the refusal every build tool
+    /// gives it: a stopped lane always has a registered revision, and telling
+    /// it to edit one would contradict the order to submit the best.
     pub(crate) fn require_edit(&self) -> Result<(), RevisionToolError> {
         let inner = self.lock();
+        if let Some(refusal) = inner.stopped_refusal() {
+            return Err(refusal);
+        }
         if inner.built.is_empty() {
             return Ok(());
         }
@@ -252,9 +300,60 @@ impl ToolContext {
         })
     }
 
+    /// Put the first score of `revision` on the lane's leaderboard and
+    /// return where the lane stands.
+    ///
+    /// Only a revision's first evaluation counts: scoring the same code again
+    /// tells the search nothing new. A revision the lane did not build (the
+    /// active one, evaluated for reference) is listed but neither becomes the
+    /// best nor counts against the patience, since only a revision built here
+    /// can be submitted. After `patience` evaluations of revisions built here
+    /// in a row that do not beat the best one, the lane stops: every further
+    /// build is refused with [`RevisionToolError::Stopped`]. `None` never
+    /// stops.
+    pub(crate) fn record_score(
+        &self,
+        revision: Revision,
+        score: f64,
+        patience: Option<usize>,
+    ) -> Standing {
+        let mut inner = self.lock();
+        let first = !inner.scores.iter().any(|s| s.revision == revision);
+        let built_here = inner.built.contains(&revision);
+        if first && score.is_finite() {
+            inner.scores.push(Scored {
+                revision,
+                score,
+                built_here,
+            });
+            if built_here && inner.stopped.is_none() {
+                if best_of(&inner.scores).map(|best| best.revision) == Some(revision) {
+                    inner.stale = 0;
+                } else {
+                    inner.stale += 1;
+                }
+                if patience.is_some_and(|patience| inner.stale >= patience) {
+                    inner.stopped = best_of(&inner.scores);
+                }
+            }
+        }
+        let mut leaderboard = inner.scores.clone();
+        leaderboard.sort_by(|a, b| b.score.total_cmp(&a.score));
+        Standing {
+            leaderboard,
+            best: best_of(&inner.scores),
+            stale: inner.stale,
+            patience,
+            stopped: inner.stopped.is_some(),
+        }
+    }
+
     /// Spend one build of the budget, or report it exhausted.
     pub(crate) fn reserve_build(&self) -> Result<BuildBudget, RevisionToolError> {
         let mut inner = self.lock();
+        if let Some(refusal) = inner.stopped_refusal() {
+            return Err(refusal);
+        }
         if inner.builds_used >= inner.max_builds {
             return Err(RevisionToolError::BudgetExhausted {
                 used: inner.builds_used,
@@ -343,6 +442,100 @@ impl BuildBudget {
     }
 }
 
+/// One revision's first score on the lane's leaderboard.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Scored {
+    /// The evaluated revision.
+    revision: Revision,
+    /// The host's score; higher is better.
+    score: f64,
+    /// The lane built it, so it can be submitted and competes for the best.
+    built_here: bool,
+}
+
+/// The best-scoring revision built in the lane; the earlier one on a tie.
+fn best_of(scores: &[Scored]) -> Option<Scored> {
+    scores
+        .iter()
+        .filter(|scored| scored.built_here)
+        .fold(None, |best: Option<Scored>, scored| match best {
+            Some(best) if best.score >= scored.score => Some(best),
+            _ => Some(*scored),
+        })
+}
+
+/// A score as the leaderboard and the refusal render it.
+pub(crate) fn render_score(score: f64) -> String {
+    format!("{score:.4}")
+}
+
+/// Where a lane stands after an evaluation: the leaderboard, the best
+/// revision built here, and how close the stopping rule is.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Standing {
+    /// Every scored revision, the best first.
+    leaderboard: Vec<Scored>,
+    /// The best revision built in the lane.
+    best: Option<Scored>,
+    /// Evaluations since the best that did not beat it.
+    stale: usize,
+    /// Evaluations without improvement that stop the lane; `None` never.
+    patience: Option<usize>,
+    /// The stopping rule fired: the lane builds nothing more.
+    stopped: bool,
+}
+
+impl Standing {
+    /// Revisions the leaderboard lists; the rest are summarized.
+    const SHOWN: usize = 8;
+
+    /// The leaderboard block of the evaluation answer.
+    pub(crate) fn render(&self, out: &mut String) {
+        writeln!(out, "\nLeaderboard of this task (score, higher is better):").expect(EXPECT_WRITE);
+        let best = self.best.map(|best| best.revision);
+        for (rank, scored) in self.leaderboard.iter().take(Self::SHOWN).enumerate() {
+            let marker = if Some(scored.revision) == best {
+                "  <- best"
+            } else if scored.built_here {
+                ""
+            } else {
+                "  (not built here; reference only)"
+            };
+            writeln!(
+                out,
+                "  {}. revision {}: {}{marker}",
+                rank + 1,
+                scored.revision,
+                render_score(scored.score)
+            )
+            .expect(EXPECT_WRITE);
+        }
+        if self.leaderboard.len() > Self::SHOWN {
+            writeln!(out, "  ... {} more", self.leaderboard.len() - Self::SHOWN)
+                .expect(EXPECT_WRITE);
+        }
+        match (self.stopped, best, self.patience) {
+            (true, Some(best), _) => writeln!(
+                out,
+                "Stopping rule: {} evaluations in a row did not beat revision {best}. The search \
+                 is over and further builds are refused: submit revision {best} with \
+                 `submit_revision` now.",
+                self.stale
+            )
+            .expect(EXPECT_WRITE),
+            (false, Some(best), Some(patience)) if self.stale > 0 => writeln!(
+                out,
+                "{} of your last evaluations did not beat revision {best}; after {patience} in a \
+                 row the search stops and you submit the best. Change the idea, not only a \
+                 constant, or submit revision {best} now.",
+                self.stale
+            )
+            .expect(EXPECT_WRITE),
+            _ => {}
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use rig_core::tool::ToolErrorKind;
@@ -392,6 +585,89 @@ mod tests {
         ctx.push_built(Revision::new(5));
         ctx.push_built(Revision::new(5));
         assert_eq!(ctx.built(), vec![Revision::new(5)]);
+    }
+
+    /// A lane with revisions 1..=n built.
+    fn lane_with(built: u64) -> ToolContext {
+        let ctx = ToolContext::new(10);
+        for revision in 1..=built {
+            ctx.push_built(Revision::new(revision));
+        }
+        ctx
+    }
+
+    /// The best revision built here leads; each evaluation that does not beat
+    /// it counts towards the patience, a new best resets the count, and at the
+    /// patience the lane stops building and names the best to submit.
+    #[test]
+    fn the_stopping_rule_fires_after_patience_evaluations_without_a_new_best() {
+        let ctx = lane_with(5);
+        let patience = Some(2);
+        let s = ctx.record_score(Revision::new(1), 0.05, patience);
+        assert_eq!(s.best.map(|b| b.revision), Some(Revision::new(1)));
+        assert_eq!((s.stale, s.stopped), (0, false));
+        let s = ctx.record_score(Revision::new(2), 0.03, patience);
+        assert_eq!((s.stale, s.stopped), (1, false));
+        // A new best resets the count.
+        let s = ctx.record_score(Revision::new(3), 0.08, patience);
+        assert_eq!(s.best.map(|b| b.revision), Some(Revision::new(3)));
+        assert_eq!(s.stale, 0);
+        // Re-evaluating a revision tells nothing new and does not count.
+        let s = ctx.record_score(Revision::new(2), 0.03, patience);
+        assert_eq!(s.stale, 0);
+        ctx.record_score(Revision::new(4), 0.08, patience); // a tie is no improvement
+        assert!(ctx.reserve_build().is_ok(), "one short of the patience");
+        let s = ctx.record_score(Revision::new(5), 0.01, patience);
+        assert!(s.stopped);
+        assert_eq!(
+            s.leaderboard
+                .iter()
+                .map(|x| x.revision.as_u64())
+                .collect::<Vec<_>>(),
+            vec![3, 4, 1, 2, 5],
+            "the leaderboard ranks by score"
+        );
+        let err = ctx.reserve_build().expect_err("the search is over");
+        assert!(
+            matches!(&err, RevisionToolError::Stopped { best, .. } if *best == Revision::new(3)),
+            "{err:?}"
+        );
+        assert!(err.to_string().contains("Submit revision 3"), "{err}");
+        // A complete candidate gets the same refusal, not the order to edit
+        // a revision.
+        assert_eq!(ctx.require_edit(), Err(err));
+        let mut out = String::new();
+        s.render(&mut out);
+        assert!(out.contains("1. revision 3: 0.0800  <- best"), "{out}");
+        assert!(out.contains("Stopping rule: 2 evaluations"), "{out}");
+    }
+
+    /// A revision the lane did not build (the active one, evaluated for
+    /// reference) is listed but never becomes the best to submit, and does
+    /// not count against the patience; without a patience nothing stops.
+    #[test]
+    fn reference_revisions_and_no_patience_never_stop_a_lane() {
+        let ctx = lane_with(1);
+        let s = ctx.record_score(Revision::new(0), 0.5, Some(1));
+        assert_eq!(s.best, None, "revision 0 was not built here");
+        assert!(!s.stopped);
+        let s = ctx.record_score(Revision::new(1), 0.1, Some(1));
+        assert_eq!(s.best.map(|b| b.revision), Some(Revision::new(1)));
+        let mut out = String::new();
+        s.render(&mut out);
+        assert!(
+            out.contains("revision 0: 0.5000  (not built here; reference only)"),
+            "{out}"
+        );
+
+        let ctx = lane_with(3);
+        for (revision, score) in [(1, 0.3), (2, 0.2), (3, 0.1)] {
+            assert!(
+                !ctx.record_score(Revision::new(revision), score, None)
+                    .stopped
+            );
+        }
+        assert!(ctx.reserve_build().is_ok());
     }
 
     /// A complete candidate is welcome until the lane registers a revision,

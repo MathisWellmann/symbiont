@@ -21,7 +21,10 @@ use crate::{
             RevisionToolError,
             ToolContext,
         },
-        pipeline::build_through_tool,
+        pipeline::{
+            build_through_tool,
+            refuse,
+        },
     },
 };
 
@@ -151,8 +154,10 @@ impl PortableTool for EditRevisionTool {
         // Text without any edit is a complete candidate, which this tool only
         // takes before the lane has a registered revision; see
         // `ToolContext::require_edit`.
-        if runtime.is_whole_candidate(&base, &fences) {
-            ctx.require_edit()?;
+        if runtime.is_whole_candidate(&base, &fences)
+            && let Err(refusal) = ctx.require_edit()
+        {
+            return Err(refuse(&ctx, Self::NAME, args.edits, refusal));
         }
         build_through_tool(runtime, Self::NAME, move |stages| {
             runtime.edited_candidate(&base, &fences, stages, || {
