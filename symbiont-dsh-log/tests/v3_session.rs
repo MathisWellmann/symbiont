@@ -3,7 +3,10 @@
 //! kept at `target/debug/v3-sample/` for the out-of-process check against the
 //! dsh session-format catalog (the authoritative v3 validator).
 #![cfg(feature = "zstd")]
-#![allow(unused_crate_dependencies)] // the zstd dep is what this test exercises
+#![allow(
+    unused_crate_dependencies,
+    reason = "the zstd dependency is what this test exercises, not every dev-dependency"
+)]
 
 use serde::{
     Deserialize,
@@ -41,6 +44,10 @@ use symbiont_dsh_log::{
 /// harness lines.
 #[derive(Serialize, Deserialize)]
 #[serde(untagged)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "a test fixture: each line is serialized once, boxing would only add noise"
+)]
 enum Line {
     Harness(LogLine),
     Custom(CustomLine),
@@ -64,6 +71,10 @@ fn custom_line_deserializes() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one persona session written in order, event by event, as a producer would"
+)]
 fn a_persona_session_serializes_the_v3_shape() {
     let t = 1_789_560_000_000i64;
     let root = std::env::temp_dir().join(format!("symbiont-dsh-log-v3-{}", std::process::id()));

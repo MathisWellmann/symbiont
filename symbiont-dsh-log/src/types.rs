@@ -1046,7 +1046,7 @@ mod tests {
             },
         )
         .on_surface();
-        let json = serde_json::to_value(&LogLine::SystemMessage(event)).expect("serializes");
+        let json = serde_json::to_value(LogLine::SystemMessage(event)).expect("serializes");
         assert_eq!(json["type"], "system/message");
         assert_eq!(json["data"]["message"]["role"], "system");
         assert_eq!(json["data"]["message"]["source"]["kind"], "plugin");
