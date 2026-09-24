@@ -103,24 +103,53 @@ fn millis_of(duration: Duration) -> u64 {
 /// metrics and does not distinguish that from a genuine all-zero report, so
 /// an empty record becomes an absent one rather than a measured zero.
 ///
-/// The cache fields are deliberately dropped. The harness defines its counts
-/// as **disjoint** — billed input is `inputTokens + cacheReadTokens +
-/// cacheWriteTokens` — while rig leaves it to the provider whether
-/// `input_tokens` already contains the cached tokens. Reporting rig's cache
-/// counts alongside its input count would double-bill them on the providers
-/// that fold them in, so only what is unambiguous travels.
+/// The harness defines its counts as **disjoint** — billed input is
+/// `inputTokens + cacheReadTokens + cacheWriteTokens` — so the cached tokens
+/// are taken out of the input count where rig's provider folded them in
+/// (see [`uncached_input`]). A cache count of zero stays absent: most
+/// providers do not report cache activity at all, and "unreported" must not
+/// read as "no hits".
 fn token_usage(usage: &Usage) -> Option<TokenUsage> {
     if usage.input_tokens == 0 && usage.output_tokens == 0 && usage.reasoning_tokens == 0 {
         return None;
     }
 
+    let reported = |count: u64| (count > 0).then_some(count);
     Some(TokenUsage {
-        input_tokens: usage.input_tokens,
+        input_tokens: uncached_input(usage),
         output_tokens: usage.output_tokens,
-        cache_read_tokens: None,
-        cache_write_tokens: None,
-        reasoning_tokens: (usage.reasoning_tokens > 0).then_some(usage.reasoning_tokens),
+        cache_read_tokens: reported(usage.cached_input_tokens),
+        cache_write_tokens: reported(usage.cache_creation_input_tokens),
+        reasoning_tokens: reported(usage.reasoning_tokens),
     })
+}
+
+/// The input tokens of `usage` that were not served from or written to the
+/// provider's cache.
+///
+/// Rig leaves the convention to the provider. OpenAI-compatible APIs
+/// (OpenAI, sglang, vLLM) fold cache hits into the prompt count, and their
+/// total is prompt plus completion. Anthropic reports the uncached input
+/// alone, and rig's total adds the cache counts on top of it. The total tells
+/// the two apart; without one, a cache count no larger than the input is
+/// read as folded in, the convention of every OpenAI-compatible server.
+fn uncached_input(usage: &Usage) -> u64 {
+    let cache = usage
+        .cached_input_tokens
+        .saturating_add(usage.cache_creation_input_tokens);
+    if cache == 0 {
+        return usage.input_tokens;
+    }
+    let disjoint_total = usage
+        .input_tokens
+        .saturating_add(cache)
+        .saturating_add(usage.output_tokens);
+    let already_disjoint = usage.total_tokens == disjoint_total || cache > usage.input_tokens;
+    if already_disjoint {
+        usage.input_tokens
+    } else {
+        usage.input_tokens - cache
+    }
 }
 
 #[cfg(test)]
@@ -292,30 +321,56 @@ pub(super) mod tests {
 
     /// Rig reports all-zero usage when the provider reported nothing, so an
     /// empty record must travel as an absent field rather than a measured
-    /// zero. The cache counts are dropped because the harness defines its
-    /// counts as disjoint while rig does not, and reporting both would
-    /// double-bill a provider that folds cache hits into its input count.
+    /// zero, and so must a cache count of zero.
     #[test]
-    fn unreported_usage_is_absent_and_cache_counts_are_dropped() {
+    fn unreported_usage_and_unreported_cache_counts_are_absent() {
         assert_eq!(token_usage(&Usage::new()), None);
 
         let mut usage = usage_of(10, 5);
         usage.reasoning_tokens = 3;
-        usage.cached_input_tokens = 7;
-        usage.cache_creation_input_tokens = 2;
-
         let mapped = token_usage(&usage).expect("a reported usage maps");
         assert_eq!(mapped.input_tokens, 10);
-        assert_eq!(mapped.output_tokens, 5);
-        assert_eq!(mapped.reasoning_tokens, Some(3));
         assert_eq!(mapped.cache_read_tokens, None);
         assert_eq!(mapped.cache_write_tokens, None);
 
-        // The dropped counts must be absent on the wire too, not `null`.
+        // Absent on the wire too, not `null`.
         let json = serde_json::to_string(&mapped).expect("a token usage serializes");
         assert_eq!(
             json,
             r#"{"inputTokens":10,"outputTokens":5,"reasoningTokens":3}"#
         );
+    }
+
+    /// An OpenAI-compatible server (sglang) counts cache hits inside the
+    /// prompt, and its total is prompt plus completion: the export takes them
+    /// out, so the harness's disjoint counts bill each token once.
+    #[test]
+    fn cache_hits_folded_into_the_prompt_are_taken_out_of_the_input() {
+        let mut usage = usage_of(48_000, 300);
+        usage.cached_input_tokens = 46_500;
+        let mapped = token_usage(&usage).expect("a reported usage maps");
+        assert_eq!(mapped.input_tokens, 1_500);
+        assert_eq!(mapped.cache_read_tokens, Some(46_500));
+        assert_eq!(mapped.cache_write_tokens, None);
+    }
+
+    /// Anthropic reports the uncached input alone and rig's total adds the
+    /// cache counts on top: those counts are already disjoint and pass as
+    /// they are.
+    #[test]
+    fn disjoint_cache_counts_pass_unchanged() {
+        let mut usage = usage_of(300, 50);
+        usage.cached_input_tokens = 7_000;
+        usage.cache_creation_input_tokens = 200;
+        usage.total_tokens = 300 + 7_000 + 200 + 50;
+        let mapped = token_usage(&usage).expect("a reported usage maps");
+        assert_eq!(mapped.input_tokens, 300);
+        assert_eq!(mapped.cache_read_tokens, Some(7_000));
+        assert_eq!(mapped.cache_write_tokens, Some(200));
+
+        // Without a total, a cache count larger than the input cannot be a
+        // part of it either.
+        usage.total_tokens = 0;
+        assert_eq!(uncached_input(&usage), 300);
     }
 }
