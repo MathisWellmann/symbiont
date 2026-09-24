@@ -287,6 +287,141 @@ mod tests {
         assert_eq!(turn_two - start, 4_000, "attempt 1 measured 4s");
     }
 
+    /// A run that measured its clock is exported on it: each step opens when
+    /// its request went out, the assistant message lands when the response
+    /// arrived, and a tool result when the tool finished. The harness folds
+    /// model and tool time out of exactly those pairs, so a slow tool no
+    /// longer passes for a slow model.
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the fixture is one timed lane, spelled out"
+    )]
+    fn measured_timings_place_requests_and_tools_where_they_happened() {
+        use rig_core::message::{
+            AssistantContent,
+            Text,
+            ToolCall,
+            ToolCallId,
+            ToolFunction,
+            ToolResult,
+            ToolResultContent,
+            UserContent,
+        };
+
+        use crate::{
+            CallTiming,
+            RunTimings,
+            ToolTiming,
+        };
+
+        let call_id = ToolCallId::new("call_1").expect("a non-empty id");
+        let mut trace = EvolutionTrace::new(
+            "sglang".to_string(),
+            "Qwen/Qwen3.8-27B-FP8".to_string(),
+            Lane::from(0),
+            "s".to_string(),
+            "p".to_string(),
+        );
+        trace.set_history(vec![
+            Message::user("p"),
+            Message::Assistant {
+                id: None,
+                content: vec![AssistantContent::ToolCall(ToolCall {
+                    id: call_id.clone(),
+                    provider: None,
+                    function: ToolFunction {
+                        name: "python".to_string(),
+                        arguments: serde_json::json!({ "code": "1" }),
+                    },
+                    signature: None,
+                    additional_params: None,
+                })],
+            },
+            Message::User {
+                content: vec![UserContent::ToolResult(ToolResult {
+                    call: call_id,
+                    provider: None,
+                    name: "python".to_string(),
+                    content: vec![ToolResultContent::Text(Text::from("1".to_string()))],
+                })],
+            },
+            Message::assistant("done"),
+        ]);
+        // Two requests of 2s and 3s around a tool that took 10s, the first
+        // request sent 500ms into the attempt.
+        let mut timings = RunTimings::default();
+        timings.calls = vec![
+            CallTiming {
+                sent: Duration::from_millis(500),
+                answered: Duration::from_millis(2_500),
+            },
+            CallTiming {
+                sent: Duration::from_millis(12_600),
+                answered: Duration::from_millis(15_600),
+            },
+        ];
+        timings.tools = vec![ToolTiming {
+            call_id: "call_1".to_string(),
+            name: "python".to_string(),
+            started: Duration::from_millis(2_500),
+            finished: Duration::from_millis(12_500),
+        }];
+        let mut stages = StageTimings::default();
+        // A total model time that an even split would get wrong.
+        stages.set_llm(Some(Duration::from_millis(15_100)));
+        trace.push_attempt(
+            1,
+            "p".to_string(),
+            Some(
+                RunTrace::builder()
+                    .produced(0..4)
+                    .response("done".to_string())
+                    .usage(Usage::new())
+                    .completion_calls(vec![
+                        CompletionCall::new(0, Usage::new()),
+                        CompletionCall::new(1, Usage::new()),
+                    ])
+                    .timings(timings)
+                    .build(),
+            ),
+            stages,
+            None,
+            LadderEvent::Registered {
+                revision: Revision::new(1),
+            },
+            Duration::from_secs(16),
+        );
+        trace.set_outcome(TraceOutcome::Registered {
+            revision: Revision::new(1),
+        });
+
+        let lines = export(&trace);
+        let events = &lines[1..];
+        let time_of = |event: &Value| event["time"].as_u64().expect("a time");
+        let start = time_of(&events[0]);
+        let times = |kind: &str| -> Vec<u64> {
+            events
+                .iter()
+                .filter(|event| event["type"] == kind)
+                .map(|event| time_of(event) - start)
+                .collect()
+        };
+
+        assert_eq!(times("assistant/message"), vec![2_500, 15_600]);
+        assert_eq!(times("tool/call"), vec![2_500]);
+        assert_eq!(
+            times("tool/result"),
+            vec![12_500],
+            "the tool finished at 12.5s"
+        );
+        // Step 1 opens with the turn; step 2 opens when its request went out.
+        let step_starts = times("step/start");
+        assert_eq!(step_starts[..2], [0, 12_600]);
+        // Model time of step 2 is its measured latency, 3s.
+        assert_eq!(15_600 - step_starts[1], 3_000);
+    }
+
     /// Turns and steps nest, every turn closes, and no step outlives its turn.
     /// The harness's session invariant refuses any other bracketing.
     #[test]

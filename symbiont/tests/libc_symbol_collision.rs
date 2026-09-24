@@ -82,6 +82,7 @@ impl EvolutionAgent for MockAgent {
             new_messages: vec![Message::user(prompt), Message::assistant(MOCK_LLM_REPLY)],
             usage: Usage::new(),
             completion_calls: vec![CompletionCall::new(0, Usage::new())],
+            timings: symbiont::RunTimings::default(),
         })
     }
 

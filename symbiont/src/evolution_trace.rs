@@ -188,6 +188,121 @@ pub struct RunTrace {
     /// each entry. It keeps `usage`, `finish_reason` and the provider ids.
     #[getset(get = "pub")]
     completion_calls: Vec<CompletionCall>,
+
+    /// When each completion request and each tool execution of the run
+    /// happened. Empty for a trace written before symbiont recorded it, or by
+    /// an [`crate::EvolutionAgent`] that does not measure it.
+    #[getset(get = "pub")]
+    #[builder(default)]
+    #[serde(default, skip_serializing_if = "RunTimings::is_empty")]
+    timings: RunTimings,
+}
+
+/// When the requests and tool executions of one agent run happened.
+///
+/// Every instant is an offset from the start of the attempt the run belongs
+/// to, so a reader places the run's events on the attempt's clock without
+/// guessing: the model latency of a request is `answered - sent`, the time a
+/// tool took is `finished - started`, and the gaps between them are the
+/// harness's own work.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunTimings {
+    /// One entry per answered completion request, in request order: entry
+    /// `i` belongs to [`RunTrace::completion_calls`]`[i]`.
+    pub calls: Vec<CallTiming>,
+    /// One entry per tool execution, in the order they finished.
+    pub tools: Vec<ToolTiming>,
+    /// The instant the run started, for anchoring the offsets. Not
+    /// serialized: [`Self::anchored`] folds it into the offsets.
+    #[serde(skip)]
+    origin: Option<std::time::Instant>,
+}
+
+impl RunTimings {
+    /// No timings yet, for a run that started at `origin`.
+    pub(crate) fn started_at(origin: std::time::Instant) -> Self {
+        Self {
+            origin: Some(origin),
+            ..Self::default()
+        }
+    }
+
+    /// The instant the run started, until [`Self::anchored`] folds it in.
+    #[cfg(test)]
+    pub(crate) fn origin(&self) -> Option<std::time::Instant> {
+        self.origin
+    }
+
+    /// Nothing was measured.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.calls.is_empty() && self.tools.is_empty()
+    }
+
+    /// Re-base offsets measured from the run's own start onto `attempt_start`,
+    /// the clock of the attempt the run belongs to. The time between the two
+    /// (the wait for an inference slot) then shows up before the first
+    /// request instead of inside it.
+    #[must_use]
+    pub(crate) fn anchored(mut self, attempt_start: std::time::Instant) -> Self {
+        let Some(origin) = self.origin.take() else {
+            return self;
+        };
+        let shift = origin.saturating_duration_since(attempt_start);
+        for call in &mut self.calls {
+            call.sent += shift;
+            call.answered += shift;
+        }
+        for tool in &mut self.tools {
+            tool.started += shift;
+            tool.finished += shift;
+        }
+        self
+    }
+
+    /// The timing of the tool call `call_id`, if one was measured.
+    #[must_use]
+    pub fn tool(&self, call_id: &str) -> Option<&ToolTiming> {
+        self.tools.iter().find(|tool| tool.call_id == call_id)
+    }
+}
+
+/// When one completion request was sent and answered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CallTiming {
+    /// The request went out.
+    pub sent: Duration,
+    /// The response arrived.
+    pub answered: Duration,
+}
+
+impl CallTiming {
+    /// The model latency of the request: queueing, prefill and decode.
+    #[must_use]
+    pub fn latency(&self) -> Duration {
+        self.answered.saturating_sub(self.sent)
+    }
+}
+
+/// When one tool execution started and finished.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolTiming {
+    /// The tool call id, as the transcript names it.
+    pub call_id: String,
+    /// The tool's registered name.
+    pub name: String,
+    /// The tool started executing.
+    pub started: Duration,
+    /// The tool's result was ready.
+    pub finished: Duration,
+}
+
+impl ToolTiming {
+    /// How long the tool executed.
+    #[must_use]
+    pub fn duration(&self) -> Duration {
+        self.finished.saturating_sub(self.started)
+    }
 }
 
 /// Per-attempt mirror of the
@@ -643,6 +758,50 @@ fn first_line(text: &str) -> &str {
 mod tests {
     use super::*;
 
+    /// Re-anchoring shifts every instant by the wait between the attempt's
+    /// start and the run's, and drops the unserializable origin.
+    #[test]
+    fn timings_are_re_based_onto_the_attempt() {
+        let attempt_start = std::time::Instant::now();
+        let origin = attempt_start + Duration::from_millis(250);
+        let timings = RunTimings {
+            calls: vec![CallTiming {
+                sent: Duration::from_millis(10),
+                answered: Duration::from_millis(1_010),
+            }],
+            tools: vec![ToolTiming {
+                call_id: "call_1".to_string(),
+                name: "python".to_string(),
+                started: Duration::from_millis(1_020),
+                finished: Duration::from_millis(3_020),
+            }],
+            origin: Some(origin),
+        }
+        .anchored(attempt_start);
+        assert_eq!(timings.origin, None);
+        assert_eq!(timings.calls[0].sent, Duration::from_millis(260));
+        assert_eq!(timings.calls[0].latency(), Duration::from_secs(1));
+        let tool = timings.tool("call_1").expect("timed");
+        assert_eq!(tool.started, Duration::from_millis(1_270));
+        assert_eq!(tool.duration(), Duration::from_secs(2));
+        assert!(timings.tool("call_2").is_none());
+    }
+
+    /// A trace written before timings existed still loads, and an empty
+    /// timing record stays off the wire.
+    #[test]
+    fn timings_are_optional_on_the_wire() {
+        let run = RunTrace::builder()
+            .produced(0..1)
+            .response(String::new())
+            .usage(Usage::new())
+            .completion_calls(Vec::new())
+            .build();
+        let json = serde_json::to_value(&run).expect("serializes");
+        assert!(json.get("timings").is_none(), "{json}");
+        let back: RunTrace = serde_json::from_value(json).expect("an old trace loads");
+        assert!(back.timings().is_empty());
+    }
     fn trace_with(attempts: Vec<AttemptTrace>, outcome: TraceOutcome) -> EvolutionTrace {
         EvolutionTrace {
             provider: "sglang".to_string(),
@@ -680,6 +839,7 @@ mod tests {
             completion_calls: (0..calls)
                 .map(|index| CompletionCall::new(index, usage))
                 .collect(),
+            timings: RunTimings::default(),
         }
     }
 

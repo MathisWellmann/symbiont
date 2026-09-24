@@ -160,6 +160,7 @@ impl ScriptedAgent {
             new_messages,
             usage,
             completion_calls: vec![CompletionCall::new(0, usage)],
+            timings: symbiont::RunTimings::default(),
         })
     }
 
@@ -295,6 +296,7 @@ impl EvolutionAgent for RoutedAgent {
             new_messages,
             usage: Usage::new(),
             completion_calls: vec![CompletionCall::new(0, Usage::new())],
+            timings: symbiont::RunTimings::default(),
         })
     }
 
