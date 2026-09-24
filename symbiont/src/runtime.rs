@@ -624,6 +624,7 @@ impl Runtime {
                         new_messages: partial.new_messages,
                         usage: partial.usage,
                         completion_calls: partial.completion_calls,
+                        timings: partial.timings,
                     });
                 }
                 return Err(err);
@@ -1540,6 +1541,9 @@ impl Runtime {
             loop {
                 attempts += 1;
                 let t_attempt = Instant::now();
+                // The same instant on the clock the agent's run timings are
+                // measured with, to re-base them onto this attempt.
+                let t_attempt_std = std::time::Instant::now();
                 let produced_start = history.len();
                 let mut run_out: Option<AgentRun> = None;
                 let mut stages = StageTimings::default();
@@ -1555,6 +1559,7 @@ impl Runtime {
                                 .response(run.output)
                                 .usage(run.usage)
                                 .completion_calls(run.completion_calls)
+                                .timings(run.timings.anchored(t_attempt_std))
                                 .build()
                         })
                     };

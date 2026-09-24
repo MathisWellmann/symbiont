@@ -80,13 +80,16 @@ pub use evolution_agent::{
 pub use evolution_trace::{
     AttemptTrace,
     BuildRecord,
+    CallTiming,
     EditRecord,
     EvolutionTrace,
     LadderEvent,
+    RunTimings,
     RunTrace,
     StageTimings,
     ToolBuild,
     ToolBuildOutcome,
+    ToolTiming,
     TraceOutcome,
 };
 pub use evolve_error::EvolveError;

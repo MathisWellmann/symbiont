@@ -115,6 +115,7 @@ async fn partial_run_is_kept(rt: &Runtime) {
                 new_messages: produced.clone(),
                 usage,
                 completion_calls: vec![CompletionCall::new(0, usage)],
+                timings: symbiont::RunTimings::default(),
             },
         ),
         Turn::reply(

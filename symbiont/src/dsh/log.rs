@@ -23,6 +23,7 @@ use crate::{
     DshSession,
     EvolutionTrace,
     LadderEvent,
+    RunTrace,
     TraceOutcome,
     dsh::{
         millis_of,
@@ -114,9 +115,16 @@ impl Log {
         turn: u64,
     ) {
         let attempt_start = self.time_ms;
-        // The model time of the attempt, split evenly over the turns it took.
-        // The trace times the agent run as a whole, not each turn inside it,
-        // so an even split is the most this can honestly claim.
+        // The run's own clock, when it was measured: every request and tool
+        // execution then lands at the instant it happened. Without it, the
+        // model time of the attempt is split evenly over the turns it took:
+        // a trace that timed only the run as a whole cannot claim more.
+        let timings = attempt
+            .run()
+            .as_ref()
+            .map(RunTrace::timings)
+            .filter(|timings| !timings.calls.is_empty());
+        let at = |offset: Duration| attempt_start.saturating_add(millis_of(offset));
         let step_llm = attempt
             .stages()
             .llm()
@@ -163,17 +171,27 @@ impl Log {
                     RigMessage::User { content } => {
                         for item in content.iter() {
                             match item {
-                                UserContent::ToolResult(result) => self.tool_result(
-                                    turn,
-                                    step,
-                                    result.call.as_str(),
-                                    result.content.iter().map(tool_result_block).collect(),
-                                ),
+                                UserContent::ToolResult(result) => {
+                                    // The harness measures a tool as
+                                    // `tool/call` to `tool/result`.
+                                    if let Some(tool) = timings
+                                        .and_then(|timings| timings.tool(result.call.as_str()))
+                                    {
+                                        self.advance_to(at(tool.finished));
+                                    }
+                                    self.tool_result(
+                                        turn,
+                                        step,
+                                        result.call.as_str(),
+                                        result.content.iter().map(tool_result_block).collect(),
+                                    );
+                                }
                                 other => self.user_text(&user_text(other)),
                             }
                         }
                     }
                     RigMessage::Assistant { content, .. } => {
+                        let call_timing = timings.and_then(|timings| timings.calls.get(call_index));
                         // One step is one model call plus the tool executions
                         // it asked for. A second assistant turn opens the next
                         // step: the harness clears the step's outstanding tool
@@ -181,6 +199,9 @@ impl Log {
                         if step_has_assistant {
                             self.step_end(turn, step);
                             step += 1;
+                            if let Some(call) = call_timing {
+                                self.advance_to(at(call.sent));
+                            }
                             self.step_start(turn, step);
                         }
                         step_has_assistant = true;
@@ -188,8 +209,10 @@ impl Log {
                         // The harness measures model time as `step/start` to
                         // `assistant/message`, so the wait for this turn lands
                         // between them.
-                        if let Some(llm) = step_llm {
-                            self.advance(llm);
+                        match (call_timing, step_llm) {
+                            (Some(call), _) => self.advance_to(at(call.answered)),
+                            (None, Some(llm)) => self.advance(llm),
+                            (None, None) => {}
                         }
 
                         let blocks: Vec<ContentBlock> =

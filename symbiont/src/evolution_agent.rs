@@ -19,9 +19,16 @@
 //! its history and the tokens in its accounting. [`crate::Agent`] fills it
 //! from a hook that watches every request the run makes.
 
-use std::sync::{
-    Arc,
-    Mutex,
+use std::{
+    collections::HashMap,
+    sync::{
+        Arc,
+        Mutex,
+    },
+    time::{
+        Duration,
+        Instant,
+    },
 };
 
 use rig_agent::{
@@ -35,15 +42,26 @@ use rig_agent::{
         HookContext,
         ObservationAction,
         PromptRequest,
+        ToolCall,
+        ToolCallAction,
+        ToolResultAction,
+        ToolResultEvent,
     },
     completion::PromptError,
 };
 use rig_core::{
     completion::Usage,
+    id::InternalCallId,
     message::{
         Message,
         ToolChoice,
     },
+};
+
+use crate::{
+    CallTiming,
+    RunTimings,
+    ToolTiming,
 };
 
 /// The result of one complete agentic run.
@@ -69,6 +87,11 @@ pub struct AgentRun {
     /// third time and gives no more information. An implementor that needs the
     /// wire payload can fill the field.
     pub completion_calls: Vec<CompletionCall>,
+    /// When each request and each tool execution of the run happened. The
+    /// blanket implementation for [`Agent`] measures it with a hook; an
+    /// implementor that cannot leaves it empty, and exports then fall back
+    /// to spreading the run's total time evenly.
+    pub timings: RunTimings,
 }
 
 /// What a failed run produced before it failed.
@@ -87,6 +110,8 @@ pub struct PartialRun {
     pub usage: Usage,
     /// One entry per answered request.
     pub completion_calls: Vec<CompletionCall>,
+    /// When the answered requests and the finished tool executions happened.
+    pub timings: RunTimings,
 }
 
 impl PartialRun {
@@ -198,21 +223,50 @@ fn drop_raw(call: CompletionCall) -> CompletionCall {
 /// then this turn's prompt); the hook keeps the part after the input. Every
 /// answered request fires `on_completion_response` with its usage. On success
 /// rig's own response supersedes all of this; on failure it is all there is.
+///
+/// The hook also keeps the clock of the run, which rig does not: when each
+/// request went out and came back, and when each tool started and finished.
+/// Rig's response carries no timing, so these are the run's timings on
+/// success as well.
 struct Recorder {
     input_len: usize,
+    /// The instant the run started; every timing is an offset from it.
+    origin: Instant,
     partial: Arc<Mutex<PartialRun>>,
+    /// The clock of what is in flight.
+    pending: Mutex<Pending>,
+}
+
+/// Requests and tool executions that started but did not finish yet.
+#[derive(Default)]
+struct Pending {
+    /// The request in flight: rig sends one at a time within a run.
+    call_sent: Option<Duration>,
+    /// The tools executing, by rig's correlation id: rig may run the tool
+    /// calls of one turn concurrently.
+    tools: HashMap<InternalCallId, Duration>,
 }
 
 impl Recorder {
     fn new(input_len: usize) -> (Self, Arc<Mutex<PartialRun>>) {
-        let partial = Arc::new(Mutex::new(PartialRun::default()));
+        let origin = Instant::now();
+        let partial = Arc::new(Mutex::new(PartialRun {
+            timings: RunTimings::started_at(origin),
+            ..PartialRun::default()
+        }));
         (
             Self {
                 input_len,
+                origin,
                 partial: Arc::clone(&partial),
+                pending: Mutex::new(Pending::default()),
             },
             partial,
         )
+    }
+
+    fn now(&self) -> Duration {
+        self.origin.elapsed()
     }
 }
 
@@ -222,6 +276,9 @@ impl AgentHook for Recorder {
         _ctx: &HookContext,
         event: CompletionCallEvent<'_>,
     ) -> CompletionCallAction {
+        if let Ok(mut pending) = self.pending.lock() {
+            pending.call_sent = Some(self.now());
+        }
         if let Ok(mut partial) = self.partial.lock() {
             let mut messages: Vec<Message> = event
                 .history
@@ -239,14 +296,52 @@ impl AgentHook for Recorder {
         _ctx: &HookContext,
         event: CompletionResponseEvent<'_>,
     ) -> ObservationAction {
+        let answered = self.now();
+        let sent = self
+            .pending
+            .lock()
+            .ok()
+            .and_then(|mut pending| pending.call_sent.take())
+            .unwrap_or(answered);
         if let Ok(mut partial) = self.partial.lock() {
             partial.usage += event.usage;
             let index = partial.completion_calls.len();
             partial.completion_calls.push(
                 CompletionCall::new(index, event.usage).with_identity(event.identity.clone()),
             );
+            partial.timings.calls.push(CallTiming { sent, answered });
         }
         ObservationAction::Continue
+    }
+
+    async fn on_tool_call(&self, _ctx: &HookContext, event: ToolCall<'_>) -> ToolCallAction {
+        if let Ok(mut pending) = self.pending.lock() {
+            pending.tools.insert(event.internal_call_id, self.now());
+        }
+        ToolCallAction::Run
+    }
+
+    async fn on_tool_result(
+        &self,
+        _ctx: &HookContext,
+        event: ToolResultEvent<'_>,
+    ) -> ToolResultAction {
+        let finished = self.now();
+        let started = self
+            .pending
+            .lock()
+            .ok()
+            .and_then(|mut pending| pending.tools.remove(&event.internal_call_id))
+            .unwrap_or(finished);
+        if let Ok(mut partial) = self.partial.lock() {
+            partial.timings.tools.push(ToolTiming {
+                call_id: event.tool_call_id.unwrap_or_default().to_string(),
+                name: event.tool_name.to_string(),
+                started,
+                finished,
+            });
+        }
+        ToolResultAction::Keep
     }
 }
 
@@ -266,6 +361,12 @@ async fn send(
                 .into_iter()
                 .map(drop_raw)
                 .collect(),
+            // Rig's response carries no timing: the hook's clock is all there
+            // is.
+            timings: recorded
+                .lock()
+                .map(|partial| partial.timings.clone())
+                .unwrap_or_default(),
         }),
         Err(error) => Err(RunError {
             error,
@@ -463,6 +564,60 @@ mod tests {
             assert_eq!(run.usage, usage(220, 8));
             assert_eq!(run.completion_calls.len(), 2);
             assert_eq!(run.new_messages.len(), 4, "{:?}", run.new_messages);
+        }
+
+        /// The recorder keeps the run's clock: one timing per answered
+        /// request, one per tool execution under the id the transcript uses,
+        /// and all of them in the order they happened.
+        #[tokio::test]
+        async fn a_finished_run_carries_the_clock_of_its_requests_and_tools() {
+            let agent = agent([
+                MockTurn::tool_call("call-1", "add", json!({"x": 1, "y": 2})),
+                MockTurn::text("3"),
+            ]);
+            let run = agent
+                .run("add one and two", Vec::new())
+                .await
+                .expect("the run finishes");
+            let timings = &run.timings;
+            assert_eq!(timings.calls.len(), 2, "{timings:?}");
+            assert_eq!(timings.tools.len(), 1, "{timings:?}");
+            let tool = timings
+                .tool("call-1")
+                .expect("the tool is timed by its call id");
+            assert_eq!(tool.name, "add");
+            let [first, second] = [timings.calls[0], timings.calls[1]];
+            assert!(first.sent <= first.answered);
+            assert!(
+                first.answered <= tool.started,
+                "the tool runs after the call"
+            );
+            assert!(tool.started <= tool.finished);
+            assert!(
+                tool.finished <= second.sent,
+                "the next call follows the tool"
+            );
+            assert!(second.sent <= second.answered);
+            assert!(
+                timings.origin().is_some(),
+                "the run's start travels with it"
+            );
+        }
+
+        /// A run that dies still reports the clock of what it got done.
+        #[tokio::test]
+        async fn a_failed_run_carries_the_clock_of_what_it_did() {
+            let agent = agent([
+                MockTurn::tool_call("call-1", "add", json!({"x": 1, "y": 2})),
+                MockTurn::request_error("connection reset"),
+            ]);
+            let RunError { partial, .. } = agent
+                .run("add one and two", Vec::new())
+                .await
+                .expect_err("the second request fails");
+            let timings = partial.expect("the run answered once").timings;
+            assert_eq!(timings.calls.len(), 1, "{timings:?}");
+            assert_eq!(timings.tools.len(), 1, "{timings:?}");
         }
 
         /// Under `run_without_tools` the wire request carries
