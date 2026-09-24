@@ -159,11 +159,17 @@ impl Error {
                 "nudge: Your generated code ```{code}``` is not valid Rust. Parse error: ```{err}```. Fix the syntax error and respond with the full corrected code.",
             ).expect("Can write to prompt"),
             RigPrompt(rig_agent::completion::PromptError::MaxTurnsError { max_turns, .. }) => write!(prompt,
-                "nudge: You spent all {max_turns} tool-call turns without producing code. \
-                The documentation tools are withdrawn for the rest of this conversation. \
-                Respond with the complete Rust code block now, using the definitions you have already seen above. \
-                Do not call a tool; a name you could not look up is not in the host API, so do not use it.",
+                "nudge: You spent all {max_turns} tool-call turns without producing code. {TOOLS_WITHDRAWN}",
             ).expect("Can write to prompt"),
+            RigPrompt(rig_agent::completion::PromptError::PromptCancelled { ref reason, .. })
+                if code_deadline_turns(reason).is_some() =>
+            {
+                let turns = code_deadline_turns(reason).unwrap_or_default();
+                write!(prompt,
+                    "nudge: You spent {turns} tool-call turns on documentation and analysis without \
+                    producing code. {TOOLS_WITHDRAWN}",
+                ).expect("Can write to prompt");
+            }
             RigPrompt(rig_agent::completion::PromptError::UnknownToolCall { tool_name, .. }) => write!(prompt,
                 "nudge: You called `{tool_name}`, which is not available in this conversation. \
                 Do not call any tool. Respond with the complete Rust code block now.",
@@ -238,10 +244,16 @@ impl Error {
     /// The runtime withdraws the agent's tools for the rest of the lane on
     /// this error - see [`crate::EvolutionAgent::run_without_tools`].
     pub(crate) fn exhausted_tool_turns(&self) -> bool {
-        matches!(
-            self,
-            Error::RigPrompt(rig_agent::completion::PromptError::MaxTurnsError { .. })
-        )
+        use rig_agent::completion::PromptError;
+        match self {
+            Error::RigPrompt(PromptError::MaxTurnsError { .. }) => true,
+            // The code deadline of [`crate::Agent::with_code_deadline`]: the
+            // same outcome, reached earlier.
+            Error::RigPrompt(PromptError::PromptCancelled { reason, .. }) => {
+                code_deadline_turns(reason).is_some()
+            }
+            _ => false,
+        }
     }
 
     /// The messages an aborted agent run added before it failed, if the
@@ -275,6 +287,22 @@ impl Error {
         };
         Some(full.iter().skip(input_len).cloned().collect())
     }
+}
+
+/// The rest of the nudge after a run spent its turns without code.
+const TOOLS_WITHDRAWN: &str = "The documentation tools are withdrawn for the rest of this \
+    conversation. Respond with the complete Rust code block now, using the definitions you have \
+    already seen above. Do not call a tool; a name you could not look up is not in the host API, \
+    so do not use it.";
+
+/// The turns a run spent before its code deadline stopped it, if `reason`
+/// is the stop reason of that deadline (see [`crate::evolution_agent`]).
+pub(crate) fn code_deadline_turns(reason: &str) -> Option<usize> {
+    reason
+        .strip_prefix(crate::evolution_agent::CODE_DEADLINE_REASON)?
+        .trim()
+        .parse()
+        .ok()
 }
 
 /// Result type alias for symbiont operations.
@@ -357,6 +385,26 @@ mod tests {
                 .expect("carries transcript"),
             run[1..]
         );
+    }
+
+    /// Only the code deadline's own reason reads as one; any other stop of
+    /// a hook stays a plain cancellation.
+    #[test]
+    fn only_the_code_deadline_counts_as_exhausted_turns() {
+        let cancelled = |reason: String| {
+            Error::RigPrompt(PromptError::PromptCancelled {
+                chat_history: Vec::new(),
+                reason,
+            })
+        };
+        let deadline = format!("{} 35", crate::evolution_agent::CODE_DEADLINE_REASON);
+        assert_eq!(code_deadline_turns(&deadline), Some(35));
+        assert!(cancelled(deadline).exhausted_tool_turns());
+
+        assert_eq!(code_deadline_turns("hook terminated"), None);
+        let other = cancelled("hook terminated".to_string());
+        assert!(!other.exhausted_tool_turns());
+        assert!(other.nudge(&mut String::new()).is_err());
     }
 
     /// Errors without a transcript must not fabricate messages.

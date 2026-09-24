@@ -454,9 +454,7 @@ pub(crate) fn failure_kind_of(e: &crate::Error) -> &'static str {
         EditFailed { .. } => failure_kind::EDIT,
         NoRustCode => failure_kind::NO_RUST_CODE,
         UnsubmittedRevisions { .. } => failure_kind::UNSUBMITTED,
-        RigPrompt(rig_agent::completion::PromptError::MaxTurnsError { .. }) => {
-            failure_kind::MAX_TURNS
-        }
+        e @ RigPrompt(_) if e.exhausted_tool_turns() => failure_kind::MAX_TURNS,
         RigPrompt(_) => failure_kind::LLM,
         DylibLoad(_) => failure_kind::DYLIB_LOAD,
         Io(_) | WriteLib(_) => failure_kind::IO,
@@ -490,6 +488,10 @@ pub(crate) fn inference_error_reason(e: &crate::Error) -> &'static str {
         // The provider answered every request, but the agent loop did not
         // converge within its budget.
         RigPrompt(PromptError::MaxTurnsError { .. }) => inference_error::MAX_TURNS,
+        // The code deadline stops a run the same way the turn budget does.
+        e @ RigPrompt(PromptError::PromptCancelled { .. }) if e.exhausted_tool_turns() => {
+            inference_error::MAX_TURNS
+        }
         RigPrompt(PromptError::PromptCancelled { .. }) => inference_error::CANCELLED,
         // The model asked for a tool that this turn does not offer.
         RigPrompt(PromptError::UnknownToolCall { .. }) => inference_error::TOOL,

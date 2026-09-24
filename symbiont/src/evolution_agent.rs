@@ -228,8 +228,13 @@ fn drop_raw(call: CompletionCall) -> CompletionCall {
 /// request went out and came back, and when each tool started and finished.
 /// Rig's response carries no timing, so these are the run's timings on
 /// success as well.
+///
+/// With a code deadline, the hook also stops a run that spends that many
+/// turns in a row without writing code (see
+/// [`crate::Agent::with_code_deadline`]).
 struct Recorder {
     input_len: usize,
+    code_deadline: Option<usize>,
     /// The instant the run started; every timing is an offset from it.
     origin: Instant,
     partial: Arc<Mutex<PartialRun>>,
@@ -245,10 +250,22 @@ struct Pending {
     /// The tools executing, by rig's correlation id: rig may run the tool
     /// calls of one turn concurrently.
     tools: HashMap<InternalCallId, Duration>,
+    /// The requests sent since the run last wrote code.
+    turns_without_code: usize,
 }
 
+/// The prefix of the reason a run stops with at its code deadline; the
+/// number of turns follows it (see [`crate::error::code_deadline_turns`]).
+pub(crate) const CODE_DEADLINE_REASON: &str = "code deadline after";
+
+/// The tools that write code: a call to one of them resets the code deadline.
+const CODE_TOOLS: [&str; 2] = [
+    <crate::BuildRevisionTool as rig_core::tool::PortableTool>::NAME,
+    <crate::EditRevisionTool as rig_core::tool::PortableTool>::NAME,
+];
+
 impl Recorder {
-    fn new(input_len: usize) -> (Self, Arc<Mutex<PartialRun>>) {
+    fn new(input_len: usize, code_deadline: Option<usize>) -> (Self, Arc<Mutex<PartialRun>>) {
         let origin = Instant::now();
         let partial = Arc::new(Mutex::new(PartialRun {
             timings: RunTimings::started_at(origin),
@@ -257,6 +274,7 @@ impl Recorder {
         (
             Self {
                 input_len,
+                code_deadline,
                 origin,
                 partial: Arc::clone(&partial),
                 pending: Mutex::new(Pending::default()),
@@ -277,6 +295,15 @@ impl AgentHook for Recorder {
         event: CompletionCallEvent<'_>,
     ) -> CompletionCallAction {
         if let Ok(mut pending) = self.pending.lock() {
+            if let Some(deadline) = self.code_deadline
+                && pending.turns_without_code >= deadline
+            {
+                return CompletionCallAction::Stop(format!(
+                    "{CODE_DEADLINE_REASON} {}",
+                    pending.turns_without_code
+                ));
+            }
+            pending.turns_without_code += 1;
             pending.call_sent = Some(self.now());
         }
         if let Ok(mut partial) = self.partial.lock() {
@@ -317,6 +344,9 @@ impl AgentHook for Recorder {
     async fn on_tool_call(&self, _ctx: &HookContext, event: ToolCall<'_>) -> ToolCallAction {
         if let Ok(mut pending) = self.pending.lock() {
             pending.tools.insert(event.internal_call_id, self.now());
+            if CODE_TOOLS.contains(&event.tool_name) {
+                pending.turns_without_code = 0;
+            }
         }
         ToolCallAction::Run
     }
@@ -388,7 +418,7 @@ impl EvolutionAgent for crate::Agent {
         // `PromptRequest` clones the agent's internals, so the returned future
         // does not borrow `self`. Rig runs the tool-calling loop inside
         // `send()`, bounded by the agent's `default_max_turns`.
-        let (recorder, recorded) = Recorder::new(history.len());
+        let (recorder, recorded) = Recorder::new(history.len(), self.code_deadline);
         send(
             PromptRequest::from_agent(&self.inner, prompt)
                 .history(history)
@@ -407,7 +437,9 @@ impl EvolutionAgent for crate::Agent {
         // never returns a tool call; should one arrive anyway, rig refuses
         // to dispatch it and reports `PromptError::UnknownToolCall` with the
         // transcript, which the runtime turns into one more nudge.
-        let (recorder, recorded) = Recorder::new(history.len());
+        // No tools, so no tool-call turns: the code deadline has nothing to
+        // count.
+        let (recorder, recorded) = Recorder::new(history.len(), None);
         send(
             PromptRequest::from_agent(&self.inner, prompt)
                 .history(history)
@@ -657,6 +689,108 @@ mod tests {
             };
             assert_eq!(chat_history[0], Message::user("answer now"));
             assert!(is_tool_call(&chat_history[1]));
+        }
+
+        /// Stands in for `edit_revision`: the code deadline only looks at
+        /// the name.
+        struct FakeEdit;
+
+        impl rig_core::tool::PortableTool for FakeEdit {
+            const NAME: &'static str = "edit_revision";
+            type Args = serde_json::Value;
+            type Output = String;
+            type Error = std::convert::Infallible;
+
+            fn description(&self) -> String {
+                "edit".to_string()
+            }
+
+            fn parameters(&self) -> serde_json::Value {
+                json!({ "type": "object" })
+            }
+
+            async fn call(&self, _: Self::Args) -> Result<Self::Output, Self::Error> {
+                Ok("edited".to_string())
+            }
+        }
+
+        fn agent_with_deadline(
+            turns: impl IntoIterator<Item = MockTurn>,
+            deadline: usize,
+        ) -> (crate::Agent, MockCompletionModel) {
+            let model = MockCompletionModel::new(turns);
+            let inner = AgentBuilder::new(model.clone())
+                .tool(MockAddTool)
+                .tool(FakeEdit)
+                .default_max_turns(10)
+                .build();
+            (
+                crate::Agent::new(inner, "mock", "mock-model").with_code_deadline(deadline),
+                model,
+            )
+        }
+
+        /// Two turns without code, then the third request never goes out:
+        /// the run stops with the deadline's reason and its transcript, and
+        /// the runtime reads that as an exhausted turn budget.
+        #[tokio::test]
+        async fn a_run_without_code_stops_at_its_deadline() {
+            let add = || MockTurn::tool_call("call", "add", json!({"x": 1, "y": 2}));
+            let (agent, model) =
+                agent_with_deadline([add(), add(), add(), MockTurn::text("never")], 2);
+
+            let RunError { error, partial } = agent
+                .run("add", Vec::new())
+                .await
+                .expect_err("the deadline stops the run");
+            assert_eq!(model.requests().len(), 2);
+            let PromptError::PromptCancelled {
+                ref reason,
+                ref chat_history,
+            } = error
+            else {
+                panic!("{error:?}");
+            };
+            assert_eq!(crate::error::code_deadline_turns(reason), Some(2));
+            assert_eq!(chat_history.len(), 5, "{chat_history:?}");
+            assert_eq!(
+                partial.expect("two answered turns").completion_calls.len(),
+                2
+            );
+
+            let error = crate::Error::RigPrompt(error);
+            assert!(error.exhausted_tool_turns());
+            let mut prompt = String::new();
+            error.nudge(&mut prompt).expect("the deadline has a nudge");
+            assert!(prompt.contains("2 tool-call turns"), "{prompt}");
+        }
+
+        /// Writing code resets the count, so a run that keeps editing is
+        /// bounded by its turn budget alone.
+        #[tokio::test]
+        async fn writing_code_resets_the_deadline() {
+            let add = || MockTurn::tool_call("call-a", "add", json!({"x": 1, "y": 2}));
+            let edit = MockTurn::tool_call("call-e", "edit_revision", json!({}));
+            let (agent, model) =
+                agent_with_deadline([add(), edit, add(), MockTurn::text("done")], 2);
+
+            let run = agent
+                .run("add", Vec::new())
+                .await
+                .expect("the edit keeps the run below its deadline");
+            assert_eq!(run.output, "done");
+            assert_eq!(model.requests().len(), 4);
+        }
+
+        /// Without a deadline, only the turn budget bounds the run.
+        #[tokio::test]
+        async fn without_a_deadline_the_run_goes_on() {
+            let add = || MockTurn::tool_call("call", "add", json!({"x": 1, "y": 2}));
+            let run = agent([add(), add(), add(), MockTurn::text("3")])
+                .run("add", Vec::new())
+                .await
+                .expect("no deadline");
+            assert_eq!(run.output, "3");
         }
     }
 }
