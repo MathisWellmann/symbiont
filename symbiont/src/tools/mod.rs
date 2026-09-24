@@ -59,6 +59,7 @@ pub use evaluate::{
     EvaluateRevisionArgs,
     EvaluateRevisionError,
     EvaluateRevisionTool,
+    Evaluation,
 };
 pub use revision::{
     RevisionSourceArgs,

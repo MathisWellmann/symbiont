@@ -16,7 +16,10 @@ use crate::{
             RevisionToolError,
             ToolContext,
         },
-        pipeline::build_through_tool,
+        pipeline::{
+            build_through_tool,
+            refuse,
+        },
     },
 };
 
@@ -106,11 +109,13 @@ impl PortableTool for BuildRevisionTool {
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
-        // After the first registered revision, a complete candidate is
-        // refused before it costs a parse, let alone a build.
-        ToolContext::current()
-            .ok_or(RevisionToolError::OutsideEvolve)?
-            .require_edit()?;
+        // After the first registered revision, or once the stopping rule
+        // ended the search, a complete candidate is refused before it costs a
+        // parse, let alone a build.
+        let ctx = ToolContext::current().ok_or(RevisionToolError::OutsideEvolve)?;
+        if let Err(refusal) = ctx.require_edit() {
+            return Err(refuse(&ctx, Self::NAME, args.code, refusal));
+        }
         build_through_tool(self.runtime, Self::NAME, |_| {
             parse_candidate(strip_fences(args.code))
         })

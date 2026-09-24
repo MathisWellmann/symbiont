@@ -78,9 +78,9 @@ pub(super) async fn build_through_tool(
             let step = match ctx.rejected_verdict(&source) {
                 Some(verdict) => Step::Repeated(verdict),
                 None => match ctx.reserve_build() {
-                    Err(budget) => {
-                        record_refused(&ctx, tool, source, stages, t0, &budget.to_string());
-                        return Err(budget);
+                    Err(refusal) => {
+                        record_refused(&ctx, tool, source, stages, t0, &refusal);
+                        return Err(refusal);
                     }
                     Ok(budget) => match runtime
                         .build_and_register(source.clone(), stages.build_mut())
@@ -175,24 +175,51 @@ pub(super) async fn build_through_tool(
     }
 }
 
-/// Record a call the budget refused, so the trace shows it.
+/// Record a call the lane refused before any parse (a complete candidate
+/// after the first registration, or any build after the stopping rule ended
+/// the search), so the trace shows it, and hand the refusal back.
+pub(super) fn refuse(
+    ctx: &ToolContext,
+    tool: &'static str,
+    candidate: String,
+    refusal: RevisionToolError,
+) -> RevisionToolError {
+    record_refused(
+        ctx,
+        tool,
+        candidate,
+        StageTimings::default(),
+        Instant::now(),
+        &refusal,
+    );
+    refusal
+}
+
+/// Record a call the lane refused to build (budget spent, the stopping rule
+/// ended the search, or a complete candidate where an edit is required), so
+/// the trace shows it.
 fn record_refused(
     ctx: &ToolContext,
     tool: &'static str,
     candidate: String,
     stages: StageTimings,
     t0: Instant,
-    verdict: &str,
+    refusal: &RevisionToolError,
 ) {
-    counter!(TOOL_BUILDS, "tool" => tool, "outcome" => "budget").increment(1);
+    let kind = match refusal {
+        RevisionToolError::Stopped { .. } => "stopped",
+        RevisionToolError::EditRequired { .. } => "edit_required",
+        _ => "budget",
+    };
+    counter!(TOOL_BUILDS, "tool" => tool, "outcome" => kind).increment(1);
     ctx.record(
         ToolBuild::builder()
             .tool(tool)
             .candidate(Some(candidate))
             .stages(stages)
             .outcome(ToolBuildOutcome::Rejected {
-                kind: "budget".to_string(),
-                verdict: verdict.to_string(),
+                kind: kind.to_string(),
+                verdict: refusal.to_string(),
             })
             .duration(t0.elapsed())
             .build(),
@@ -280,6 +307,33 @@ mod tests {
         let ctx = ToolContext::new(10);
         ctx.reserve_build().expect("first build");
         ctx.reserve_build().expect("second build")
+    }
+
+    /// A refusal before any parse is in the trace under its own kind, with
+    /// the text the agent sent.
+    #[test]
+    fn a_refusal_before_the_pipeline_is_recorded() {
+        let ctx = ToolContext::new(10);
+        ctx.push_built(Revision::new(1));
+        let refusal = ctx.require_edit().expect_err("a revision is registered");
+        let returned = refuse(
+            &ctx,
+            "build_revision",
+            "fn f() {}".to_string(),
+            refusal.clone(),
+        );
+        assert_eq!(returned, refusal);
+        let builds = ctx.take_builds();
+        assert_eq!(builds.len(), 1);
+        assert_eq!(builds[0].tool(), "build_revision");
+        assert_eq!(builds[0].candidate().as_deref(), Some("fn f() {}"));
+        assert_eq!(
+            builds[0].outcome(),
+            &ToolBuildOutcome::Rejected {
+                kind: "edit_required".to_string(),
+                verdict: refusal.to_string(),
+            }
+        );
     }
 
     #[test]

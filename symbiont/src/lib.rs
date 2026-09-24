@@ -163,6 +163,7 @@ pub use tools::{
     EvaluateRevisionArgs,
     EvaluateRevisionError,
     EvaluateRevisionTool,
+    Evaluation,
     RevisionSourceArgs,
     RevisionSourceError,
     RevisionSourceTool,
