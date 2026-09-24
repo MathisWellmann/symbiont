@@ -86,6 +86,21 @@ pub enum RevisionToolError {
         /// The highest registered revision.
         latest: Revision,
     },
+    /// The lane registered a revision already, and the agent sent a complete
+    /// candidate instead of a change to it.
+    #[error(
+        "send a change, not a complete candidate: revisions {} are registered in this lane, so \
+         change one of them with `edit_revision` (SEARCH/REPLACE hunks for the lines that \
+         change, or a replacement function) and pass `base` = {} to edit the latest. Retyping \
+         the whole program costs minutes of generation for a change of a few lines. Nothing was \
+         built and no build of the budget was spent.",
+        revision_list(built),
+        built.last().map_or_else(|| "N".to_string(), ToString::to_string)
+    )]
+    EditRequired {
+        /// The revisions the lane registered through the tools.
+        built: Vec<Revision>,
+    },
     /// The agent asked to edit the last candidate, and there is none yet.
     #[error(
         "nothing to edit: no candidate was built or rejected in this lane yet. Send a complete \
@@ -104,7 +119,7 @@ impl RevisionToolError {
     pub(crate) fn model_visible(self) -> ToolExecutionError {
         let text = self.to_string();
         match self {
-            Self::OutsideEvolve | Self::BudgetExhausted { .. } => {
+            Self::OutsideEvolve | Self::BudgetExhausted { .. } | Self::EditRequired { .. } => {
                 ToolExecutionError::permission_denied(text).with_retryable(false)
             }
             Self::NotBuiltHere { .. } | Self::UnknownRevision { .. } | Self::NoEditBase => {
@@ -219,6 +234,22 @@ impl ToolContext {
         if !inner.built.contains(&revision) {
             inner.built.push(revision);
         }
+    }
+
+    /// Refuse a complete candidate once the lane registered a revision: from
+    /// then on the agent changes what it has instead of retyping it.
+    ///
+    /// The v0.34 traces of the sliding harness show why: successive full
+    /// candidates were a median 97% identical to the one before, and those
+    /// re-emissions were two thirds of all output tokens a lane generated.
+    pub(crate) fn require_edit(&self) -> Result<(), RevisionToolError> {
+        let inner = self.lock();
+        if inner.built.is_empty() {
+            return Ok(());
+        }
+        Err(RevisionToolError::EditRequired {
+            built: inner.built.clone(),
+        })
     }
 
     /// Spend one build of the budget, or report it exhausted.
@@ -361,6 +392,32 @@ mod tests {
         ctx.push_built(Revision::new(5));
         ctx.push_built(Revision::new(5));
         assert_eq!(ctx.built(), vec![Revision::new(5)]);
+    }
+
+    /// A complete candidate is welcome until the lane registers a revision,
+    /// and refused after, naming the revision to edit.
+    #[test]
+    fn complete_candidates_stop_after_the_first_registration() {
+        let ctx = ToolContext::new(3);
+        assert_eq!(ctx.require_edit(), Ok(()));
+        ctx.push_built(Revision::new(4));
+        ctx.push_built(Revision::new(7));
+        let err = ctx.require_edit().expect_err("a revision is registered");
+        assert_eq!(
+            err,
+            RevisionToolError::EditRequired {
+                built: vec![Revision::new(4), Revision::new(7)]
+            }
+        );
+        let text = err.to_string();
+        assert!(text.contains("revisions 4, 7 are registered"), "{text}");
+        assert!(text.contains("`base` = 7"), "{text}");
+        let mapped = err.model_visible();
+        assert_eq!(mapped.kind(), ToolErrorKind::PermissionDenied);
+        assert!(
+            mapped.message().contains("edit_revision"),
+            "the model reads it"
+        );
     }
 
     #[test]

@@ -147,8 +147,15 @@ impl PortableTool for EditRevisionTool {
         let ctx = ToolContext::current().ok_or(RevisionToolError::OutsideEvolve)?;
         let base = self.base(&ctx, args.base)?;
         let runtime = self.runtime;
+        let fences = fences_of_text(&args.edits);
+        // Text without any edit is a complete candidate, which this tool only
+        // takes before the lane has a registered revision; see
+        // `ToolContext::require_edit`.
+        if runtime.is_whole_candidate(&base, &fences) {
+            ctx.require_edit()?;
+        }
         build_through_tool(runtime, Self::NAME, move |stages| {
-            runtime.edited_candidate(&base, &fences_of_text(&args.edits), stages, || {
+            runtime.edited_candidate(&base, &fences, stages, || {
                 parse_candidate(args.edits.clone())
             })
         })

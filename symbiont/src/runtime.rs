@@ -775,6 +775,19 @@ impl Runtime {
     /// parses as the complete candidate. An edit is recorded in `stages` for
     /// the trace; an edit that does not apply is [`Error::EditFailed`] with
     /// the base unchanged.
+    /// Do `fences` carry no edit of `base` at all, so that
+    /// [`Self::edited_candidate`] would read them as a complete candidate?
+    ///
+    /// An edit that fails to resolve is not a whole candidate: it is a broken
+    /// edit, and the edit path reports what is wrong with it.
+    pub(crate) fn is_whole_candidate(&self, base: &EditBase, fences: &[Fence]) -> bool {
+        let declared: Vec<&str> = self.decls.iter().map(|decl| decl.name).collect();
+        matches!(
+            edit::resolve(base, fences, &declared),
+            Ok(edit::Resolved::Whole)
+        )
+    }
+
     pub(crate) fn edited_candidate(
         &self,
         base: &EditBase,

@@ -262,7 +262,8 @@ They change the output contract above: a reply that chose a revision with
   and registers it as a numbered revision, without activating it. The answer
   names the revision, or gives the same diagnostics a rejected reply gets:
   compiler errors numbered `[E1]`, `[E2]`, ... with line numbers into your
-  code, a signature mismatch, or a forbidden construct.
+  code, a signature mismatch, or a forbidden construct. It takes the first
+  registered revision of a task only.
 - `edit_revision` applies edits to the candidate you last built or had
   rejected, in the forms described under Repairing a compile error (`E<n> =>`
   anchors, `SEARCH`/`REPLACE` hunks, a replacement function), and builds the
@@ -279,6 +280,11 @@ summary. A rejected candidate is not a failure of the task; repairing it is
 the task. Do not send code the harness already rejected: it answers from
 memory without building. You can send at most {max_builds} candidates to the
 compiler per task; the answer of each build tells you how many you have used.
+
+Once a revision is registered, send changes, never the whole program again:
+both tools refuse a complete candidate from then on. Change the lines that
+differ with `SEARCH`/`REPLACE` hunks against `base` = the revision you start
+from. A variant that tunes a constant is one small hunk, not a new program.
 
 You may still answer with a single ```rust code block instead of using the
 tools; the harness builds it as before.
