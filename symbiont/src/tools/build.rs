@@ -12,7 +12,10 @@ use crate::{
     Runtime,
     parser::parse_candidate,
     tools::{
-        context::RevisionToolError,
+        context::{
+            RevisionToolError,
+            ToolContext,
+        },
         pipeline::build_through_tool,
     },
 };
@@ -75,6 +78,8 @@ impl PortableTool for BuildRevisionTool {
         "Compile a complete candidate of the evolvable code and register it as a numbered \
          revision, without activating it. Pass the full Rust source with every required \
          function as an item, no markdown fences. \
+         Only for the first registered revision of a lane: once one is registered, this tool \
+         refuses, and every further change goes through `edit_revision`. \
          The answer names the revision, or gives the reasons the candidate was rejected: the \
          compiler errors numbered [E1], [E2], ... with line numbers into your code, a signature \
          mismatch, or a forbidden construct. Fix a rejected candidate with `edit_revision`. \
@@ -101,6 +106,11 @@ impl PortableTool for BuildRevisionTool {
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+        // After the first registered revision, a complete candidate is
+        // refused before it costs a parse, let alone a build.
+        ToolContext::current()
+            .ok_or(RevisionToolError::OutsideEvolve)?
+            .require_edit()?;
         build_through_tool(self.runtime, Self::NAME, |_| {
             parse_candidate(strip_fences(args.code))
         })

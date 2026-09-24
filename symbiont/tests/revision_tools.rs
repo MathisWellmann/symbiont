@@ -68,23 +68,34 @@ async fn build_reject_repeat_register(rt: &'static Runtime, seen: Verdicts) -> S
     record(build(rt, broken).await.expect("a rejection is an answer"));
     // The same code again is answered from memory.
     record(build(rt, broken).await.expect("a repeat is an answer"));
-    // A fenced candidate is unwrapped; this one builds.
-    record(
-        build(rt, "```rust\nfn tool_step(x: f64) -> f64 { x * 3.0 }\n```")
-            .await
-            .expect("a registration is an answer"),
-    );
     // A parse failure costs no build.
     record(
         build(rt, "fn tool_step(x: f64) -> f64 { x * ")
             .await
             .expect("a parse rejection is an answer"),
     );
-    // Code that is already a registered revision costs no build either.
+    // A fenced candidate is unwrapped; this one builds.
+    record(
+        build(rt, "```rust\nfn tool_step(x: f64) -> f64 { x * 3.0 }\n```")
+            .await
+            .expect("a registration is an answer"),
+    );
+    // From now on the lane changes what it has: a complete candidate is
+    // refused by either tool, before any build.
     record(
         build(rt, "fn tool_step(x: f64) -> f64 { x * 3.0 }")
             .await
-            .expect("a deduplication is an answer"),
+            .expect_err("a complete candidate after a registration is refused")
+            .to_string(),
+    );
+    record(
+        edit(
+            rt,
+            EditRevisionArgs::new("fn tool_step(x: f64) -> f64 { x * 4.0 }"),
+        )
+        .await
+        .expect_err("a complete candidate is no edit")
+        .to_string(),
     );
     // The model answers with the code it built: the response path finds it
     // registered already.
@@ -136,7 +147,7 @@ async fn revision_tools_drive_the_pipeline_from_inside_a_run() {
     assert_eq!(rt.revision_count(), 2, "one revision, built once");
 
     let verdicts = verdicts.lock().expect("not poisoned").clone();
-    assert_eq!(verdicts.len(), 5);
+    assert_eq!(verdicts.len(), 6);
     assert!(
         verdicts[0].contains("failed to compile") && verdicts[0].contains("[E1]"),
         "the compile verdict is the response nudge: {}",
@@ -152,26 +163,28 @@ async fn revision_tools_drive_the_pipeline_from_inside_a_run() {
         "the repeat quotes the earlier verdict"
     );
     assert!(
-        verdicts[2].starts_with("Registered revision 1.\n"),
-        "{}",
-        verdicts[2]
-    );
-    assert!(
-        verdicts[2].contains("Revisions built in this lane: 1. Build budget: 2 of 10 used."),
-        "the repeat and the parse failure spent no build: {}",
-        verdicts[2]
-    );
-    assert!(
-        verdicts[3].contains("not valid Rust"),
+        verdicts[2].contains("not valid Rust"),
         "the parse verdict is the response nudge: {}",
+        verdicts[2]
+    );
+    assert!(
+        verdicts[3].starts_with("Registered revision 1.\n"),
+        "{}",
         verdicts[3]
     );
     assert!(
-        verdicts[4].starts_with("Your code is byte-identical to revision 1")
-            && verdicts[4].contains("Build budget: 2 of 10 used."),
-        "a deduplicated candidate is refunded its build: {}",
-        verdicts[4]
+        verdicts[3].contains("Revisions built in this lane: 1. Build budget: 2 of 10 used."),
+        "the repeat and the parse failure spent no build: {}",
+        verdicts[3]
     );
+    for refusal in &verdicts[4..] {
+        assert!(
+            refusal.starts_with("send a change, not a complete candidate")
+                && refusal.contains("revisions 1 are registered")
+                && refusal.contains("`base` = 1"),
+            "a complete candidate after a registration is refused: {refusal}"
+        );
+    }
 
     // The trace records every tool build under the attempt whose run made
     // it, and the response's own build as a deduplication.
@@ -183,24 +196,19 @@ async fn revision_tools_drive_the_pipeline_from_inside_a_run() {
         .iter()
         .map(|build| build.outcome())
         .collect();
-    assert_eq!(outcomes.len(), 5);
+    // The refused complete candidates never entered the pipeline.
+    assert_eq!(outcomes.len(), 4);
     assert!(
         matches!(outcomes[0], ToolBuildOutcome::Rejected { kind, .. } if kind == "compile"),
         "{outcomes:?}"
     );
     assert_eq!(outcomes[1], &ToolBuildOutcome::Repeated);
-    assert_eq!(
-        outcomes[2],
-        &ToolBuildOutcome::Registered {
-            revision: Revision::new(1)
-        }
-    );
     assert!(
-        matches!(outcomes[3], ToolBuildOutcome::Rejected { kind, .. } if kind == "parse"),
+        matches!(outcomes[2], ToolBuildOutcome::Rejected { kind, .. } if kind == "parse"),
         "{outcomes:?}"
     );
     assert_eq!(
-        outcomes[4],
+        outcomes[3],
         &ToolBuildOutcome::Registered {
             revision: Revision::new(1)
         }
@@ -450,9 +458,12 @@ where
             .expect("registered"),
     );
     record(
-        build(rt, "fn tool_step(x: f64) -> f64 { x * 10.0 }")
-            .await
-            .expect("registered"),
+        edit(
+            rt,
+            EditRevisionArgs::new("<<<<<<< SEARCH\n9.0\n=======\n10.0\n>>>>>>> REPLACE"),
+        )
+        .await
+        .expect("registered"),
     );
     for revision in [Some(7), Some(8), None] {
         record(
@@ -542,9 +553,12 @@ async fn build_two_and_choose(rt: &'static Runtime, seen: Verdicts) -> String {
             .expect("registered"),
     );
     record(
-        build(rt, "fn tool_step(x: f64) -> f64 { x * 6.0 }")
-            .await
-            .expect("registered"),
+        edit(
+            rt,
+            EditRevisionArgs::new("<<<<<<< SEARCH\n5.0\n=======\n6.0\n>>>>>>> REPLACE"),
+        )
+        .await
+        .expect("registered"),
     );
     record(
         submit(1)
