@@ -2,7 +2,11 @@
 //! A recorded tree as a simulator: a policy walks it, the replay reveals the
 //! recorded continuations, nothing is generated or evaluated.
 
-use std::num::NonZeroUsize;
+use std::{
+    num::NonZeroUsize,
+    ops::Deref,
+    sync::Arc,
+};
 
 use getset::{
     CopyGetters,
@@ -223,12 +227,35 @@ impl Trajectory {
     }
 }
 
+/// How a replay holds its tree.
+enum TreeRef<'a, O> {
+    /// Borrowed for a replay that lives within the tree's scope.
+    Borrowed(&'a DiscoveryTree<O>),
+    /// Shared for a replay that must outlive the scope it was built in.
+    Shared(Arc<DiscoveryTree<O>>),
+}
+
+impl<O> Deref for TreeRef<'_, O> {
+    type Target = DiscoveryTree<O>;
+
+    fn deref(&self) -> &DiscoveryTree<O> {
+        match self {
+            Self::Borrowed(tree) => tree,
+            Self::Shared(tree) => tree,
+        }
+    }
+}
+
 /// A step-by-step replay over one recorded tree.
 ///
 /// Use [`replay`] to drive a [`Policy`] to termination, or step manually
 /// with [`Replay::view`] and [`Replay::step`].
+///
+/// [`Replay::new`] borrows the tree. [`Replay::shared`] holds it through an
+/// [`Arc`] instead, so the replay is `'static` and can be stored where a
+/// borrow cannot go, e.g. in a callback that outlives the caller's frame.
 pub struct Replay<'a, O> {
-    tree: &'a DiscoveryTree<O>,
+    tree: TreeRef<'a, O>,
     revealed: Vec<bool>,
     config: ReplayConfig,
     rounds: Vec<RoundRecord>,
@@ -237,9 +264,13 @@ pub struct Replay<'a, O> {
 }
 
 impl<'a, O> Replay<'a, O> {
-    /// Start a replay with only the root revealed.
+    /// Start a replay of a borrowed tree with only the root revealed.
     #[must_use]
     pub fn new(tree: &'a DiscoveryTree<O>, config: ReplayConfig) -> Self {
+        Self::start(TreeRef::Borrowed(tree), config)
+    }
+
+    fn start(tree: TreeRef<'a, O>, config: ReplayConfig) -> Self {
         let mut revealed = vec![false; tree.node_count()];
         revealed[0] = true;
         Self {
@@ -252,11 +283,17 @@ impl<'a, O> Replay<'a, O> {
         }
     }
 
+    /// The tree being replayed.
+    #[must_use]
+    pub fn tree(&self) -> &DiscoveryTree<O> {
+        &self.tree
+    }
+
     /// The prefix the policy may observe now.
     #[must_use]
     pub fn view(&self) -> View<'_, O> {
         View::new(
-            self.tree,
+            &self.tree,
             &self.revealed,
             self.config.expansion,
             self.config.workers.get(),
@@ -372,6 +409,14 @@ impl<'a, O> Replay<'a, O> {
             }
         }
         taken
+    }
+}
+
+impl<O: 'static> Replay<'static, O> {
+    /// Start a replay of a shared tree with only the root revealed.
+    #[must_use]
+    pub fn shared(tree: Arc<DiscoveryTree<O>>, config: ReplayConfig) -> Self {
+        Self::start(TreeRef::Shared(tree), config)
     }
 }
 
