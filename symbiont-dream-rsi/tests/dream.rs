@@ -774,3 +774,48 @@ fn a_trajectory_without_a_prefix_field_deserializes() {
     let trajectory: Trajectory = serde_json::from_str(json).expect("an older trajectory");
     assert!(trajectory.prefix().is_empty());
 }
+
+#[test]
+fn a_live_run_continues_a_recorded_tree_and_replays_from_its_prefix() {
+    let mut policy = ParallelRefining {
+        branches: 2,
+        refinements: 0,
+    };
+    let recorded = record(&mut policy, 2);
+    let old = Vec::from_iter(recorded.nodes().iter().skip(1).map(|n| n.id()));
+    assert_eq!(old.len(), 2);
+
+    // The next run continues the best old node twice, in one round.
+    let best = old[0];
+    let mut live = Live::from_tree(recorded, 2).expansion(ExpansionRule::AnyRevealed);
+    assert_eq!(live.view().revealed_count(), 2);
+    assert!(live.view().is_legal(best));
+    let new = live
+        .commit_round([
+            (Action::expand(best), obs(8.0)),
+            (Action::expand(best), obs(6.0)),
+        ])
+        .expect("the old node exists");
+    let (tree, trajectory) = live.finish(Termination::PolicyStopped);
+    assert_eq!(tree.node_count(), 5);
+    assert_eq!(trajectory.prefix(), &old);
+    assert_eq!(Vec::from_iter(trajectory.revealed()), new);
+
+    // Replaying from the prefix with the same decisions reproduces the run.
+    let mut again = |view: &View<'_, Obs>| -> Vec<Action> {
+        if view.round() == 0 {
+            vec![Action::expand(best); 2]
+        } else {
+            Vec::new()
+        }
+    };
+    let config = ReplayConfig::with_workers(2).expansion(ExpansionRule::AnyRevealed);
+    let replayed = replay_from(&tree, old, &mut again, &config).expect("reachable");
+    assert_eq!(
+        replayed.rounds()[0].revealed(),
+        trajectory.rounds()[0].revealed()
+    );
+    let score = quality().score(&tree, &replayed).expect("same tree");
+    assert_eq!(score.best_quality(), 8.0);
+    assert_eq!(score.revealed(), 2);
+}
