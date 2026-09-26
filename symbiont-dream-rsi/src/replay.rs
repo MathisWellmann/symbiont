@@ -27,6 +27,7 @@ use crate::{
     },
     tree::{
         DiscoveryTree,
+        Error,
         NodeId,
     },
 };
@@ -192,13 +193,27 @@ pub struct Trajectory {
     /// Why the rollout ended.
     #[getset(get_copy = "pub")]
     termination: Termination,
+
+    /// Non-root nodes that were revealed before the first round, in id
+    /// order: the prefix of a replay started with [`Replay::with_prefix`],
+    /// or the tree a [`Live`](crate::Live) run continued. They were paid for
+    /// by an earlier rollout, so the objective counts them towards the best
+    /// quality but not towards the cost.
+    #[getset(get = "pub")]
+    #[serde(default)]
+    prefix: Vec<NodeId>,
 }
 
 impl Trajectory {
-    pub(crate) fn new(rounds: Vec<RoundRecord>, termination: Termination) -> Self {
+    pub(crate) fn new(
+        rounds: Vec<RoundRecord>,
+        termination: Termination,
+        prefix: Vec<NodeId>,
+    ) -> Self {
         Self {
             rounds,
             termination,
+            prefix,
         }
     }
 
@@ -254,9 +269,15 @@ impl<O> Deref for TreeRef<'_, O> {
 /// [`Replay::new`] borrows the tree. [`Replay::shared`] holds it through an
 /// [`Arc`] instead, so the replay is `'static` and can be stored where a
 /// borrow cannot go, e.g. in a callback that outlives the caller's frame.
+///
+/// A replay starts with only the root revealed, or with a prefix of the tree
+/// revealed ([`Replay::with_prefix`]): the state an earlier rollout reached,
+/// from which the policy continues.
 pub struct Replay<'a, O> {
     tree: TreeRef<'a, O>,
     revealed: Vec<bool>,
+    /// Non-root nodes revealed before the first round, in id order.
+    prefix: Vec<NodeId>,
     config: ReplayConfig,
     rounds: Vec<RoundRecord>,
     stalled: usize,
@@ -276,11 +297,52 @@ impl<'a, O> Replay<'a, O> {
         Self {
             tree,
             revealed,
+            prefix: Vec::new(),
             config,
             rounds: Vec::new(),
             stalled: 0,
             termination: None,
         }
+    }
+
+    /// Reveal `prefix` before the first round: the policy continues from the
+    /// state an earlier rollout reached instead of from the root alone.
+    ///
+    /// The prefix must be a state a rollout can reach: every node's primary
+    /// parent and context nodes are in it (or are the root). Its nodes are
+    /// free, see [`Trajectory::prefix`]. The root may be listed and is
+    /// ignored; duplicates are ignored too.
+    ///
+    /// # Errors
+    /// [`Error::UnknownNode`] if a node is not in the tree,
+    /// [`Error::PrefixNotClosed`] if a node's parent or context is missing,
+    /// [`Error::ReplayStarted`] if the replay already took a step.
+    pub fn with_prefix(mut self, prefix: impl IntoIterator<Item = NodeId>) -> Result<Self, Error> {
+        if !self.rounds.is_empty() || self.termination.is_some() {
+            return Err(Error::ReplayStarted);
+        }
+        let mut prefix = Vec::from_iter(prefix.into_iter().filter(|id| !id.is_root()));
+        prefix.sort_unstable();
+        prefix.dedup();
+        for &id in &prefix {
+            if !self.tree.contains(id) {
+                return Err(Error::UnknownNode(id));
+            }
+            self.revealed[id.index()] = true;
+        }
+        for &id in &prefix {
+            let node = self.tree.get(id).ok_or(Error::UnknownNode(id))?;
+            if let Some(missing) = node
+                .primary()
+                .into_iter()
+                .chain(node.context().iter().copied())
+                .find(|dep| !self.revealed[dep.index()])
+            {
+                return Err(Error::PrefixNotClosed { node: id, missing });
+            }
+        }
+        self.prefix = prefix;
+        Ok(self)
     }
 
     /// The tree being replayed.
@@ -361,6 +423,7 @@ impl<'a, O> Replay<'a, O> {
         Trajectory {
             rounds: self.rounds,
             termination: self.termination.unwrap_or(Termination::External),
+            prefix: self.prefix,
         }
     }
 
@@ -431,8 +494,36 @@ pub fn replay<O, P>(tree: &DiscoveryTree<O>, policy: &mut P, config: &ReplayConf
 where
     P: Policy<O> + ?Sized,
 {
+    drive(Replay::new(tree, config.clone()), policy)
+}
+
+/// Run `policy` over `tree` to termination, continuing from `prefix` (see
+/// [`Replay::with_prefix`]), and return its trajectory.
+///
+/// The policy is [`reset`](Policy::reset) first.
+///
+/// # Errors
+/// Those of [`Replay::with_prefix`].
+pub fn replay_from<O, P>(
+    tree: &DiscoveryTree<O>,
+    prefix: impl IntoIterator<Item = NodeId>,
+    policy: &mut P,
+    config: &ReplayConfig,
+) -> Result<Trajectory, Error>
+where
+    P: Policy<O> + ?Sized,
+{
+    Ok(drive(
+        Replay::new(tree, config.clone()).with_prefix(prefix)?,
+        policy,
+    ))
+}
+
+fn drive<O, P>(mut sim: Replay<'_, O>, policy: &mut P) -> Trajectory
+where
+    P: Policy<O> + ?Sized,
+{
     policy.reset();
-    let mut sim = Replay::new(tree, config.clone());
     loop {
         let batch = policy.select_batch(&sim.view());
         if sim.step(batch).is_some() {

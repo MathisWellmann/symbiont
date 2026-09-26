@@ -20,9 +20,11 @@ type Measure<'f, O> = Box<dyn Fn(&O) -> f64 + Send + Sync + 'f>;
 
 /// `V = max quality − β₁·Σ cost + β₂·N / max(1, k)`.
 ///
-/// * quality: the best value of `quality` over the root and every revealed
-///   node (larger is better);
+/// * quality: the best value of `quality` over the root, the prefix the
+///   rollout started from ([`Trajectory::prefix`]) and every revealed node
+///   (larger is better);
 /// * cost: the sum of `cost` over revealed nodes, one per node by default;
+///   the prefix is free, an earlier rollout paid for it;
 /// * parallelism: revealed nodes per decision round, rewarding batched
 ///   continuations over serial ones.
 pub struct Objective<'f, O> {
@@ -85,6 +87,10 @@ impl<'f, O> Objective<'f, O> {
         trajectory: &Trajectory,
     ) -> Result<ReplayScore, Error> {
         let mut best_quality = self.quality_of(tree.root().observation());
+        for &id in trajectory.prefix() {
+            let node = tree.get(id).ok_or(Error::UnknownNode(id))?;
+            best_quality = best_quality.max(self.quality_of(node.observation()));
+        }
         let mut total_cost = 0.0;
         let mut revealed = 0_usize;
         for id in trajectory.revealed() {
@@ -110,7 +116,7 @@ impl<'f, O> Objective<'f, O> {
 /// The terms of one scored trajectory.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, CopyGetters)]
 pub struct ReplayScore {
-    /// Best quality among the root and the revealed nodes.
+    /// Best quality among the root, the prefix and the revealed nodes.
     #[getset(get_copy = "pub")]
     best_quality: f64,
 

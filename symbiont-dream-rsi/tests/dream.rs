@@ -25,6 +25,7 @@ use symbiont_dream_rsi::{
     Trajectory,
     View,
     replay,
+    replay_from,
     select_best,
 };
 
@@ -644,4 +645,132 @@ fn shared_replay_outlives_the_callers_frame() {
     assert_eq!(terminations.last(), Some(&Some(Termination::Exhausted)));
     assert_eq!(shared.tree().node_count(), tree.node_count());
     assert_eq!(shared.finish(), borrowed);
+}
+
+/// The nodes of `tree` at `depth`.
+fn at_depth(tree: &DiscoveryTree<Obs>, depth: usize) -> Vec<NodeId> {
+    tree.nodes()
+        .iter()
+        .map(|n| n.id())
+        .filter(|&id| tree.depth(id) == Some(depth))
+        .collect()
+}
+
+#[test]
+fn a_prefix_replay_reveals_only_the_continuations() {
+    let mut policy = ParallelRefining {
+        branches: 2,
+        refinements: 2,
+    };
+    let tree = record(&mut policy, 2);
+    let first = at_depth(&tree, 1);
+    assert_eq!(first.len(), 2);
+
+    let trajectory = replay_from(
+        &tree,
+        first.clone(),
+        &mut policy,
+        &ReplayConfig::with_workers(2),
+    )
+    .expect("the first round is a reachable prefix");
+    assert_eq!(trajectory.prefix(), &first);
+    // Both branches are open, so the policy only refines: two rounds of two.
+    assert_eq!(trajectory.revealed_count(), 4);
+    assert_eq!(trajectory.round_count(), 2);
+    assert_eq!(trajectory.termination(), Termination::Exhausted);
+    assert!(trajectory.revealed().all(|id| !first.contains(&id)));
+}
+
+#[test]
+fn a_prefix_must_be_reachable() {
+    let tree = record(
+        &mut ParallelRefining {
+            branches: 2,
+            refinements: 2,
+        },
+        2,
+    );
+    let config = ReplayConfig::with_workers(2);
+    let deep = at_depth(&tree, 2)[0];
+    let parent = tree.get(deep).and_then(|n| n.primary()).expect("a parent");
+    assert!(matches!(
+        Replay::new(&tree, config.clone()).with_prefix([deep]),
+        Err(Error::PrefixNotClosed { node, missing }) if node == deep && missing == parent
+    ));
+
+    let foreign: NodeId = serde_json::from_str("99").expect("an id");
+    assert!(matches!(
+        Replay::new(&tree, config.clone()).with_prefix([foreign]),
+        Err(Error::UnknownNode(id)) if id == foreign
+    ));
+
+    let mut started = Replay::new(&tree, config.clone());
+    started.step(vec![Action::expand(NodeId::ROOT)]);
+    assert!(matches!(
+        started.with_prefix([parent]),
+        Err(Error::ReplayStarted)
+    ));
+
+    // The root and duplicates are ignored.
+    let sim = Replay::new(&tree, config)
+        .with_prefix([NodeId::ROOT, parent, parent])
+        .expect("reachable");
+    assert_eq!(sim.view().revealed_count(), 1);
+    assert_eq!(sim.finish().prefix(), &[parent]);
+}
+
+#[test]
+fn an_old_node_fans_out_again_under_any_revealed() {
+    // Window 1 recorded `a`; window 2 continued twice from it.
+    let mut tree = DiscoveryTree::new(obs(0.0));
+    let a = tree.push(NodeId::ROOT, vec![], obs(1.0)).expect("root");
+    let b = tree.push(a, vec![], obs(2.0)).expect("a");
+    let c = tree.push(a, vec![], obs(3.0)).expect("a");
+
+    let any = ReplayConfig::with_workers(2).expansion(ExpansionRule::AnyRevealed);
+    let mut sim = Replay::new(&tree, any).with_prefix([a]).expect("reachable");
+    let term = sim.step(vec![Action::expand(a); 2]);
+    assert_eq!(term, Some(Termination::Exhausted));
+    let trajectory = sim.finish();
+    assert_eq!(trajectory.rounds()[0].revealed(), &[b, c]);
+
+    // Under LeavesOnly the repeat is dropped.
+    let mut sim = Replay::new(&tree, ReplayConfig::with_workers(2))
+        .with_prefix([a])
+        .expect("reachable");
+    sim.step(vec![Action::expand(a); 2]);
+    assert_eq!(sim.finish().rounds()[0].rejected().len(), 1);
+}
+
+#[test]
+fn the_prefix_sets_the_quality_baseline_and_is_free() {
+    // The prefix holds the best node; the continuation is worse.
+    let mut tree = DiscoveryTree::new(obs(0.0));
+    let a = tree.push(NodeId::ROOT, vec![], obs(7.0)).expect("root");
+    tree.push(a, vec![], obs(3.0)).expect("a");
+
+    let mut refine = |view: &View<'_, Obs>| -> Vec<Action> {
+        if view.round() == 0 {
+            view.frontier().into_iter().map(Action::expand).collect()
+        } else {
+            Vec::new()
+        }
+    };
+    let trajectory =
+        replay_from(&tree, [a], &mut refine, &ReplayConfig::with_workers(1)).expect("reachable");
+    let score = quality()
+        .cost_weight(1.0)
+        .score(&tree, &trajectory)
+        .expect("same tree");
+    assert_eq!(score.best_quality(), 7.0);
+    assert_eq!(score.revealed(), 1);
+    assert_eq!(score.total_cost(), 1.0);
+    assert_eq!(score.value(), 7.0 - 1.0);
+}
+
+#[test]
+fn a_trajectory_without_a_prefix_field_deserializes() {
+    let json = r#"{"rounds":[],"termination":"PolicyStopped"}"#;
+    let trajectory: Trajectory = serde_json::from_str(json).expect("an older trajectory");
+    assert!(trajectory.prefix().is_empty());
 }
