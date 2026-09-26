@@ -618,3 +618,30 @@ fn map_projects_observations_and_keeps_structure() {
         assert_eq!(*a.observation(), b.observation().score);
     }
 }
+
+#[test]
+fn shared_replay_outlives_the_callers_frame() {
+    let mut policy = ParallelRefining {
+        branches: 2,
+        refinements: 1,
+    };
+    let tree = std::sync::Arc::new(record(&mut policy, 2));
+    let config = ReplayConfig::with_workers(2);
+    let borrowed = replay(&tree, &mut policy, &config);
+
+    // A `'static` callback owning its replay, as a host function registry
+    // would store it.
+    let mut stepper: Box<dyn FnMut(Vec<Action>) -> Option<Termination> + Send> = {
+        let mut sim = Replay::shared(std::sync::Arc::clone(&tree), config);
+        Box::new(move |batch| sim.step(batch))
+    };
+    let mut shared = Replay::shared(std::sync::Arc::clone(&tree), ReplayConfig::with_workers(2));
+    let mut terminations = Vec::new();
+    for round in borrowed.rounds() {
+        terminations.push(stepper(round.batch().clone()));
+        shared.step(round.batch().clone());
+    }
+    assert_eq!(terminations.last(), Some(&Some(Termination::Exhausted)));
+    assert_eq!(shared.tree().node_count(), tree.node_count());
+    assert_eq!(shared.finish(), borrowed);
+}
