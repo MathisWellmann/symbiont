@@ -150,6 +150,9 @@ impl<O> Live<O> {
     /// [`Termination::External`]; the other variants describe replays.
     #[must_use]
     pub fn finish(self, termination: Termination) -> (DiscoveryTree<O>, Trajectory) {
-        (self.tree, Trajectory::new(self.rounds, termination))
+        (
+            self.tree,
+            Trajectory::new(self.rounds, termination, Vec::new()),
+        )
     }
 }

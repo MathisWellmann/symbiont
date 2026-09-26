@@ -79,6 +79,18 @@ pub enum Error {
         /// Where the edge points.
         target: NodeId,
     },
+    /// A replay prefix holds a node but not its primary parent or one of its
+    /// context nodes, so the prefix is not a state a rollout can reach.
+    #[error("prefix node {node} needs {missing}, which is not in the prefix.")]
+    PrefixNotClosed {
+        /// The node in the prefix.
+        node: NodeId,
+        /// The parent or context node the prefix lacks.
+        missing: NodeId,
+    },
+    /// A prefix was given to a replay that already took a step.
+    #[error("a replay prefix must be revealed before the first step.")]
+    ReplayStarted,
 }
 
 /// One recorded generate–evaluate attempt.
