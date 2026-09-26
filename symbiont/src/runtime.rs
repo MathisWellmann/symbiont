@@ -891,7 +891,14 @@ impl Runtime {
     /// `record` receives the result of the build stage for the trace. This
     /// method writes it before every early return. A candidate that the
     /// compiler rejects therefore still reports the time its compile took.
-    pub(crate) async fn build_and_register(
+    ///
+    /// Public so a host can register source it already knows without an
+    /// evolution run, e.g. the members of a checkpoint it resumes from.
+    ///
+    /// # Errors
+    /// If the candidate does not compile (after autofixes) or its dylib does
+    /// not load.
+    pub async fn build_and_register(
         &self,
         candidate: String,
         record: &mut Option<BuildRecord>,
