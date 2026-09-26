@@ -36,7 +36,7 @@
 //! |---|---|
 //! | [`DiscoveryTree`], [`Node`], [`NodeId`] | the recorded run |
 //! | [`Policy`], [`View`], [`Action`] | the decision interface, shared by live run and replay; a `View` only exposes revealed nodes |
-//! | [`Live`] | records a live run through that interface, producing a tree and a [`Trajectory`] |
+//! | [`Live`] | records a live run through that interface, from a root or continuing a recorded tree, producing a tree and a [`Trajectory`] |
 //! | [`Replay`], [`replay()`], [`replay_from()`] | walks a recorded tree with a policy, revealing recorded continuations, from the root or from a prefix an earlier rollout reached |
 //! | [`Objective`], [`ReplayScore`] | eq. 1 of the paper: best quality − β₁·cost + β₂·parallelism |
 //! | [`History`], [`select_best`] | replay candidates over every world, average, pick the incumbent-or-better |

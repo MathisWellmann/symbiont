@@ -51,6 +51,8 @@ use crate::{
 pub struct Live<O> {
     tree: DiscoveryTree<O>,
     revealed: Vec<bool>,
+    /// The non-root nodes the run started with, see [`Live::from_tree`].
+    prefix: Vec<NodeId>,
     rounds: Vec<RoundRecord>,
     workers: usize,
     expansion: ExpansionRule,
@@ -61,9 +63,25 @@ impl<O> Live<O> {
     /// parallel slots.
     #[must_use]
     pub fn new(root: O, workers: usize) -> Self {
+        Self::from_tree(DiscoveryTree::new(root), workers)
+    }
+
+    /// Continue the recorded run `tree` with `workers` parallel slots: every
+    /// node is revealed, and committed rounds append to it.
+    ///
+    /// The nodes the run starts with become the trajectory's
+    /// [`prefix`](Trajectory::prefix), so the objective counts them towards
+    /// the best quality but not towards the cost, and
+    /// [`replay_from`](crate::replay_from) with that prefix replays this
+    /// continuation. A tree that grows over many runs usually wants
+    /// [`ExpansionRule::AnyRevealed`]: old nodes are continued again.
+    #[must_use]
+    pub fn from_tree(tree: DiscoveryTree<O>, workers: usize) -> Self {
+        let prefix = Vec::from_iter(tree.nodes().iter().skip(1).map(|node| node.id()));
         Self {
-            tree: DiscoveryTree::new(root),
-            revealed: vec![true],
+            revealed: vec![true; tree.node_count()],
+            tree,
+            prefix,
             rounds: Vec::new(),
             workers,
             expansion: ExpansionRule::default(),
@@ -152,7 +170,7 @@ impl<O> Live<O> {
     pub fn finish(self, termination: Termination) -> (DiscoveryTree<O>, Trajectory) {
         (
             self.tree,
-            Trajectory::new(self.rounds, termination, Vec::new()),
+            Trajectory::new(self.rounds, termination, self.prefix),
         )
     }
 }
