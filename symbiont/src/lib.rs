@@ -191,6 +191,9 @@ pub struct Agent {
     /// The tool-call turns a run may spend without writing code; see
     /// [`Agent::with_code_deadline`].
     code_deadline: Option<usize>,
+    /// The instant after which a run sends no more tool-call turns; see
+    /// [`Agent::with_wall_deadline`].
+    wall_deadline: Option<std::time::Instant>,
 }
 
 impl Agent {
@@ -206,6 +209,7 @@ impl Agent {
             provider: provider.into(),
             model: model.into(),
             code_deadline: None,
+            wall_deadline: None,
         }
     }
 
@@ -221,6 +225,26 @@ impl Agent {
     #[must_use]
     pub fn with_code_deadline(mut self, turns: usize) -> Self {
         self.code_deadline = Some(turns);
+        self
+    }
+
+    /// Stop a run's tool-call turns once `remaining` wall-clock time has
+    /// passed, counted from this call.
+    ///
+    /// Treated like [`Self::with_code_deadline`]: the request that would go
+    /// out after the deadline is not sent, the runtime withdraws the tools
+    /// for the rest of the lane, and the agent is asked for its code, or for
+    /// the revision it built that it wants to keep. A request or tool call
+    /// already running finishes. Requests without tools, which the lane
+    /// makes after the withdrawal, are not stopped, so the lane can still
+    /// answer and repair its code.
+    ///
+    /// A host with a time budget per round uses it to end its lanes near
+    /// that budget, instead of waiting for the slowest one to finish.
+    #[must_use]
+    pub fn with_wall_deadline(mut self, remaining: std::time::Duration) -> Self {
+        // A `remaining` beyond what the clock can represent is no deadline.
+        self.wall_deadline = std::time::Instant::now().checked_add(remaining);
         self
     }
 }

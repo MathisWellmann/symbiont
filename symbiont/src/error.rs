@@ -170,6 +170,17 @@ impl Error {
                     producing code. {TOOLS_WITHDRAWN}",
                 ).expect("Can write to prompt");
             }
+            RigPrompt(rig_agent::completion::PromptError::PromptCancelled { ref reason, .. })
+                if wall_deadline_reached(reason) =>
+            {
+                prompt.push_str(
+                    "nudge: The time for this task is up. The tools are withdrawn for the rest of \
+                    this conversation; do not call a tool. If you built a revision with the tools \
+                    that you want to keep, reply with the single line `revision: N`. Otherwise \
+                    respond with the complete Rust code block now, using what you have already \
+                    seen above.",
+                );
+            }
             RigPrompt(rig_agent::completion::PromptError::UnknownToolCall { tool_name, .. }) => write!(prompt,
                 "nudge: You called `{tool_name}`, which is not available in this conversation. \
                 Do not call any tool. Respond with the complete Rust code block now.",
@@ -247,10 +258,11 @@ impl Error {
         use rig_agent::completion::PromptError;
         match self {
             Error::RigPrompt(PromptError::MaxTurnsError { .. }) => true,
-            // The code deadline of [`crate::Agent::with_code_deadline`]: the
+            // The code deadline of [`crate::Agent::with_code_deadline`] and
+            // the wall deadline of [`crate::Agent::with_wall_deadline`]: the
             // same outcome, reached earlier.
             Error::RigPrompt(PromptError::PromptCancelled { reason, .. }) => {
-                code_deadline_turns(reason).is_some()
+                code_deadline_turns(reason).is_some() || wall_deadline_reached(reason)
             }
             _ => false,
         }
@@ -303,6 +315,12 @@ pub(crate) fn code_deadline_turns(reason: &str) -> Option<usize> {
         .trim()
         .parse()
         .ok()
+}
+
+/// Whether `reason` is the stop reason of the wall deadline (see
+/// [`crate::evolution_agent`]).
+pub(crate) fn wall_deadline_reached(reason: &str) -> bool {
+    reason == crate::evolution_agent::WALL_DEADLINE_REASON
 }
 
 /// Result type alias for symbiont operations.

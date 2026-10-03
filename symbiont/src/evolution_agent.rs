@@ -231,10 +231,12 @@ fn drop_raw(call: CompletionCall) -> CompletionCall {
 ///
 /// With a code deadline, the hook also stops a run that spends that many
 /// turns in a row without writing code (see
-/// [`crate::Agent::with_code_deadline`]).
+/// [`crate::Agent::with_code_deadline`]), and with a wall deadline a run
+/// that is still calling tools when it passes (see
+/// [`crate::Agent::with_wall_deadline`]).
 struct Recorder {
     input_len: usize,
-    code_deadline: Option<usize>,
+    deadlines: Deadlines,
     /// The instant the run started; every timing is an offset from it.
     origin: Instant,
     partial: Arc<Mutex<PartialRun>>,
@@ -254,9 +256,22 @@ struct Pending {
     turns_without_code: usize,
 }
 
+/// When the [`Recorder`] stops a run's tool-call turns.
+#[derive(Debug, Clone, Copy, Default)]
+struct Deadlines {
+    /// Turns in a row without writing code.
+    code: Option<usize>,
+    /// The wall-clock instant.
+    wall: Option<Instant>,
+}
+
 /// The prefix of the reason a run stops with at its code deadline; the
 /// number of turns follows it (see [`crate::error::code_deadline_turns`]).
 pub(crate) const CODE_DEADLINE_REASON: &str = "code deadline after";
+
+/// The reason a run stops with at its wall deadline (see
+/// [`crate::error::wall_deadline_reached`]).
+pub(crate) const WALL_DEADLINE_REASON: &str = "wall deadline reached";
 
 /// The tools that write code: a call to one of them resets the code deadline.
 const CODE_TOOLS: [&str; 2] = [
@@ -265,7 +280,7 @@ const CODE_TOOLS: [&str; 2] = [
 ];
 
 impl Recorder {
-    fn new(input_len: usize, code_deadline: Option<usize>) -> (Self, Arc<Mutex<PartialRun>>) {
+    fn new(input_len: usize, deadlines: Deadlines) -> (Self, Arc<Mutex<PartialRun>>) {
         let origin = Instant::now();
         let partial = Arc::new(Mutex::new(PartialRun {
             timings: RunTimings::started_at(origin),
@@ -274,7 +289,7 @@ impl Recorder {
         (
             Self {
                 input_len,
-                code_deadline,
+                deadlines,
                 origin,
                 partial: Arc::clone(&partial),
                 pending: Mutex::new(Pending::default()),
@@ -294,8 +309,17 @@ impl AgentHook for Recorder {
         _ctx: &HookContext,
         event: CompletionCallEvent<'_>,
     ) -> CompletionCallAction {
+        // Checked before the request goes out, like the code deadline: the
+        // run ends between turns, never inside a request or a tool call.
+        if self
+            .deadlines
+            .wall
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            return CompletionCallAction::Stop(WALL_DEADLINE_REASON.to_owned());
+        }
         if let Ok(mut pending) = self.pending.lock() {
-            if let Some(deadline) = self.code_deadline
+            if let Some(deadline) = self.deadlines.code
                 && pending.turns_without_code >= deadline
             {
                 return CompletionCallAction::Stop(format!(
@@ -418,7 +442,11 @@ impl EvolutionAgent for crate::Agent {
         // `PromptRequest` clones the agent's internals, so the returned future
         // does not borrow `self`. Rig runs the tool-calling loop inside
         // `send()`, bounded by the agent's `default_max_turns`.
-        let (recorder, recorded) = Recorder::new(history.len(), self.code_deadline);
+        let deadlines = Deadlines {
+            code: self.code_deadline,
+            wall: self.wall_deadline,
+        };
+        let (recorder, recorded) = Recorder::new(history.len(), deadlines);
         send(
             PromptRequest::from_agent(&self.inner, prompt)
                 .history(history)
@@ -437,9 +465,10 @@ impl EvolutionAgent for crate::Agent {
         // never returns a tool call; should one arrive anyway, rig refuses
         // to dispatch it and reports `PromptError::UnknownToolCall` with the
         // transcript, which the runtime turns into one more nudge.
-        // No tools, so no tool-call turns: the code deadline has nothing to
-        // count.
-        let (recorder, recorded) = Recorder::new(history.len(), None);
+        // No tools, so no tool-call turns: neither deadline has anything to
+        // stop. The wall deadline must not apply here: this is how a lane
+        // past it still answers with its code.
+        let (recorder, recorded) = Recorder::new(history.len(), Deadlines::default());
         send(
             PromptRequest::from_agent(&self.inner, prompt)
                 .history(history)
@@ -791,6 +820,132 @@ mod tests {
                 .await
                 .expect("no deadline");
             assert_eq!(run.output, "3");
+        }
+
+        fn agent_with_wall_deadline(
+            turns: impl IntoIterator<Item = MockTurn>,
+            remaining: Duration,
+        ) -> (crate::Agent, MockCompletionModel) {
+            let model = MockCompletionModel::new(turns);
+            let inner = AgentBuilder::new(model.clone())
+                .tool(MockAddTool)
+                .default_max_turns(10)
+                .build();
+            (
+                crate::Agent::new(inner, "mock", "mock-model").with_wall_deadline(remaining),
+                model,
+            )
+        }
+
+        /// A passed wall deadline stops the run before its next request, and
+        /// the runtime reads that as an exhausted turn budget with its own
+        /// nudge. Without tools the same agent still answers: that is how a
+        /// lane past its deadline gives its code.
+        #[tokio::test]
+        async fn a_passed_wall_deadline_stops_the_tool_turns_but_not_the_answer() {
+            let add = || MockTurn::tool_call("call", "add", json!({"x": 1, "y": 2}));
+            let (agent, model) =
+                agent_with_wall_deadline([add(), MockTurn::text("fn f() {}")], Duration::ZERO);
+
+            let RunError { error, partial } = agent
+                .run("add", Vec::new())
+                .await
+                .expect_err("the deadline has passed");
+            assert!(model.requests().is_empty(), "no request goes out");
+            assert!(partial.is_none(), "{partial:?}");
+            let PromptError::PromptCancelled {
+                ref reason,
+                ref chat_history,
+            } = error
+            else {
+                panic!("{error:?}");
+            };
+            assert!(crate::error::wall_deadline_reached(reason), "{reason}");
+            assert_eq!(crate::error::code_deadline_turns(reason), None);
+            assert_eq!(chat_history.first(), Some(&Message::user("add")));
+
+            let error = crate::Error::RigPrompt(error);
+            assert!(error.exhausted_tool_turns());
+            let mut prompt = String::new();
+            error.nudge(&mut prompt).expect("the deadline has a nudge");
+            assert!(prompt.contains("The time for this task is up"), "{prompt}");
+            assert!(prompt.contains("`revision: N`"), "{prompt}");
+
+            // The first scripted turn is a tool call: answered without tools,
+            // rig refuses it. The point is that the request goes out.
+            let _ = agent.run_without_tools("answer now", Vec::new()).await;
+            assert_eq!(model.requests().len(), 1, "the tool-less request is sent");
+        }
+
+        /// The deadline is checked between turns: a run that finishes before
+        /// it is untouched, and one that passes it mid-run stops at the next
+        /// request.
+        #[tokio::test]
+        async fn a_wall_deadline_stops_the_run_between_turns() {
+            let add = || MockTurn::tool_call("call", "add", json!({"x": 1, "y": 2}));
+            let (agent, model) =
+                agent_with_wall_deadline([add(), MockTurn::text("3")], Duration::from_secs(600));
+            let run = agent.run("add", Vec::new()).await.expect("well before");
+            assert_eq!(run.output, "3");
+            assert_eq!(model.requests().len(), 2);
+
+            // The tool outlives the deadline: it finishes, and the request
+            // that would follow it never goes out.
+            let model = MockCompletionModel::new([
+                MockTurn::tool_call("call", "slow", json!({})),
+                MockTurn::text("never"),
+            ]);
+            let inner = AgentBuilder::new(model.clone())
+                .tool(SlowTool)
+                .default_max_turns(10)
+                .build();
+            let agent = crate::Agent::new(inner, "mock", "mock-model")
+                .with_wall_deadline(Duration::from_millis(50));
+            let RunError { error, partial } = agent
+                .run("slow", Vec::new())
+                .await
+                .expect_err("past the deadline");
+            assert!(
+                matches!(error, PromptError::PromptCancelled { ref reason, .. }
+                    if crate::error::wall_deadline_reached(reason)),
+                "{error:?}"
+            );
+            assert_eq!(model.requests().len(), 1);
+            let partial = partial.expect("one answered turn and its tool");
+            assert_eq!(partial.completion_calls.len(), 1);
+            assert_eq!(partial.timings.tools.len(), 1, "the tool call finished");
+        }
+
+        /// A tool that takes longer than the wall deadline of the test.
+        struct SlowTool;
+
+        impl rig_core::tool::PortableTool for SlowTool {
+            const NAME: &'static str = "slow";
+            type Args = serde_json::Value;
+            type Output = String;
+            type Error = std::convert::Infallible;
+
+            fn description(&self) -> String {
+                "slow".to_string()
+            }
+
+            fn parameters(&self) -> serde_json::Value {
+                json!({ "type": "object" })
+            }
+
+            async fn call(&self, _: Self::Args) -> Result<Self::Output, Self::Error> {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                Ok("done".to_string())
+            }
+        }
+
+        /// A `remaining` the clock cannot represent is no deadline.
+        #[test]
+        fn an_unrepresentable_wall_deadline_is_none() {
+            let (agent, _) = agent_with_wall_deadline([], Duration::MAX);
+            assert!(agent.wall_deadline.is_none());
+            let (agent, _) = agent_with_wall_deadline([], Duration::from_secs(1));
+            assert!(agent.wall_deadline.is_some());
         }
     }
 }
