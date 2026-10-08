@@ -56,16 +56,18 @@ pub enum DocIndexError {
         "the host crate exposes no `prelude` module, so `use host::prelude::*;` imports nothing"
     )]
     NoPrelude,
-    /// No public module exists at the requested path.
+    /// No public module exists at the requested path. The second field
+    /// holds the closest names the host API has.
     #[error(
-        "no public module `{0}` exists in the host API; call `api_index` without arguments to list the prelude"
+        "no public module `{0}` exists in the host API{1}; call `api_index` without arguments to list the prelude"
     )]
-    ModuleNotFound(String),
-    /// No public item exists at the requested path.
+    ModuleNotFound(String, Closest),
+    /// No public item exists at the requested path. The second field holds
+    /// the closest names the host API has.
     #[error(
-        "no public item `{0}` exists in the host API; call `api_index` to list the available names"
+        "no public item `{0}` exists in the host API{1}; call `api_index` to list the available names"
     )]
-    ItemNotFound(String),
+    ItemNotFound(String, Closest),
     /// The item exists, but the renderer produced nothing for it: the source
     /// file behind its rustdoc span could not be read.
     #[error(
@@ -73,6 +75,39 @@ pub enum DocIndexError {
     )]
     RenderFailed(String),
 }
+
+/// The names of the host API closest to a path that does not resolve, as
+/// the suffix of a not-found message. Empty when nothing is close.
+///
+/// A model that misspells a name, or guesses a related one, otherwise needs
+/// an `api_index` call and a second `api_doc` call - two turns - to find the
+/// name it meant.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Closest(Vec<String>);
+
+impl Closest {
+    /// The suggested names, closest first.
+    #[must_use]
+    pub fn names(&self) -> &[String] {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for Closest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Some((first, rest)) = self.0.split_first() else {
+            return Ok(());
+        };
+        write!(f, "; the closest names are `{first}`")?;
+        for name in rest {
+            write!(f, ", `{name}`")?;
+        }
+        Ok(())
+    }
+}
+
+/// The most names a not-found message suggests.
+const MAX_SUGGESTIONS: usize = 5;
 
 /// A queryable cache of the rustdoc JSON of the host crate and the crates
 /// that the host facade re-exports.
@@ -195,12 +230,50 @@ impl DocIndex {
         let module = match module_path {
             None => self.prelude().ok_or(DocIndexError::NoPrelude)?,
             Some(path) => {
-                let segments = normalize_path(path, &self.host_crate);
-                self.resolve_module(&segments)
-                    .ok_or_else(|| DocIndexError::ModuleNotFound(path.to_string()))?
+                let segments = normalize_path(&clean_query(path), &self.host_crate);
+                match self.resolve_module(&segments) {
+                    Some(module) => module,
+                    None => return self.render_crate_index(path, &segments),
+                }
             }
         };
         Ok(self.render_module_index(&module))
+    }
+
+    /// The index of a module path that names a dependency crate instead of
+    /// a host module: the prelude items that come from that crate.
+    ///
+    /// The prelude lists its re-exports with their origin crate, so models
+    /// ask for the crate (`api_index lfest`), which no host path names.
+    fn render_crate_index(
+        &self,
+        path: &str,
+        segments: &[String],
+    ) -> std::result::Result<String, DocIndexError> {
+        let not_found = || {
+            DocIndexError::ModuleNotFound(
+                path.to_string(),
+                self.closest(segments, NameKind::Module),
+            )
+        };
+        let [crate_name] = segments else {
+            return Err(not_found());
+        };
+        let prelude = self.prelude().ok_or_else(not_found)?;
+        let marker = format!("(re-exported from `{crate_name}`)");
+        let listing = String::from_iter(
+            self.render_module_index(&prelude)
+                .lines()
+                .filter(|line| line.ends_with(&marker))
+                .map(|line| format!("{line}\n")),
+        );
+        if listing.is_empty() {
+            return Err(not_found());
+        }
+        Ok(format!(
+            "`{crate_name}` is not a module of the host API. These prelude items come from it; \
+             use them unqualified:\n{listing}"
+        ))
     }
 
     /// Render the full synopsis of the host item or module at `path`: the
@@ -218,9 +291,14 @@ impl DocIndex {
     /// Returns an error if no public item or module exists at `path`, or if
     /// the item exists but the renderer produced nothing for it.
     pub fn render_doc(&self, path: &str) -> std::result::Result<String, DocIndexError> {
-        let not_found = || DocIndexError::ItemNotFound(path.to_string());
-        let segments = normalize_path(path, &self.host_crate);
-        let located = self.resolve(&segments).ok_or_else(not_found)?;
+        let not_found = || DocIndexError::ItemNotFound(path.to_string(), Closest::default());
+        let segments = normalize_path(&clean_query(path), &self.host_crate);
+        let Some((located, note)) = self.resolve_lenient(&segments) else {
+            return Err(DocIndexError::ItemNotFound(
+                path.to_string(),
+                self.closest(&segments, NameKind::Any),
+            ));
+        };
         let crate_data = self
             .crate_data(&located.crate_name)
             .ok_or_else(not_found)?
@@ -247,7 +325,157 @@ impl DocIndex {
             // item is missing, because `api_index` lists it.
             return Err(DocIndexError::RenderFailed(path.to_string()));
         }
-        Ok(out.trim_end().to_string())
+        match note {
+            Some(note) => Ok(format!("Note: {note}\n\n{}", out.trim())),
+            None => Ok(out.trim_end().to_string()),
+        }
+    }
+
+    /// Resolve a path the way a model writes it, with the reason when it
+    /// had to be read as another path.
+    ///
+    /// In order: the path as given; the path with leading segments dropped
+    /// (`lfest::Account` names the prelude's `Account`: models qualify names
+    /// with the crate the prelude listing says they come from, and in 0.41.0
+    /// of agent-symbiont 829 of 19,267 lookups failed on that); for
+    /// `Type::member`, the type, whose definition lists its methods and
+    /// fields; and a name that differs only in case, if exactly one does.
+    fn resolve_lenient(&self, segments: &[String]) -> Option<(Located, Option<String>)> {
+        if let Some(located) = self.resolve(segments) {
+            return Some((located, None));
+        }
+        let asked = segments.join("::");
+        for start in 1..segments.len() {
+            let rest = &segments[start..];
+            if let Some(located) = self.resolve(rest) {
+                let shown = rest.join("::");
+                return Some((
+                    located,
+                    Some(format!(
+                        "`{asked}` is not a path of the host API; this is `{shown}`, which is in \
+                         scope as written here. Use `{shown}`, not `{asked}`."
+                    )),
+                ));
+            }
+        }
+        if let Some((member, owner)) = segments.split_last()
+            && !owner.is_empty()
+            && let Some((located, _)) = self.resolve_lenient(owner)
+            && let Some(target) = self.follow_reexports(located.clone())
+            && is_type_like(&target.item.inner)
+        {
+            let owner = owner.join("::");
+            return Some((
+                located,
+                Some(format!(
+                    "`{asked}` is no item of its own; `{member}` would be a member of \
+                     `{owner}`, whose definition with all its methods follows."
+                )),
+            ));
+        }
+        let [name] = segments else {
+            return None;
+        };
+        let mut same_case = self
+            .known_names(NameKind::Any)
+            .into_iter()
+            .filter(|known| known.eq_ignore_ascii_case(name));
+        let known = same_case.next()?;
+        if same_case.next().is_some() {
+            return None;
+        }
+        let located = self.resolve(std::slice::from_ref(&known))?;
+        Some((
+            located,
+            Some(format!("`{name}` is spelled `{known}` in the host API.")),
+        ))
+    }
+
+    /// The names of the host API closest to the last segment of `segments`,
+    /// best first: equal but for case, then containing it or contained in
+    /// it, then by edit distance, which must stay within a third of the
+    /// name's length.
+    fn closest(&self, segments: &[String], kind: NameKind) -> Closest {
+        let Some(wanted) = segments.last() else {
+            return Closest::default();
+        };
+        let wanted = wanted.to_ascii_lowercase();
+        let max_distance = (wanted.chars().count() / 3).max(1);
+        let mut scored: Vec<(usize, String)> = self
+            .known_names(kind)
+            .into_iter()
+            .filter_map(|known| {
+                let last = known
+                    .rsplit("::")
+                    .next()
+                    .unwrap_or(&known)
+                    .to_ascii_lowercase();
+                let score = if last == wanted {
+                    0
+                } else if last.contains(&wanted) || wanted.contains(&last) {
+                    1
+                } else {
+                    let distance = edit_distance(&last, &wanted);
+                    if distance > max_distance {
+                        return None;
+                    }
+                    1 + distance
+                };
+                Some((score, known))
+            })
+            .collect();
+        scored.sort();
+        scored.dedup_by(|a, b| a.1 == b.1);
+        Closest(
+            scored
+                .into_iter()
+                .take(MAX_SUGGESTIONS)
+                .map(|(_, name)| name)
+                .collect(),
+        )
+    }
+
+    /// Every name a lookup can resolve: the prelude's names, the root's
+    /// names, and one level into the modules of both, as paths.
+    fn known_names(&self, kind: NameKind) -> BTreeSet<String> {
+        let mut names = BTreeSet::new();
+        let tops = self
+            .prelude()
+            .into_iter()
+            .chain(std::iter::once(self.host_root()));
+        for top in tops {
+            for child in self.children(&top) {
+                // The prelude is listed as a top of its own, unqualified.
+                let Some(name) = item_name(&child.item)
+                    .filter(|name| *name != "prelude")
+                    .map(str::to_string)
+                else {
+                    continue;
+                };
+                let module = self
+                    .follow_reexports(child)
+                    .filter(|target| matches!(target.item.inner, ItemEnum::Module(_)));
+                match module {
+                    Some(module) => {
+                        for grandchild in self.children(&module) {
+                            let inner_is_module =
+                                matches!(grandchild.item.inner, ItemEnum::Module(_));
+                            if let Some(inner) = item_name(&grandchild.item)
+                                && kind.admits(inner_is_module)
+                            {
+                                names.insert(format!("{name}::{inner}"));
+                            }
+                        }
+                        names.insert(name);
+                    }
+                    None if kind.admits(false) => {
+                        names.insert(name);
+                    }
+                    None => {}
+                }
+            }
+        }
+        names
     }
 
     /// Get the cached rustdoc data of the host crate.
@@ -531,6 +759,82 @@ impl DocIndex {
             self.reexport_origin(child, use_item).as_deref(),
         )
     }
+}
+
+/// Which names a suggestion may name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NameKind {
+    /// Modules only, for `api_index`.
+    Module,
+    /// Every item, for `api_doc`.
+    Any,
+}
+
+impl NameKind {
+    fn admits(self, is_module: bool) -> bool {
+        match self {
+            Self::Module => is_module,
+            Self::Any => true,
+        }
+    }
+}
+
+/// Whether an item has members a `Type::member` path can name.
+fn is_type_like(inner: &ItemEnum) -> bool {
+    matches!(
+        inner,
+        ItemEnum::Struct(_)
+            | ItemEnum::Enum(_)
+            | ItemEnum::Union(_)
+            | ItemEnum::Trait(_)
+            | ItemEnum::TypeAlias(_)
+    )
+}
+
+/// The Levenshtein distance between two strings, by characters.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut previous: Vec<usize> = (0..=b.len()).collect();
+    let mut current = vec![0; b.len() + 1];
+    for (i, ca) in a.chars().enumerate() {
+        current[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let substitution = previous[j] + usize::from(ca != *cb);
+            current[j + 1] = substitution.min(previous[j + 1] + 1).min(current[j] + 1);
+        }
+        std::mem::swap(&mut previous, &mut current);
+    }
+    previous[b.len()]
+}
+
+/// A path as a model writes it, without what is no part of a Rust path:
+/// backticks, a leading item keyword (`fn conformant_price`), generic
+/// arguments (`QuoteCurrency<i64, D>`), and a trailing `()` or `!`.
+fn clean_query(path: &str) -> String {
+    let mut text = path.trim().trim_matches('`').trim();
+    for keyword in [
+        "fn ", "struct ", "enum ", "trait ", "type ", "const ", "mod ", "macro ", "static ",
+        "union ",
+    ] {
+        if let Some(rest) = text.strip_prefix(keyword) {
+            text = rest.trim_start();
+            break;
+        }
+    }
+    let mut cleaned = String::with_capacity(text.len());
+    let mut depth = 0_usize;
+    for c in text.chars() {
+        match c {
+            '<' => depth += 1,
+            '>' => depth = depth.saturating_sub(1),
+            _ if depth == 0 => cleaned.push(c),
+            _ => {}
+        }
+    }
+    let cleaned = cleaned.trim();
+    let cleaned = cleaned.strip_suffix("()").unwrap_or(cleaned);
+    let cleaned = cleaned.strip_suffix('!').unwrap_or(cleaned);
+    cleaned.trim().to_string()
 }
 
 /// The maximum number of re-exports that one name can chain through.
@@ -1026,7 +1330,7 @@ pub(crate) mod tests {
         let err = index
             .render_index(Some("nope"))
             .expect_err("the path does not resolve");
-        assert!(matches!(err, DocIndexError::ModuleNotFound(_)));
+        assert!(matches!(err, DocIndexError::ModuleNotFound(..)));
     }
 
     #[test]
@@ -1164,7 +1468,7 @@ pub(crate) mod tests {
         let err = index
             .render_doc("nope")
             .expect_err("the path does not resolve");
-        assert!(matches!(err, DocIndexError::ItemNotFound(_)));
+        assert!(matches!(err, DocIndexError::ItemNotFound(..)));
     }
 
     /// The path resolves but the renderer produces nothing: the item carries
@@ -1218,5 +1522,216 @@ pub(crate) mod tests {
             },
         )]);
         crate_data(index, paths, HashMap::new())
+    }
+
+    /// A struct `Order` in the prelude whose source span points at a real
+    /// file, so it renders like a struct of a real crate.
+    fn struct_fixture_index(source: &std::path::Path) -> DocIndex {
+        std::fs::write(source, "pub struct Order;\n").expect("write the fixture source");
+        let mut order = item(
+            2,
+            Some("Order"),
+            ItemEnum::Struct(rustdoc_types::Struct {
+                kind: rustdoc_types::StructKind::Unit,
+                generics: Generics {
+                    params: Vec::new(),
+                    where_predicates: Vec::new(),
+                },
+                impls: Vec::new(),
+            }),
+        );
+        order.span = Some(rustdoc_types::Span {
+            filename: source.to_path_buf(),
+            begin: (1, 1),
+            end: (1, 18),
+        });
+        let index = HashMap::from([
+            (Id(0), module(0, "host_crate", vec![Id(1)])),
+            (Id(1), module(1, "prelude", vec![Id(2)])),
+            (Id(2), order),
+        ]);
+        let paths = HashMap::from([(
+            Id(2),
+            summary(0, &["host_crate", "prelude", "Order"], ItemKind::Struct),
+        )]);
+        DocIndex::from_crates(
+            "host_crate",
+            crate_data(index, paths, HashMap::new()),
+            HashMap::new(),
+        )
+    }
+
+    /// A name qualified with the crate the prelude re-exports it from
+    /// resolves to the prelude name, and the answer says which path to use.
+    #[test]
+    fn render_doc_reads_a_crate_qualified_name_as_the_prelude_name() {
+        let doc = fixture_index()
+            .render_doc("dep_crate::decimal")
+            .expect("the prelude re-exports `decimal` from `dep_crate`");
+        assert!(doc.contains("macro_rules! decimal"), "{doc}");
+        assert!(
+            doc.starts_with(
+                "Note: `dep_crate::decimal` is not a path of the host API; this is `decimal`"
+            ),
+            "{doc}"
+        );
+        assert!(
+            doc.contains("Use `decimal`, not `dep_crate::decimal`."),
+            "{doc}"
+        );
+        // A path that resolves as written gets no note.
+        let doc = fixture_index().render_doc("decimal").expect("resolves");
+        assert!(!doc.contains("Note:"), "{doc}");
+    }
+
+    /// Item keywords, backticks, generic arguments and call parentheses are
+    /// no part of a path.
+    #[test]
+    fn render_doc_ignores_the_decorations_of_a_name() {
+        for query in [
+            "`fn submit_order()`",
+            "fn submit_order",
+            "submit_order()",
+            " submit_order ",
+            "prelude::submit_order",
+        ] {
+            let doc = fixture_index().render_doc(query).expect(query);
+            assert!(doc.contains("pub fn submit_order()"), "{query}: {doc}");
+            assert!(!doc.contains("Note:"), "{query}: {doc}");
+        }
+        let doc = fixture_index().render_doc("decimal!").expect("macro call");
+        assert!(doc.contains("macro_rules! decimal"), "{doc}");
+    }
+
+    #[test]
+    fn render_doc_resolves_a_unique_name_that_differs_only_in_case() {
+        let doc = fixture_index()
+            .render_doc("SUBMIT_ORDER")
+            .expect("one match");
+        assert!(doc.contains("pub fn submit_order()"), "{doc}");
+        assert!(
+            doc.contains("`SUBMIT_ORDER` is spelled `submit_order` in the host API."),
+            "{doc}"
+        );
+    }
+
+    /// A misspelled name is answered with the closest names, so the next call
+    /// can use one directly; a name close to nothing gets no suggestion.
+    #[test]
+    fn render_doc_suggests_the_closest_names_for_an_unknown_path() {
+        let err = fixture_index()
+            .render_doc("submit_ordr")
+            .expect_err("misspelled");
+        let DocIndexError::ItemNotFound(path, closest) = &err else {
+            panic!("not found: {err}");
+        };
+        assert_eq!(path, "submit_ordr");
+        assert_eq!(
+            closest.names().first().map(String::as_str),
+            Some("submit_order")
+        );
+        assert!(
+            err.to_string().contains(
+                "no public item `submit_ordr` exists in the host API; the closest names are \
+                 `submit_order`"
+            ),
+            "{err}"
+        );
+        // A name contained in a known one is close, at any length.
+        let err = fixture_index().render_doc("order").expect_err("partial");
+        assert!(err.to_string().contains("`submit_order`"), "{err}");
+
+        let err = fixture_index()
+            .render_doc("xyzzy_plugh")
+            .expect_err("close to nothing");
+        let DocIndexError::ItemNotFound(_, closest) = &err else {
+            panic!("not found: {err}");
+        };
+        assert!(closest.names().is_empty(), "{closest:?}");
+        assert_eq!(
+            err.to_string(),
+            "no public item `xyzzy_plugh` exists in the host API; call `api_index` to list the \
+             available names"
+        );
+    }
+
+    /// `Type::member` shows the type, whose definition lists the members;
+    /// a member path under a function or a module is not read that way.
+    #[test]
+    fn render_doc_shows_the_type_of_a_member_path() {
+        let dir = std::env::temp_dir().join(format!("doc_index_member_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let index = struct_fixture_index(&dir.join("order.rs"));
+        let doc = index.render_doc("Order::price").expect("the type renders");
+        assert!(doc.contains("pub struct Order;"), "{doc}");
+        assert!(
+            doc.contains("`price` would be a member of `Order`, whose definition"),
+            "{doc}"
+        );
+        let doc = index
+            .render_doc("host_crate::Order::price")
+            .expect("both rules combine");
+        assert!(doc.contains("pub struct Order;"), "{doc}");
+        std::fs::remove_dir_all(&dir).expect("clean up");
+
+        assert!(matches!(
+            fixture_index().render_doc("submit_order::price"),
+            Err(DocIndexError::ItemNotFound(..))
+        ));
+        assert!(matches!(
+            fixture_index().render_doc("indicators::nope"),
+            Err(DocIndexError::ItemNotFound(..))
+        ));
+    }
+
+    /// `api_index` on a crate the prelude re-exports from lists the prelude
+    /// items that come from it; an unknown module gets suggestions.
+    #[test]
+    fn render_index_of_a_dependency_crate_lists_its_prelude_items() {
+        let listing = fixture_index()
+            .render_index(Some("dep_crate"))
+            .expect("the prelude re-exports from `dep_crate`");
+        assert!(
+            listing.starts_with("`dep_crate` is not a module of the host API."),
+            "{listing}"
+        );
+        assert!(
+            listing.contains("macro decimal (re-exported from `dep_crate`)\n"),
+            "{listing}"
+        );
+        assert!(!listing.contains("submit_order"), "{listing}");
+
+        let err = fixture_index()
+            .render_index(Some("indicatrs"))
+            .expect_err("misspelled module");
+        let DocIndexError::ModuleNotFound(_, closest) = &err else {
+            panic!("not found: {err}");
+        };
+        assert_eq!(closest.names(), ["indicators".to_string()]);
+    }
+
+    #[test]
+    fn the_edit_distance_counts_insertions_deletions_and_substitutions() {
+        assert_eq!(edit_distance("", ""), 0);
+        assert_eq!(edit_distance("abc", ""), 3);
+        assert_eq!(edit_distance("", "abc"), 3);
+        assert_eq!(edit_distance("kitten", "sitting"), 3);
+        assert_eq!(edit_distance("account", "acount"), 1);
+        assert_eq!(edit_distance("ab", "ba"), 2);
+    }
+
+    #[test]
+    fn a_query_is_cleaned_to_its_path() {
+        assert_eq!(clean_query("`fn conformant_price`"), "conformant_price");
+        assert_eq!(clean_query("QuoteCurrency<i64, D>"), "QuoteCurrency");
+        assert_eq!(
+            clean_query("Account<i64, DECIMALS, Cur, UserOrderId>::new()"),
+            "Account::new"
+        );
+        assert_eq!(clean_query("struct  Position"), "Position");
+        assert_eq!(clean_query("decimal!"), "decimal");
+        assert_eq!(clean_query("lfest::Account"), "lfest::Account");
+        assert_eq!(clean_query("fnord"), "fnord");
+        assert_eq!(clean_query(""), "");
     }
 }

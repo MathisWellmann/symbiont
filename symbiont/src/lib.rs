@@ -53,6 +53,7 @@ pub use diagnostics::{
     Suggestion,
 };
 pub use doc_index::{
+    Closest,
     DocIndex,
     DocIndexError,
 };
