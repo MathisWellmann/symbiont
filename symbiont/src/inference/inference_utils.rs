@@ -67,34 +67,23 @@ pub(crate) fn is_context_size_error(err: &Error) -> bool {
 /// The status and the raw body of the provider response inside `err`, when
 /// `err` preserves one.
 ///
-/// rig keeps a failed provider response in one of three shapes, and which one
-/// a call gets depends on the provider and on the transport, not on the
-/// failure: a plain `HttpError`, an `HttpError` that also kept the response
-/// headers, or a `ProviderResponse` for the providers with a request-id
-/// contract. All three mean the same thing here, so classification reads them
-/// through the accessors of rig instead of matching one variant.
+/// rig keeps a failed provider response either in the provider error itself
+/// or, when the failure was relayed over its effect bus, in the error report
+/// that stands in for it. Both mean the same thing here, so classification
+/// reads them through the accessors of rig instead of matching one variant.
 ///
 /// The status can be a `2xx`: some providers send an error envelope with a
 /// success status. A caller must not read failure out of the status alone.
 fn provider_response_of(err: &Error) -> (Option<u16>, Option<&str>) {
     match err {
-        Error::RigPrompt(rig_agent::completion::PromptError::CompletionError(e)) => (
+        Error::RigPrompt(e) => (
             e.provider_response_status().map(|status| status.as_u16()),
             e.provider_response_body(),
         ),
-        Error::RigHttp(e) => {
-            use rig_core::http_client::Error::*;
-            match e {
-                InvalidStatusCode(status) => (Some(status.as_u16()), None),
-                InvalidStatusCodeWithMessage(status, body) => {
-                    (Some(status.as_u16()), Some(body.as_str()))
-                }
-                InvalidStatusCodeWithDetails { status, body, .. } => {
-                    (Some(status.as_u16()), Some(body.as_str()))
-                }
-                _ => (None, None),
-            }
-        }
+        Error::RigHttp(e) => (
+            e.non_success_status().map(|status| status.as_u16()),
+            e.non_success_body(),
+        ),
         _ => (None, None),
     }
 }
@@ -126,11 +115,18 @@ pub(crate) fn is_transient_http_error(err: &Error) -> bool {
 
 /// Return `true` when the request never got an answer from the endpoint.
 fn is_connection_error(err: &Error) -> bool {
+    use rig_agent::completion::PromptError;
     let http_err = match err {
-        Error::RigPrompt(rig_agent::completion::PromptError::CompletionError(
-            rig_core::completion::CompletionError::HttpError(e),
-        )) => e,
-        Error::RigHttp(e) => e,
+        Error::RigPrompt(prompt) => match prompt.as_ref() {
+            PromptError::Provider(rig_core::ProviderError::Http(e)) => e.as_ref(),
+            // A failure relayed over rig's effect bus keeps only its report:
+            // a transport failure without a status never got an answer.
+            PromptError::Report(report) => {
+                return report.kind == rig_core::ErrorKind::Http && report.http_status.is_none();
+            }
+            _ => return false,
+        },
+        Error::RigHttp(e) => e.as_ref(),
         _ => return false,
     };
     matches!(http_err, rig_core::http_client::Error::Instance(_))
@@ -141,10 +137,11 @@ mod tests {
     use super::*;
     /// The [`Error`] a provider surfaces for `status` with `body`.
     fn http_status(status: http::StatusCode, body: &str) -> Error {
-        Error::RigHttp(rig_core::http_client::Error::InvalidStatusCodeWithMessage(
+        Error::from(rig_core::http_client::Error::InvalidStatusCodeWithDetails {
             status,
-            body.to_string(),
-        ))
+            body: body.to_string(),
+            headers: http::HeaderMap::new(),
+        })
     }
 
     /// The [`Error`] a provider surfaces for a `400 Bad Request` with `body`.
@@ -183,14 +180,12 @@ mod tests {
     #[test]
     fn context_size_error_seen_through_the_rig_prompt_wrapper() {
         // The shape the runtime actually receives: rig wraps the provider
-        // error in `PromptError::CompletionError`.
-        let err = Error::RigPrompt(rig_agent::completion::PromptError::CompletionError(
-            rig_core::completion::CompletionError::HttpError(
-                rig_core::http_client::Error::InvalidStatusCodeWithMessage(
-                    http::StatusCode::BAD_REQUEST,
-                    "This model's maximum context length is 65536 tokens.".to_string(),
-                ),
-            ),
+        // error in `PromptError::Provider`.
+        let err = Error::from(rig_agent::completion::PromptError::Provider(
+            rig_core::ProviderError::ProviderResponse(rig_core::ProviderResponseError::new(
+                http::StatusCode::BAD_REQUEST,
+                "This model's maximum context length is 65536 tokens.",
+            )),
         ));
         assert!(is_context_size_error(&err));
     }
@@ -249,25 +244,21 @@ mod tests {
         assert!(!is_context_size_error(&Error::NoRustCode));
     }
 
-    /// The three shapes rig preserves a failed provider response in. Which
-    /// one a call gets depends on the provider and on the transport: a
-    /// provider with a request-id contract reports `ProviderResponse`, and a
-    /// transport that kept the response headers reports the details variant.
+    /// The three shapes a failed provider response reaches the runtime in:
+    /// the bare transport error, the provider error a run returns, and the
+    /// report a run returns when the failure was relayed over rig's bus.
     fn response_shapes(status: http::StatusCode, body: &str) -> [Error; 3] {
+        use rig_agent::completion::PromptError;
         use rig_core::{
-            completion::CompletionError,
-            http_client::Error as HttpError,
+            ErrorReport,
+            ProviderError,
+            ProviderResponseError,
         };
+        let provider = ProviderError::ProviderResponse(ProviderResponseError::new(status, body));
         [
             http_status(status, body),
-            Error::RigHttp(HttpError::InvalidStatusCodeWithDetails {
-                status,
-                body: body.to_string(),
-                headers: Box::new(http::HeaderMap::new()),
-            }),
-            Error::RigPrompt(rig_agent::completion::PromptError::CompletionError(
-                CompletionError::from_http_response_with_request_id(status, body, None),
-            )),
+            Error::from(PromptError::Report(ErrorReport::from(&provider))),
+            Error::from(PromptError::Provider(provider)),
         ]
     }
 
@@ -291,7 +282,7 @@ mod tests {
 
     #[test]
     fn connection_errors_are_transient() {
-        let err = Error::RigHttp(rig_core::http_client::Error::Instance(Box::new(
+        let err = Error::from(rig_core::http_client::Error::Instance(Box::new(
             std::io::Error::from(std::io::ErrorKind::ConnectionReset),
         )));
         assert!(is_transient_http_error(&err));

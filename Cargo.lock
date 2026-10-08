@@ -576,12 +576,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d3fb67a6e08acf24fdeccbac2cb6ac4305825bd1f117462e0e6f2f193345ad56"
 
 [[package]]
-name = "as-any"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b0f477b951e452a0b6b4a10b53ccd569042d1d01729b519e02074a9c0958a063"
-
-[[package]]
 name = "as-raw-xcb-connection"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -872,7 +866,7 @@ dependencies = [
  "anyhow",
  "arrayvec",
  "log",
- "nom 8.0.0",
+ "nom",
  "num-rational",
  "v_frame",
 ]
@@ -2217,17 +2211,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8be9f3dfaaffdae2972880079a491a1a8bb7cbed0b8dd7a347f668b4150a3b93"
 dependencies = [
  "event-listener",
- "pin-project-lite",
-]
-
-[[package]]
-name = "eventsource-stream"
-version = "0.2.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "74fef4569247a5f429d9156b9d0a2599914385dd189c539334c625d8099d90ab"
-dependencies = [
- "futures-core",
- "nom 7.1.3",
  "pin-project-lite",
 ]
 
@@ -3810,12 +3793,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "minimal-lexical"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
-
-[[package]]
 name = "miniz_oxide"
 version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3969,16 +3946,6 @@ name = "nohash-hasher"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2bf50223579dc7cdcfb3bfcacf7069ff68243f8c363f62ffa99cf000a6b9c451"
-
-[[package]]
-name = "nom"
-version = "7.1.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d273983c5a657a70a3e8f2a01329822f3b8c8172b73826411a55751e404a0a4a"
-dependencies = [
- "memchr",
- "minimal-lexical",
-]
 
 [[package]]
 name = "nom"
@@ -5565,17 +5532,17 @@ dependencies = [
 
 [[package]]
 name = "rig-agent"
-version = "0.42.0"
-source = "git+https://github.com/0xPlaygrounds/rig?rev=475cfddc28cc5b367108a3d387b84d5f838d613b#475cfddc28cc5b367108a3d387b84d5f838d613b"
+version = "0.44.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6e3fa130bb81762e875dff982301fb599046535bbc04d908a2ee1fea583d1c67"
 dependencies = [
  "async-stream",
- "fastrand",
  "futures",
  "http",
  "indexmap 2.14.2",
+ "loom",
  "rig-core",
  "rig-derive",
- "rig-run",
  "schemars 1.2.2",
  "serde",
  "serde_json",
@@ -5587,39 +5554,40 @@ dependencies = [
 
 [[package]]
 name = "rig-core"
-version = "0.42.0"
-source = "git+https://github.com/0xPlaygrounds/rig?rev=475cfddc28cc5b367108a3d387b84d5f838d613b#475cfddc28cc5b367108a3d387b84d5f838d613b"
+version = "0.44.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6c60db6e3da7681abbdfa9637c1a76dbd5a713f935f0a6753d72c5d2770ed4c6"
 dependencies = [
- "as-any",
  "async-stream",
  "base64 0.22.1",
  "bytes",
- "eventsource-stream",
  "fastrand",
  "futures",
- "futures-timer",
  "glob",
  "http",
- "indexmap 2.14.2",
  "mime",
  "mime_guess",
  "ordered-float",
- "pin-project-lite",
  "rig-derive",
+ "rig-http",
+ "rig-reqwest",
+ "rig-tungstenite",
  "schemars 1.2.2",
  "serde",
  "serde_json",
  "sha2",
  "thiserror 2.0.20",
  "tracing",
- "tracing-futures",
+ "tracing-subscriber",
  "url",
+ "uuid",
 ]
 
 [[package]]
 name = "rig-derive"
-version = "0.42.0"
-source = "git+https://github.com/0xPlaygrounds/rig?rev=475cfddc28cc5b367108a3d387b84d5f838d613b#475cfddc28cc5b367108a3d387b84d5f838d613b"
+version = "0.44.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1146bdcb55a3b2dbdd9d2df7a8846714499c9985e9042926c06ffe98b3a821bc"
 dependencies = [
  "convert_case 0.11.0",
  "proc-macro-crate",
@@ -5629,35 +5597,47 @@ dependencies = [
 ]
 
 [[package]]
+name = "rig-http"
+version = "0.44.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e9b68e5fe7258d64aeffb0a976ad0665ad2f94104d41eb4cdf463065ba57ec0b"
+dependencies = [
+ "bytes",
+ "futures",
+ "futures-timer",
+ "http",
+ "mime",
+ "thiserror 2.0.20",
+ "url",
+]
+
+[[package]]
 name = "rig-reqwest"
-version = "0.42.0"
-source = "git+https://github.com/0xPlaygrounds/rig?rev=475cfddc28cc5b367108a3d387b84d5f838d613b#475cfddc28cc5b367108a3d387b84d5f838d613b"
+version = "0.44.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d478ca821bdf7030b4cabfdc7acc07ab5f0449886f9a7e472de205a6ec4b2b1d"
 dependencies = [
  "bytes",
  "futures",
  "http",
  "reqwest",
- "rig-core",
- "serde",
- "serde_json",
+ "rig-http",
  "thiserror 2.0.20",
  "tokio",
- "tokio-tungstenite",
- "tracing",
  "url",
 ]
 
 [[package]]
-name = "rig-run"
-version = "0.42.0"
-source = "git+https://github.com/0xPlaygrounds/rig?rev=475cfddc28cc5b367108a3d387b84d5f838d613b#475cfddc28cc5b367108a3d387b84d5f838d613b"
+name = "rig-tungstenite"
+version = "0.44.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d145d2d41722fd040dbb47f05b797c8119884697bb4ee7e53fc5c1c1ec9610df"
 dependencies = [
- "http",
- "rig-core",
- "serde",
- "serde_json",
+ "futures",
+ "rig-http",
  "thiserror 2.0.20",
- "tracing",
+ "tokio",
+ "tokio-tungstenite",
 ]
 
 [[package]]
@@ -6073,6 +6053,7 @@ version = "1.0.151"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c841b55ecdae098c80dcae9cf767f6f8a0c2cdb3416bbef72181df4d0fe73f14"
 dependencies = [
+ "indexmap 2.14.2",
  "itoa",
  "memchr",
  "serde",
@@ -7180,6 +7161,7 @@ version = "1.26.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b5772d71c9be8a8a6ac2117d949c5b224c1b72241bb611d9a3012edcf8af7812"
 dependencies = [
+ "getrandom 0.4.3",
  "js-sys",
  "serde_core",
  "wasm-bindgen",

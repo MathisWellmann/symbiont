@@ -22,7 +22,6 @@ use metrics_util::{
     },
 };
 use rig_agent::completion::PromptError;
-use rig_core::completion::CompletionError;
 use symbiont::{
     Profile,
     Runtime,
@@ -187,12 +186,11 @@ async fn evolution_emits_metrics() {
     // A fatal provider failure must not evolve, but must still count. The
     // rejection arrives in the shape a provider with a request-id contract
     // preserves it in.
-    let failing = ScriptedAgent::new([Turn::Fail(PromptError::CompletionError(
-        CompletionError::from_http_response_with_request_id(
+    let failing = ScriptedAgent::new([Turn::Fail(PromptError::Provider(
+        rig_core::ProviderError::ProviderResponse(rig_core::ProviderResponseError::new(
             http::StatusCode::UNAUTHORIZED,
             r#"{"error":{"message":"invalid api key"}}"#,
-            None,
-        ),
+        )),
     ))]);
     rt.evolve(&failing, BASE_PROMPT)
         .await

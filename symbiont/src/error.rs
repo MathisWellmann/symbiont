@@ -17,11 +17,16 @@ pub enum Error {
     #[error(transparent)]
     Syn(#[from] syn::Error),
 
+    /// Boxed: rig's error keeps the provider's whole reply (body, headers,
+    /// report), several hundred bytes that every `Result` of this crate
+    /// would otherwise carry on its success path too.
     #[error(transparent)]
-    RigPrompt(#[from] rig_agent::completion::PromptError),
+    RigPrompt(Box<rig_agent::completion::PromptError>),
 
+    /// Boxed for the same reason as [`Error::RigPrompt`]: a failed response
+    /// keeps its headers inline.
     #[error(transparent)]
-    RigHttp(#[from] rig_core::http_client::Error),
+    RigHttp(Box<rig_core::http_client::Error>),
 
     #[error(transparent)]
     DocIndex(#[from] crate::DocIndexError),
@@ -140,10 +145,65 @@ pub enum Error {
     InvalidDocMode,
 }
 
+impl From<rig_core::http_client::Error> for Error {
+    fn from(error: rig_core::http_client::Error) -> Self {
+        Self::RigHttp(Box::new(error))
+    }
+}
+
+impl From<rig_agent::completion::PromptError> for Error {
+    fn from(error: rig_agent::completion::PromptError) -> Self {
+        Self::RigPrompt(Box::new(error))
+    }
+}
+
+/// Write the nudge for a failed agent run into `prompt`. Returns `false`, and
+/// writes nothing, for a failure that prompt feedback cannot fix.
+fn nudge_agent_run(error: &rig_agent::completion::PromptError, prompt: &mut String) -> bool {
+    use rig_agent::completion::PromptError::*;
+    match error {
+        MaxTurns { max_turns, .. } => write!(
+            prompt,
+            "nudge: You spent all {max_turns} tool-call turns without producing code. {TOOLS_WITHDRAWN}",
+        )
+        .expect("Can write to prompt"),
+        Cancelled { reason, .. } if code_deadline_turns(reason).is_some() => {
+            let turns = code_deadline_turns(reason).unwrap_or_default();
+            write!(
+                prompt,
+                "nudge: You spent {turns} tool-call turns on documentation and analysis without \
+                producing code. {TOOLS_WITHDRAWN}",
+            )
+            .expect("Can write to prompt");
+        }
+        Cancelled { reason, .. } if wall_deadline_reached(reason) => {
+            prompt.push_str(
+                "nudge: The time for this task is up. The tools are withdrawn for the rest of \
+                this conversation; do not call a tool. If you built a revision with the tools \
+                that you want to keep, reply with the single line `revision: N`. Otherwise \
+                respond with the complete Rust code block now, using what you have already \
+                seen above.",
+            );
+        }
+        UnknownToolCall { tool_name, .. } => write!(
+            prompt,
+            "nudge: You called `{tool_name}`, which is not available in this conversation. \
+            Do not call any tool. Respond with the complete Rust code block now.",
+        )
+        .expect("Can write to prompt"),
+        _ => return false,
+    }
+    true
+}
+
 impl Error {
     /// Convert the error into a nudging prompt for the Agent
     pub(crate) fn nudge(self, prompt: &mut String) -> Result<(), Self> {
         use Error::*;
+        if let RigPrompt(error) = &self {
+            let nudged = nudge_agent_run(error, prompt);
+            return if nudged { Ok(()) } else { Err(self) };
+        }
         match self {
             NoRustCode => prompt.push_str(
                 "nudge: Your response did not contain a rust code block. Please try again and make sure its wrapped like this: ```CODE```",
@@ -157,33 +217,6 @@ impl Error {
             ).expect("Can write to prompt"),
             CouldNotParseRust { code, err } => write!(prompt,
                 "nudge: Your generated code ```{code}``` is not valid Rust. Parse error: ```{err}```. Fix the syntax error and respond with the full corrected code.",
-            ).expect("Can write to prompt"),
-            RigPrompt(rig_agent::completion::PromptError::MaxTurnsError { max_turns, .. }) => write!(prompt,
-                "nudge: You spent all {max_turns} tool-call turns without producing code. {TOOLS_WITHDRAWN}",
-            ).expect("Can write to prompt"),
-            RigPrompt(rig_agent::completion::PromptError::PromptCancelled { ref reason, .. })
-                if code_deadline_turns(reason).is_some() =>
-            {
-                let turns = code_deadline_turns(reason).unwrap_or_default();
-                write!(prompt,
-                    "nudge: You spent {turns} tool-call turns on documentation and analysis without \
-                    producing code. {TOOLS_WITHDRAWN}",
-                ).expect("Can write to prompt");
-            }
-            RigPrompt(rig_agent::completion::PromptError::PromptCancelled { ref reason, .. })
-                if wall_deadline_reached(reason) =>
-            {
-                prompt.push_str(
-                    "nudge: The time for this task is up. The tools are withdrawn for the rest of \
-                    this conversation; do not call a tool. If you built a revision with the tools \
-                    that you want to keep, reply with the single line `revision: N`. Otherwise \
-                    respond with the complete Rust code block now, using what you have already \
-                    seen above.",
-                );
-            }
-            RigPrompt(rig_agent::completion::PromptError::UnknownToolCall { tool_name, .. }) => write!(prompt,
-                "nudge: You called `{tool_name}`, which is not available in this conversation. \
-                Do not call any tool. Respond with the complete Rust code block now.",
             ).expect("Can write to prompt"),
             SignatureMismatch {
                 code: _,
@@ -256,12 +289,15 @@ impl Error {
     /// this error - see [`crate::EvolutionAgent::run_without_tools`].
     pub(crate) fn exhausted_tool_turns(&self) -> bool {
         use rig_agent::completion::PromptError;
-        match self {
-            Error::RigPrompt(PromptError::MaxTurnsError { .. }) => true,
+        let Error::RigPrompt(error) = self else {
+            return false;
+        };
+        match error.as_ref() {
+            PromptError::MaxTurns { .. } => true,
             // The code deadline of [`crate::Agent::with_code_deadline`] and
             // the wall deadline of [`crate::Agent::with_wall_deadline`]: the
             // same outcome, reached earlier.
-            Error::RigPrompt(PromptError::PromptCancelled { reason, .. }) => {
+            PromptError::Cancelled { reason, .. } => {
                 code_deadline_turns(reason).is_some() || wall_deadline_reached(reason)
             }
             _ => false,
@@ -272,8 +308,8 @@ impl Error {
     /// error carries them.
     ///
     /// Rig reports the canonical transcript it reached when a run dies
-    /// inside the tool-calling loop: [`PromptError::MaxTurnsError`],
-    /// [`PromptError::PromptCancelled`] and [`PromptError::UnknownToolCall`]
+    /// inside the tool-calling loop: [`PromptError::MaxTurns`],
+    /// [`PromptError::Cancelled`] and [`PromptError::UnknownToolCall`]
     /// all carry `chat_history` — the input history the caller passed in,
     /// followed by every message the run produced (the prompt, assistant
     /// turns, and tool results). Skipping the first `input_len` messages
@@ -287,14 +323,13 @@ impl Error {
     pub(crate) fn aborted_run_messages(&self, input_len: usize) -> Option<Vec<Message>> {
         use rig_agent::completion::PromptError;
 
-        let full: &[Message] = match self {
-            Error::RigPrompt(PromptError::MaxTurnsError { chat_history, .. })
-            | Error::RigPrompt(PromptError::UnknownToolCall { chat_history, .. }) => {
-                chat_history.as_slice()
-            }
-            Error::RigPrompt(PromptError::PromptCancelled { chat_history, .. }) => {
-                chat_history.as_slice()
-            }
+        let Error::RigPrompt(error) = self else {
+            return None;
+        };
+        let full: &[Message] = match error.as_ref() {
+            PromptError::MaxTurns { chat_history, .. }
+            | PromptError::UnknownToolCall { chat_history, .. }
+            | PromptError::Cancelled { chat_history, .. } => chat_history.as_slice(),
             _ => return None,
         };
         Some(full.iter().skip(input_len).cloned().collect())
@@ -343,15 +378,15 @@ mod tests {
             Message::assistant("tool call"),
             Message::user("tool result"),
         ];
-        let err = Error::RigPrompt(PromptError::MaxTurnsError {
+        let err = Error::from(PromptError::MaxTurns {
             max_turns: 3,
-            chat_history: Box::new(run.clone()),
-            prompt: Box::new(Message::user("base prompt")),
+            chat_history: run.clone(),
+            prompt: Message::user("base prompt"),
         });
 
         let recovered = err
             .aborted_run_messages(input.len())
-            .expect("MaxTurnsError carries a transcript");
+            .expect("MaxTurns carries a transcript");
 
         assert_eq!(recovered, run[1..]);
     }
@@ -361,15 +396,15 @@ mod tests {
     /// exactly as before the fix.
     #[test]
     fn max_turns_error_with_empty_transcript_yields_nothing() {
-        let err = Error::RigPrompt(PromptError::MaxTurnsError {
+        let err = Error::from(PromptError::MaxTurns {
             max_turns: 3,
-            chat_history: Box::new(Vec::new()),
-            prompt: Box::new(Message::user("base prompt")),
+            chat_history: Vec::new(),
+            prompt: Message::user("base prompt"),
         });
 
         let recovered = err
             .aborted_run_messages(0)
-            .expect("MaxTurnsError carries a transcript");
+            .expect("MaxTurns carries a transcript");
 
         assert!(recovered.is_empty());
     }
@@ -380,7 +415,7 @@ mod tests {
     fn cancelled_and_unknown_tool_call_errors_are_recovered_too() {
         let run = vec![Message::user("base prompt"), Message::assistant("partial")];
 
-        let cancelled = Error::RigPrompt(PromptError::PromptCancelled {
+        let cancelled = Error::from(PromptError::Cancelled {
             chat_history: run.clone(),
             reason: "hook terminated".to_string(),
         });
@@ -391,11 +426,11 @@ mod tests {
             run
         );
 
-        let unknown_tool = Error::RigPrompt(PromptError::UnknownToolCall {
+        let unknown_tool = Error::from(PromptError::UnknownToolCall {
             tool_name: "nope".to_string(),
             available_tools: Vec::new(),
             allowed_tools: Vec::new(),
-            chat_history: Box::new(run.clone()),
+            chat_history: run.clone(),
         });
         assert_eq!(
             unknown_tool
@@ -410,7 +445,7 @@ mod tests {
     #[test]
     fn only_the_code_deadline_counts_as_exhausted_turns() {
         let cancelled = |reason: String| {
-            Error::RigPrompt(PromptError::PromptCancelled {
+            Error::from(PromptError::Cancelled {
                 chat_history: Vec::new(),
                 reason,
             })
@@ -430,9 +465,9 @@ mod tests {
     fn other_errors_carry_no_messages() {
         assert!(Error::NoRustCode.aborted_run_messages(0).is_none());
         assert!(
-            Error::RigPrompt(PromptError::CompletionError(
-                rig_core::completion::CompletionError::ProviderError("boom".to_string()),
-            ))
+            Error::from(PromptError::Provider(rig_core::ProviderError::Provider(
+                "boom".to_string()
+            )))
             .aborted_run_messages(0)
             .is_none()
         );

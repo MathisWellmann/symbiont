@@ -293,20 +293,13 @@ mod tests {
     /// model and tool time out of exactly those pairs, so a slow tool no
     /// longer passes for a slow model.
     #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "the fixture is one timed lane, spelled out"
-    )]
     fn measured_timings_place_requests_and_tools_where_they_happened() {
         use rig_core::message::{
             AssistantContent,
-            Text,
             ToolCall,
-            ToolCallId,
             ToolFunction,
-            ToolResult,
+            ToolName,
             ToolResultContent,
-            UserContent,
         };
 
         use crate::{
@@ -315,7 +308,13 @@ mod tests {
             ToolTiming,
         };
 
-        let call_id = ToolCallId::new("call_1").expect("a non-empty id");
+        let call = ToolCall::from_wire(
+            "call_1",
+            ToolFunction::new(
+                ToolName::new("python").expect("a non-empty name"),
+                serde_json::json!({ "code": "1" }),
+            ),
+        );
         let mut trace = EvolutionTrace::new(
             "sglang".to_string(),
             "Qwen/Qwen3.8-27B-FP8".to_string(),
@@ -325,27 +324,8 @@ mod tests {
         );
         trace.set_history(vec![
             Message::user("p"),
-            Message::Assistant {
-                id: None,
-                content: vec![AssistantContent::ToolCall(ToolCall {
-                    id: call_id.clone(),
-                    provider: None,
-                    function: ToolFunction {
-                        name: "python".to_string(),
-                        arguments: serde_json::json!({ "code": "1" }),
-                    },
-                    signature: None,
-                    additional_params: None,
-                })],
-            },
-            Message::User {
-                content: vec![UserContent::ToolResult(ToolResult {
-                    call: call_id,
-                    provider: None,
-                    name: "python".to_string(),
-                    content: vec![ToolResultContent::Text(Text::from("1".to_string()))],
-                })],
-            },
+            Message::from(vec![AssistantContent::ToolCall(call.clone())]),
+            Message::tool_results(vec![call.result(vec![ToolResultContent::text("1")])]),
             Message::assistant("done"),
         ]);
         // Two requests of 2s and 3s around a tool that took 10s, the first
@@ -379,8 +359,8 @@ mod tests {
                     .response("done".to_string())
                     .usage(Usage::new())
                     .completion_calls(vec![
-                        CompletionCall::new(0, Usage::new()),
-                        CompletionCall::new(1, Usage::new()),
+                        CompletionCall::new(0, Usage::new(), Value::Null),
+                        CompletionCall::new(1, Usage::new(), Value::Null),
                     ])
                     .timings(timings)
                     .build(),
@@ -678,8 +658,8 @@ mod tests {
                     .response("second".to_string())
                     .usage(Usage::new())
                     .completion_calls(vec![
-                        CompletionCall::new(0, usage_of(11, 22)),
-                        CompletionCall::new(1, usage_of(33, 44)),
+                        CompletionCall::new(0, usage_of(11, 22), Value::Null),
+                        CompletionCall::new(1, usage_of(33, 44), Value::Null),
                     ])
                     .build(),
             ),

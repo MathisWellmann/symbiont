@@ -7,13 +7,13 @@
 //! the final text alongside the new messages and token usage.
 //!
 //! An implementation is provided for [`crate::Agent`], which delegates to
-//! rig's `PromptRequest` so rig owns the tool-calling loop
+//! rig's `AgentRunner` so rig owns the tool-calling loop
 //! (multi-turn depth, tool dispatch, invalid-tool-call retries, hooks).
 //!
 //! A run that fails part-way is not a run that did nothing. A request that
 //! times out on the twentieth turn follows nineteen turns of tool exchanges
 //! the model paid for; rig reports the transcript for some of those failures
-//! (`MaxTurnsError`) and for none of the transport ones, and never the token
+//! (`MaxTurns`) and for none of the transport ones, and never the token
 //! usage. [`RunError`] therefore pairs the error with a [`PartialRun`]: what
 //! the run produced before it failed, so the caller can keep the exchanges in
 //! its history and the tokens in its accounting. [`crate::Agent`] fills it
@@ -37,21 +37,23 @@ use rig_agent::{
         CompletionCall,
         CompletionCallAction,
         CompletionCallEvent,
-        CompletionResponseEvent,
-        Extended,
+        DispatchAction,
+        DispatchEvent,
         HookContext,
-        ObservationAction,
-        PromptRequest,
-        ToolCall,
-        ToolCallAction,
-        ToolResultAction,
-        ToolResultEvent,
+        ModelTurnAction,
+        ModelTurnFinished,
+        OutcomeAction,
+        OutcomeEvent,
+        runner::AgentRunner,
     },
     completion::PromptError,
 };
 use rig_core::{
     completion::Usage,
-    id::InternalCallId,
+    effect::{
+        EffectId,
+        EffectKind,
+    },
     message::{
         Message,
         ToolChoice,
@@ -221,7 +223,7 @@ fn drop_raw(call: CompletionCall) -> CompletionCall {
 /// Every request rig sends fires `on_completion_call` with the transcript it
 /// is about to send (the input history, then the run's own messages so far,
 /// then this turn's prompt); the hook keeps the part after the input. Every
-/// answered request fires `on_completion_response` with its usage. On success
+/// answered request fires `on_model_turn_finished` with its usage. On success
 /// rig's own response supersedes all of this; on failure it is all there is.
 ///
 /// The hook also keeps the clock of the run, which rig does not: when each
@@ -249,9 +251,9 @@ struct Recorder {
 struct Pending {
     /// The request in flight: rig sends one at a time within a run.
     call_sent: Option<Duration>,
-    /// The tools executing, by rig's correlation id: rig may run the tool
-    /// calls of one turn concurrently.
-    tools: HashMap<InternalCallId, Duration>,
+    /// The tools executing, by rig's effect id: rig may run the tool calls
+    /// of one turn concurrently.
+    tools: HashMap<EffectId, Duration>,
     /// The requests sent since the run last wrote code.
     turns_without_code: usize,
 }
@@ -342,11 +344,11 @@ impl AgentHook for Recorder {
         CompletionCallAction::Continue
     }
 
-    async fn on_completion_response(
+    async fn on_model_turn_finished(
         &self,
         _ctx: &HookContext,
-        event: CompletionResponseEvent<'_>,
-    ) -> ObservationAction {
+        event: ModelTurnFinished<'_>,
+    ) -> ModelTurnAction {
         let answered = self.now();
         let sent = self
             .pending
@@ -357,58 +359,64 @@ impl AgentHook for Recorder {
         if let Ok(mut partial) = self.partial.lock() {
             partial.usage += event.usage;
             let index = partial.completion_calls.len();
+            // The wire body is dropped like `drop_raw` does on success.
             partial.completion_calls.push(
-                CompletionCall::new(index, event.usage).with_identity(event.identity.clone()),
+                CompletionCall::new(index, event.usage, serde_json::Value::Null)
+                    .with_identity(event.identity.clone())
+                    .with_finish_reason(event.finish_reason.cloned()),
             );
             partial.timings.calls.push(CallTiming { sent, answered });
         }
-        ObservationAction::Continue
+        ModelTurnAction::Continue
     }
 
-    async fn on_tool_call(&self, _ctx: &HookContext, event: ToolCall<'_>) -> ToolCallAction {
+    async fn on_dispatch(&self, _ctx: &HookContext, event: DispatchEvent<'_>) -> DispatchAction {
+        // Completions go through the bus too; only tool executions are timed.
+        let EffectKind::ToolCall { name, .. } = event.kind else {
+            return DispatchAction::Proceed;
+        };
         if let Ok(mut pending) = self.pending.lock() {
-            pending.tools.insert(event.internal_call_id, self.now());
-            if CODE_TOOLS.contains(&event.tool_name) {
+            pending.tools.insert(event.id, self.now());
+            if CODE_TOOLS.contains(&name.as_str()) {
                 pending.turns_without_code = 0;
             }
         }
-        ToolCallAction::Run
+        DispatchAction::Proceed
     }
 
-    async fn on_tool_result(
-        &self,
-        _ctx: &HookContext,
-        event: ToolResultEvent<'_>,
-    ) -> ToolResultAction {
+    async fn on_outcome(&self, _ctx: &HookContext, event: OutcomeEvent<'_>) -> OutcomeAction {
+        let EffectKind::ToolCall { name, .. } = event.kind else {
+            return OutcomeAction::Proceed;
+        };
         let finished = self.now();
         let started = self
             .pending
             .lock()
             .ok()
-            .and_then(|mut pending| pending.tools.remove(&event.internal_call_id))
+            .and_then(|mut pending| pending.tools.remove(&event.id))
             .unwrap_or(finished);
         if let Ok(mut partial) = self.partial.lock() {
             partial.timings.tools.push(ToolTiming {
-                call_id: event.tool_call_id.unwrap_or_default().to_string(),
-                name: event.tool_name.to_string(),
+                call_id: event.call_id.map(ToString::to_string).unwrap_or_default(),
+                name: name.clone(),
                 started,
                 finished,
             });
         }
-        ToolResultAction::Keep
+        OutcomeAction::Proceed
     }
 }
 
 /// Drive a prepared request to completion and shape its response. On
 /// failure the error carries what `recorded` saw of the run.
 async fn send(
-    request: PromptRequest<Extended>,
+    request: AgentRunner,
     recorded: Arc<Mutex<PartialRun>>,
 ) -> Result<AgentRun, RunError> {
-    match request.await {
+    match request.run().await {
         Ok(response) => Ok(AgentRun {
-            output: response.output,
-            new_messages: response.messages.unwrap_or_default(),
+            output: response.output(),
+            new_messages: response.messages,
             usage: response.usage,
             completion_calls: response
                 .completion_calls
@@ -439,7 +447,7 @@ impl EvolutionAgent for crate::Agent {
         prompt: &str,
         history: Vec<Message>,
     ) -> impl Future<Output = Result<AgentRun, RunError>> + Send {
-        // `PromptRequest` clones the agent's internals, so the returned future
+        // `AgentRunner` clones the agent's internals, so the returned future
         // does not borrow `self`. Rig runs the tool-calling loop inside
         // `send()`, bounded by the agent's `default_max_turns`.
         let deadlines = Deadlines {
@@ -448,9 +456,9 @@ impl EvolutionAgent for crate::Agent {
         };
         let (recorder, recorded) = Recorder::new(history.len(), deadlines);
         send(
-            PromptRequest::from_agent(&self.inner, prompt)
+            self.inner
+                .prompt(prompt)
                 .history(history)
-                .extended_details()
                 .add_hook(recorder),
             recorded,
         )
@@ -470,10 +478,10 @@ impl EvolutionAgent for crate::Agent {
         // past it still answers with its code.
         let (recorder, recorded) = Recorder::new(history.len(), Deadlines::default());
         send(
-            PromptRequest::from_agent(&self.inner, prompt)
+            self.inner
+                .prompt(prompt)
                 .history(history)
                 .tool_choice(ToolChoice::None)
-                .extended_details()
                 .add_hook(recorder),
             recorded,
         )
@@ -502,8 +510,11 @@ mod tests {
     /// cannot give stays.
     #[test]
     fn drop_raw_keeps_everything_but_the_wire_body() {
-        let call = CompletionCall::new(3, Usage::new())
-            .with_raw(serde_json::json!({ "choices": [{ "message": "…" }] }));
+        let call = CompletionCall::new(
+            3,
+            Usage::new(),
+            serde_json::json!({ "choices": [{ "message": "…" }] }),
+        );
         assert!(!call.raw.is_null(), "precondition: the call carries a body");
 
         let stripped = drop_raw(call.clone());
@@ -512,7 +523,6 @@ mod tests {
         assert_eq!(stripped.call_index, call.call_index);
         assert_eq!(stripped.usage, call.usage);
         assert_eq!(stripped.finish_reason, call.finish_reason);
-        assert_eq!(stripped.message_id, call.message_id);
         assert_eq!(stripped.response_id, call.response_id);
         assert_eq!(stripped.provider_request_id, call.provider_request_id);
     }
@@ -540,14 +550,11 @@ mod tests {
         use super::*;
 
         fn usage(input: u64, output: u64) -> Usage {
-            let mut usage = Usage::new();
-            usage.input_tokens = input;
-            usage.output_tokens = output;
-            usage
+            Usage::new().input_tokens(input).output_tokens(output)
         }
 
         fn agent(turns: impl IntoIterator<Item = MockTurn>) -> crate::Agent {
-            let inner = AgentBuilder::new(MockCompletionModel::new(turns))
+            let inner = AgentBuilder::new(MockCompletionModel::from_turns(turns))
                 .tool(MockAddTool)
                 .default_max_turns(5)
                 .build();
@@ -555,8 +562,8 @@ mod tests {
         }
 
         fn is_tool_call(message: &Message) -> bool {
-            matches!(message, Message::Assistant { content, .. }
-                if content.iter().any(|c| matches!(c, AssistantContent::ToolCall(_))))
+            matches!(message, Message::Assistant(assistant)
+                if assistant.content.iter().any(|c| matches!(c, AssistantContent::ToolCall(_))))
         }
 
         fn is_tool_result(message: &Message) -> bool {
@@ -582,7 +589,7 @@ mod tests {
                 .await
                 .expect_err("the second request fails");
             assert!(
-                matches!(error, PromptError::CompletionError(_)),
+                matches!(error, PromptError::Provider(_) | PromptError::Report(_)),
                 "{error:?}"
             );
             let partial = *partial.expect("the run answered once");
@@ -689,7 +696,7 @@ mod tests {
         /// fallback (`Error::aborted_run_messages`).
         #[tokio::test]
         async fn without_tools_a_tool_call_is_refused() {
-            let model = MockCompletionModel::new([
+            let model = MockCompletionModel::from_turns([
                 MockTurn::tool_call("call-1", "add", json!({"x": 1, "y": 2}))
                     .with_usage(usage(50, 3)),
                 MockTurn::text("never requested"),
@@ -747,7 +754,7 @@ mod tests {
             turns: impl IntoIterator<Item = MockTurn>,
             deadline: usize,
         ) -> (crate::Agent, MockCompletionModel) {
-            let model = MockCompletionModel::new(turns);
+            let model = MockCompletionModel::from_turns(turns);
             let inner = AgentBuilder::new(model.clone())
                 .tool(MockAddTool)
                 .tool(FakeEdit)
@@ -773,7 +780,7 @@ mod tests {
                 .await
                 .expect_err("the deadline stops the run");
             assert_eq!(model.requests().len(), 2);
-            let PromptError::PromptCancelled {
+            let PromptError::Cancelled {
                 ref reason,
                 ref chat_history,
             } = error
@@ -787,7 +794,7 @@ mod tests {
                 2
             );
 
-            let error = crate::Error::RigPrompt(error);
+            let error = crate::Error::from(error);
             assert!(error.exhausted_tool_turns());
             let mut prompt = String::new();
             error.nudge(&mut prompt).expect("the deadline has a nudge");
@@ -826,7 +833,7 @@ mod tests {
             turns: impl IntoIterator<Item = MockTurn>,
             remaining: Duration,
         ) -> (crate::Agent, MockCompletionModel) {
-            let model = MockCompletionModel::new(turns);
+            let model = MockCompletionModel::from_turns(turns);
             let inner = AgentBuilder::new(model.clone())
                 .tool(MockAddTool)
                 .default_max_turns(10)
@@ -853,7 +860,7 @@ mod tests {
                 .expect_err("the deadline has passed");
             assert!(model.requests().is_empty(), "no request goes out");
             assert!(partial.is_none(), "{partial:?}");
-            let PromptError::PromptCancelled {
+            let PromptError::Cancelled {
                 ref reason,
                 ref chat_history,
             } = error
@@ -864,7 +871,7 @@ mod tests {
             assert_eq!(crate::error::code_deadline_turns(reason), None);
             assert_eq!(chat_history.first(), Some(&Message::user("add")));
 
-            let error = crate::Error::RigPrompt(error);
+            let error = crate::Error::from(error);
             assert!(error.exhausted_tool_turns());
             let mut prompt = String::new();
             error.nudge(&mut prompt).expect("the deadline has a nudge");
@@ -891,7 +898,7 @@ mod tests {
 
             // The tool outlives the deadline: it finishes, and the request
             // that would follow it never goes out.
-            let model = MockCompletionModel::new([
+            let model = MockCompletionModel::from_turns([
                 MockTurn::tool_call("call", "slow", json!({})),
                 MockTurn::text("never"),
             ]);
@@ -906,7 +913,7 @@ mod tests {
                 .await
                 .expect_err("past the deadline");
             assert!(
-                matches!(error, PromptError::PromptCancelled { ref reason, .. }
+                matches!(error, PromptError::Cancelled { ref reason, .. }
                     if crate::error::wall_deadline_reached(reason)),
                 "{error:?}"
             );

@@ -16,7 +16,6 @@ use common::{
     Turn,
 };
 use rig_agent::completion::PromptError;
-use rig_core::completion::CompletionError;
 use symbiont::{
     Profile,
     Runtime,
@@ -32,11 +31,8 @@ const LLAMA_CPP_BODY: &str = r#"{"error":{"code":400,"message":"request (258963 
 const VLLM_BODY: &str = r#"{"object":"error","message":"This model's maximum context length is 65536 tokens. However, you requested 70000 tokens (69000 in the messages, 1000 in the completion). Please reduce the length of the messages or completion.","type":"BadRequestError","param":null,"code":400}"#;
 
 fn context_size_error(body: &str) -> PromptError {
-    PromptError::CompletionError(CompletionError::HttpError(
-        rig_core::http_client::Error::InvalidStatusCodeWithMessage(
-            http::StatusCode::BAD_REQUEST,
-            body.to_string(),
-        ),
+    PromptError::Provider(rig_core::ProviderError::ProviderResponse(
+        rig_core::ProviderResponseError::new(http::StatusCode::BAD_REQUEST, body),
     ))
 }
 

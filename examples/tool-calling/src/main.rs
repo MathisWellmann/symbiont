@@ -164,8 +164,9 @@ async fn main() -> symbiont::Result<()> {
     info!("fn_sigs: {fn_sigs:?}");
 
     // Register the `probe` tool on the pre-configured builder.
-    // `default_max_turns` must be >= 1, otherwise rig aborts the run with
-    // `MaxTurnsError` as soon as the model chains tool calls.
+    // `default_max_turns` counts every model call of a run and must be > 1,
+    // otherwise rig aborts the run with `PromptError::MaxTurns` as soon as
+    // the model calls a tool.
     let base_url = var("BASE_URL").expect("The `BASE_URL` env var must be set");
     let api_key = var("API_KEY").unwrap_or_default();
     let model = var("MODEL").expect("the `MODEL` env var names the model slug");

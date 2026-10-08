@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
-//! Backpressure integration test: a rig `MaxTurnsError` (tool-call turn
+//! Backpressure integration test: a rig `MaxTurns` (tool-call turn
 //! budget exhausted) gets a concise turn-budget correction, the agent's tools
 //! are withdrawn for the rest of the lane, and the agent recovers.
 //!
@@ -49,10 +49,10 @@ async fn max_turns_error_is_nudged_and_recovered_from() {
     let agent = ScriptedAgent::new([
         // Attempt 1: rig aborts the run because the model chained more tool
         // calls than `default_max_turns` allows.
-        Turn::Fail(PromptError::MaxTurnsError {
+        Turn::Fail(PromptError::MaxTurns {
             max_turns: 3,
-            chat_history: Box::new(Vec::new()),
-            prompt: Box::new(Message::user(BASE_PROMPT)),
+            chat_history: Vec::new(),
+            prompt: Message::user(BASE_PROMPT),
         }),
         // Attempt 2, without tools: the model still emits a tool call, which
         // rig refuses to dispatch under `tool_choice: none`.
@@ -60,7 +60,7 @@ async fn max_turns_error_is_nudged_and_recovered_from() {
             tool_name: "api_doc".to_string(),
             available_tools: vec!["api_doc".to_string()],
             allowed_tools: Vec::new(),
-            chat_history: Box::new(Vec::new()),
+            chat_history: Vec::new(),
         }),
         // Attempt 3: final code without further tool calls -> success.
         Turn::reply("```rust\npub fn bp_turns_step(counter: &mut usize) { *counter += 11; }\n```"),

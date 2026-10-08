@@ -38,6 +38,10 @@ use symbiont::{
 pub(crate) type ToolTurn = Box<dyn FnOnce() -> Pin<Box<dyn Future<Output = String> + Send>> + Send>;
 
 /// A single scripted agent turn.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "a script holds a handful of turns; rig's error keeps the provider's whole reply"
+)]
 pub(crate) enum Turn {
     /// Respond with this canned assistant text.
     Reply(String),
@@ -159,7 +163,7 @@ impl ScriptedAgent {
             output: text,
             new_messages,
             usage,
-            completion_calls: vec![CompletionCall::new(0, usage)],
+            completion_calls: vec![CompletionCall::new(0, usage, serde_json::Value::Null)],
             timings: symbiont::RunTimings::default(),
         })
     }
@@ -295,7 +299,11 @@ impl EvolutionAgent for RoutedAgent {
             output: text,
             new_messages,
             usage: Usage::new(),
-            completion_calls: vec![CompletionCall::new(0, Usage::new())],
+            completion_calls: vec![CompletionCall::new(
+                0,
+                Usage::new(),
+                serde_json::Value::Null,
+            )],
             timings: symbiont::RunTimings::default(),
         })
     }
