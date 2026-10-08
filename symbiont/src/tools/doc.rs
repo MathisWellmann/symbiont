@@ -162,6 +162,7 @@ mod tests {
     use rig_core::tool::ToolErrorKind;
 
     use super::*;
+    use crate::doc_index::Closest;
 
     #[tokio::test(flavor = "current_thread")]
     async fn api_index_lists_prelude_and_modules() {
@@ -190,7 +191,7 @@ mod tests {
         )
         .await
         .expect_err("the path does not resolve");
-        assert!(matches!(err, DocIndexError::ModuleNotFound(_)));
+        assert!(matches!(err, DocIndexError::ModuleNotFound(..)));
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -215,7 +216,7 @@ mod tests {
         )
         .await
         .expect_err("the path does not resolve");
-        assert!(matches!(err, DocIndexError::ItemNotFound(_)));
+        assert!(matches!(err, DocIndexError::ItemNotFound(..)));
     }
 
     /// The model must read the text of the query error, not the redacted
@@ -226,13 +227,19 @@ mod tests {
         let index_tool = ApiIndexTool::new(Arc::clone(&index));
         let doc_tool = ApiDocTool::new(index);
 
-        let mapped = index_tool.map_error(DocIndexError::ModuleNotFound("nope".to_string()));
+        let mapped = index_tool.map_error(DocIndexError::ModuleNotFound(
+            "nope".to_string(),
+            Closest::default(),
+        ));
         let feedback = mapped.model_feedback().expect("the feedback is text");
         assert!(feedback.contains("nope"), "{feedback}");
         assert!(feedback.contains("api_index"), "{feedback}");
         assert_ne!(feedback, "the tool failed");
 
-        let mapped = doc_tool.map_error(DocIndexError::ItemNotFound("Order".to_string()));
+        let mapped = doc_tool.map_error(DocIndexError::ItemNotFound(
+            "Order".to_string(),
+            Closest::default(),
+        ));
         let feedback = mapped.model_feedback().expect("the feedback is text");
         assert!(feedback.contains("Order"), "{feedback}");
         assert!(feedback.contains("api_index"), "{feedback}");
@@ -254,7 +261,10 @@ mod tests {
         assert_eq!(mapped.retryable(), Some(false));
 
         // A missing item still maps to `not_found`.
-        let mapped = doc_tool.map_error(DocIndexError::ItemNotFound("Candle".to_string()));
+        let mapped = doc_tool.map_error(DocIndexError::ItemNotFound(
+            "Candle".to_string(),
+            Closest::default(),
+        ));
         assert_eq!(mapped.kind(), ToolErrorKind::NotFound);
     }
 }
