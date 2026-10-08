@@ -837,18 +837,17 @@ mod tests {
             response: "r".to_string(),
             usage,
             completion_calls: (0..calls)
-                .map(|index| CompletionCall::new(index, usage))
+                .map(|index| CompletionCall::new(index, usage, serde_json::Value::Null))
                 .collect(),
             timings: RunTimings::default(),
         }
     }
 
     fn usage_of(input: u64, output: u64) -> Usage {
-        let mut usage = Usage::new();
-        usage.input_tokens = input;
-        usage.output_tokens = output;
-        usage.total_tokens = input + output;
-        usage
+        Usage::new()
+            .input_tokens(input)
+            .output_tokens(output)
+            .total_tokens(input + output)
     }
 
     /// The usage of a lane is the sum of the attempts that got to the model.
@@ -866,8 +865,8 @@ mod tests {
             },
         );
 
-        assert_eq!(trace.usage().input_tokens, 13);
-        assert_eq!(trace.usage().output_tokens, 7);
+        assert_eq!(trace.usage().input_tokens, Some(13));
+        assert_eq!(trace.usage().output_tokens, Some(7));
         assert_eq!(trace.completion_calls(), 3);
     }
 

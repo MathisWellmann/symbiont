@@ -444,7 +444,7 @@ async fn revision_tools_drive_the_pipeline_from_inside_a_run() {
         .await
         .expect("the tool server answers")
         .into_iter()
-        .map(|def| def.name)
+        .map(|def| def.name.into())
         .collect();
     names.sort();
     assert_eq!(

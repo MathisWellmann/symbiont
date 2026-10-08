@@ -216,12 +216,13 @@ const TRANSIENT_CONTINUE_NUDGE: &str = "nudge: The connection to the model faile
     tool call; its result is above. Continue from there. If you have what you need, respond with \
     the complete Rust code block now.";
 
-/// Count `usage` into the token counters.
+/// Count `usage` into the token counters. A count the provider did not report
+/// counts nothing.
 fn record_token_usage(usage: &Usage) {
-    counter!(LLM_TOKENS, "kind" => "input").increment(usage.input_tokens);
-    counter!(LLM_TOKENS, "kind" => "output").increment(usage.output_tokens);
-    if usage.cached_input_tokens > 0 {
-        counter!(LLM_TOKENS, "kind" => "cached_input").increment(usage.cached_input_tokens);
+    counter!(LLM_TOKENS, "kind" => "input").increment(usage.input_tokens.unwrap_or_default());
+    counter!(LLM_TOKENS, "kind" => "output").increment(usage.output_tokens.unwrap_or_default());
+    if let Some(cached) = usage.cached_input_tokens.filter(|&cached| cached > 0) {
+        counter!(LLM_TOKENS, "kind" => "cached_input").increment(cached);
     }
 }
 
@@ -632,8 +633,14 @@ impl Runtime {
         };
         counter!(LLM_RUNS, "outcome" => "ok").increment(1);
         record_token_usage(&run.usage);
-        histogram!(LLM_RUN_INPUT_TOKENS).record(run.usage.input_tokens as f64);
-        histogram!(LLM_RUN_OUTPUT_TOKENS).record(run.usage.output_tokens as f64);
+        // An unreported count is no sample: a zero would drag the
+        // distribution down.
+        if let Some(input) = run.usage.input_tokens {
+            histogram!(LLM_RUN_INPUT_TOKENS).record(input as f64);
+        }
+        if let Some(output) = run.usage.output_tokens {
+            histogram!(LLM_RUN_OUTPUT_TOKENS).record(output as f64);
+        }
         histogram!(LLM_RUN_MESSAGES).record(run.new_messages.len() as f64);
         debug!("llm_response: {}", run.output.blue());
         info!("token usage for this run: {:?}", run.usage);

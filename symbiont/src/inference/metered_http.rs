@@ -24,6 +24,7 @@ use futures_util::Stream;
 use metrics::histogram;
 use rig_core::{
     http_client::{
+        BoxedStream,
         HttpClientExt,
         LazyBody,
         MultipartForm,
@@ -31,7 +32,6 @@ use rig_core::{
         Response,
         Result,
         StreamingResponse,
-        sse::BoxedStream,
     },
     wasm_compat::WasmCompatSend,
 };
@@ -54,20 +54,17 @@ use crate::{
 /// in by passing it to rig's builder:
 ///
 /// ```no_run
-/// use rig_core::providers::openrouter;
+/// use rig_core::providers::openai::{
+///     OpenAIConfig,
+///     wire::OPENROUTER,
+/// };
 /// use rig_reqwest::ReqwestClient;
-/// use rig_agent::client::AgentClientExt;
 /// use symbiont::MeteredHttpClient;
 ///
-/// # fn example() -> symbiont::Result<()> {
-/// let client = openrouter::Client::builder()
-///     .api_key("")
-///     .base_url("http://127.0.0.1:8000/v1")
-///     .http_client(MeteredHttpClient::new(ReqwestClient::default()))
-///     .build()?;
-/// let agent = client.agent("qwen3.6").build();
-/// # Ok(())
-/// # }
+/// let client = OpenAIConfig::with_key(&OPENROUTER, "")
+///     .with_base_url("http://127.0.0.1:8000/v1")
+///     .connect(MeteredHttpClient::new(ReqwestClient::default()));
+/// let agent = rig_agent::AgentBuilder::new(client.chat("qwen3.6")).build();
 /// ```
 ///
 /// # What is measured

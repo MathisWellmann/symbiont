@@ -475,6 +475,7 @@ pub(crate) fn failure_kind_of(e: &crate::Error) -> &'static str {
 /// `transient` per attempt.
 pub(crate) fn inference_error_reason(e: &crate::Error) -> &'static str {
     use rig_agent::completion::PromptError;
+    use rig_core::ErrorKind;
 
     use crate::{
         Error::*,
@@ -484,27 +485,35 @@ pub(crate) fn inference_error_reason(e: &crate::Error) -> &'static str {
             provider_status_of,
         },
     };
-    match e {
+    let run = match e {
+        RigPrompt(run) => Some(run.as_ref()),
+        _ => None,
+    };
+    match run {
         // The provider answered every request, but the agent loop did not
         // converge within its budget.
-        RigPrompt(PromptError::MaxTurnsError { .. }) => inference_error::MAX_TURNS,
+        Some(PromptError::MaxTurns { .. }) => inference_error::MAX_TURNS,
         // The code deadline stops a run the same way the turn budget does.
-        e @ RigPrompt(PromptError::PromptCancelled { .. }) if e.exhausted_tool_turns() => {
+        Some(PromptError::Cancelled { .. }) if e.exhausted_tool_turns() => {
             inference_error::MAX_TURNS
         }
-        RigPrompt(PromptError::PromptCancelled { .. }) => inference_error::CANCELLED,
+        Some(PromptError::Cancelled { .. }) => inference_error::CANCELLED,
         // The model asked for a tool that this turn does not offer.
-        RigPrompt(PromptError::UnknownToolCall { .. }) => inference_error::TOOL,
+        Some(PromptError::UnknownToolCall { .. }) => inference_error::TOOL,
         // Provider-side, in the order the loop treats them. Context overflow
         // first: its 500 variant is also transient, and matching transient
         // first would hide overflows under `transient`.
         _ if is_context_size_error(e) => inference_error::CONTEXT_OVERFLOW,
         _ if is_transient_http_error(e) => inference_error::TRANSIENT,
         // The endpoint answered, but the payload was unusable.
-        RigPrompt(PromptError::CompletionError(
-            rig_core::completion::CompletionError::JsonError(_)
-            | rig_core::completion::CompletionError::ResponseError(_),
-        )) => inference_error::PARSE,
+        Some(PromptError::Provider(p))
+            if matches!(p.kind(), ErrorKind::Json | ErrorKind::Response) =>
+        {
+            inference_error::PARSE
+        }
+        Some(PromptError::Report(r)) if matches!(r.kind, ErrorKind::Json | ErrorKind::Response) => {
+            inference_error::PARSE
+        }
         // Any other rejection the endpoint answered with a status
         // (400/401/403/404/413/422, ...). Errors without a status never
         // reached the endpoint or never came from it, so they stay in the
@@ -708,18 +717,16 @@ mod tests {
         use http::StatusCode;
         use rig_agent::completion::PromptError;
         use rig_core::{
-            completion::{
-                CompletionError,
-                Message,
-            },
-            http_client::Error as HttpError,
+            ProviderError,
+            ProviderResponseError,
+            completion::Message,
         };
 
         use crate::Error::*;
 
         let http_error = |status: u16| {
-            RigPrompt(PromptError::CompletionError(CompletionError::HttpError(
-                HttpError::InvalidStatusCode(StatusCode::from_u16(status).expect("valid status")),
+            crate::Error::from(PromptError::Provider(ProviderError::ProviderResponse(
+                ProviderResponseError::new(StatusCode::from_u16(status).expect("valid status"), ""),
             )))
         };
 
@@ -733,26 +740,26 @@ mod tests {
         }
         // Agent-loop failures: the provider answered every request.
         assert_eq!(
-            inference_error_reason(&RigPrompt(PromptError::MaxTurnsError {
+            inference_error_reason(&crate::Error::from(PromptError::MaxTurns {
                 max_turns: 0,
-                chat_history: Box::new(Vec::new()),
-                prompt: Box::new(Message::system("")),
+                chat_history: Vec::new(),
+                prompt: Message::system(""),
             })),
             inference_error::MAX_TURNS,
         );
         assert_eq!(
-            inference_error_reason(&RigPrompt(PromptError::PromptCancelled {
+            inference_error_reason(&crate::Error::from(PromptError::Cancelled {
                 chat_history: Vec::new(),
                 reason: "test".to_owned(),
             })),
             inference_error::CANCELLED,
         );
         assert_eq!(
-            inference_error_reason(&RigPrompt(PromptError::UnknownToolCall {
+            inference_error_reason(&crate::Error::from(PromptError::UnknownToolCall {
                 tool_name: "grep".to_owned(),
                 available_tools: Vec::new(),
                 allowed_tools: Vec::new(),
-                chat_history: Box::new(Vec::new()),
+                chat_history: Vec::new(),
             })),
             inference_error::TOOL,
         );
@@ -766,16 +773,16 @@ mod tests {
         }
         // A malformed response body is a parse failure, not an HTTP one.
         assert_eq!(
-            inference_error_reason(&RigPrompt(PromptError::CompletionError(
-                CompletionError::ResponseError("truncated".to_owned()),
+            inference_error_reason(&crate::Error::from(PromptError::Provider(
+                ProviderError::Response("truncated".to_owned())
             ))),
             inference_error::PARSE,
         );
         // A rig-authored diagnostic preserves no provider response, so it is
         // not an HTTP rejection.
         assert_eq!(
-            inference_error_reason(&RigPrompt(PromptError::CompletionError(
-                CompletionError::ProviderError("only one tool can be forced".to_owned()),
+            inference_error_reason(&crate::Error::from(PromptError::Provider(
+                ProviderError::Provider("only one tool can be forced".to_owned())
             ))),
             inference_error::OTHER,
         );
@@ -783,36 +790,33 @@ mod tests {
         assert_eq!(inference_error_reason(&NoRustCode), inference_error::OTHER);
     }
 
-    /// rig preserves one failed provider response in three shapes. Which one
-    /// a call gets depends on the provider and on the transport, so the three
-    /// must carry the same `reason`.
+    /// One failed provider response reaches the runtime in three shapes: the
+    /// bare transport error, the provider error of a run, and the report of
+    /// a failure rig relayed over its bus. The three must carry the same
+    /// `reason`.
     #[test]
     fn inference_error_reason_reads_every_response_shape() {
         use http::StatusCode;
         use rig_agent::completion::PromptError;
         use rig_core::{
-            completion::CompletionError,
+            ErrorReport,
+            ProviderError,
+            ProviderResponseError,
             http_client::Error as HttpError,
         };
 
-        use crate::Error::*;
-
         let shapes = |status: u16, body: &str| {
             let status = StatusCode::from_u16(status).expect("valid status");
+            let provider =
+                ProviderError::ProviderResponse(ProviderResponseError::new(status, body));
             [
-                RigPrompt(PromptError::CompletionError(CompletionError::HttpError(
-                    HttpError::InvalidStatusCodeWithMessage(status, body.to_owned()),
-                ))),
-                RigPrompt(PromptError::CompletionError(CompletionError::HttpError(
-                    HttpError::InvalidStatusCodeWithDetails {
-                        status,
-                        body: body.to_owned(),
-                        headers: Box::new(http::HeaderMap::new()),
-                    },
-                ))),
-                RigPrompt(PromptError::CompletionError(
-                    CompletionError::from_http_response_with_request_id(status, body, None),
-                )),
+                crate::Error::from(HttpError::InvalidStatusCodeWithDetails {
+                    status,
+                    body: body.to_owned(),
+                    headers: http::HeaderMap::new(),
+                }),
+                crate::Error::from(PromptError::Report(ErrorReport::from(&provider))),
+                crate::Error::from(PromptError::Provider(provider)),
             ]
         };
 

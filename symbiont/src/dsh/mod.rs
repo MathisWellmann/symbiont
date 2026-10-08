@@ -97,59 +97,42 @@ fn millis_of(duration: Duration) -> u64 {
 }
 
 /// One completion call's token accounting as a harness `TokenUsage`, or
-/// `None` when the provider reported nothing.
+/// `None` when the provider reported neither an input nor an output count.
 ///
-/// Rig documents all-zero [`Usage`] as its sentinel for missing provider
-/// metrics and does not distinguish that from a genuine all-zero report, so
-/// an empty record becomes an absent one rather than a measured zero.
+/// Rig marks a counter the provider did not send as `None` and a reported
+/// zero as `Some(0)`, so the optional harness counts pass through as they
+/// are: "unreported" never reads as "no cache hits".
 ///
 /// The harness defines its counts as **disjoint** — billed input is
 /// `inputTokens + cacheReadTokens + cacheWriteTokens` — so the cached tokens
-/// are taken out of the input count where rig's provider folded them in
-/// (see [`uncached_input`]). A cache count of zero stays absent: most
-/// providers do not report cache activity at all, and "unreported" must not
-/// read as "no hits".
+/// are taken out of the input count (see [`uncached_input`]).
 fn token_usage(usage: &Usage) -> Option<TokenUsage> {
-    if usage.input_tokens == 0 && usage.output_tokens == 0 && usage.reasoning_tokens == 0 {
+    if usage.input_tokens.is_none() && usage.output_tokens.is_none() {
         return None;
     }
 
-    let reported = |count: u64| (count > 0).then_some(count);
     Some(TokenUsage {
         input_tokens: uncached_input(usage),
-        output_tokens: usage.output_tokens,
-        cache_read_tokens: reported(usage.cached_input_tokens),
-        cache_write_tokens: reported(usage.cache_creation_input_tokens),
-        reasoning_tokens: reported(usage.reasoning_tokens),
+        output_tokens: usage.output_tokens.unwrap_or_default(),
+        cache_read_tokens: usage.cached_input_tokens,
+        cache_write_tokens: usage.cache_creation_input_tokens,
+        reasoning_tokens: usage.reasoning_tokens,
     })
 }
 
 /// The input tokens of `usage` that were not served from or written to the
 /// provider's cache.
 ///
-/// Rig leaves the convention to the provider. OpenAI-compatible APIs
-/// (OpenAI, sglang, vLLM) fold cache hits into the prompt count, and their
-/// total is prompt plus completion. Anthropic reports the uncached input
-/// alone, and rig's total adds the cache counts on top of it. The total tells
-/// the two apart; without one, a cache count no larger than the input is
-/// read as folded in, the convention of every OpenAI-compatible server.
+/// Rig's [`Usage`] contract counts cache reads and writes inside
+/// `input_tokens` on every provider, so they are subtracted. Saturating: the
+/// counts come from the provider, and one that breaks the contract must not
+/// take the export down.
 fn uncached_input(usage: &Usage) -> u64 {
     let cache = usage
         .cached_input_tokens
-        .saturating_add(usage.cache_creation_input_tokens);
-    if cache == 0 {
-        return usage.input_tokens;
-    }
-    let disjoint_total = usage
-        .input_tokens
-        .saturating_add(cache)
-        .saturating_add(usage.output_tokens);
-    let already_disjoint = usage.total_tokens == disjoint_total || cache > usage.input_tokens;
-    if already_disjoint {
-        usage.input_tokens
-    } else {
-        usage.input_tokens - cache
-    }
+        .unwrap_or_default()
+        .saturating_add(usage.cache_creation_input_tokens.unwrap_or_default());
+    usage.input_tokens.unwrap_or_default().saturating_sub(cache)
 }
 
 #[cfg(test)]
@@ -161,13 +144,10 @@ pub(super) mod tests {
         message::{
             AssistantContent,
             Message,
-            Text,
             ToolCall,
-            ToolCallId,
             ToolFunction,
-            ToolResult,
+            ToolName,
             ToolResultContent,
-            UserContent,
         },
     };
     use serde_json::{
@@ -206,32 +186,19 @@ pub(super) mod tests {
     /// A lane that called a tool, failed to compile, self-healed and then
     /// registered — the shape every field of the exporter has to survive.
     pub(super) fn sample_trace() -> EvolutionTrace {
-        let call_id = ToolCallId::new("call_1").expect("a non-empty id");
+        let call = ToolCall::from_wire(
+            "call_1",
+            ToolFunction::new(
+                ToolName::new("api_index").expect("a non-empty name"),
+                json!({ "path": "prelude" }),
+            ),
+        );
         let history = vec![
             Message::user("write a sort"),
-            Message::Assistant {
-                id: None,
-                content: vec![AssistantContent::ToolCall(ToolCall {
-                    id: call_id.clone(),
-                    provider: None,
-                    function: ToolFunction {
-                        name: "api_index".to_string(),
-                        arguments: json!({ "path": "prelude" }),
-                    },
-                    signature: None,
-                    additional_params: None,
-                })],
-            },
-            Message::User {
-                content: vec![UserContent::ToolResult(ToolResult {
-                    call: call_id,
-                    provider: None,
-                    name: "api_index".to_string(),
-                    content: vec![ToolResultContent::Text(Text::from(
-                        "pub fn sort(..)".to_string(),
-                    ))],
-                })],
-            },
+            Message::from(vec![AssistantContent::ToolCall(call.clone())]),
+            Message::tool_results(vec![
+                call.result(vec![ToolResultContent::text("pub fn sort(..)")]),
+            ]),
             Message::assistant("```rust\nfn sort() {}\n```"),
             Message::user("it did not compile: E0277"),
             Message::assistant("```rust\nfn sort() { /* fixed */ }\n```"),
@@ -312,22 +279,20 @@ pub(super) mod tests {
 
     /// A `Usage` that reports `input` prompt and `output` completion tokens.
     pub(crate) fn usage_of(input: u64, output: u64) -> Usage {
-        let mut usage = Usage::new();
-        usage.input_tokens = input;
-        usage.output_tokens = output;
-        usage.total_tokens = input + output;
-        usage
+        Usage::new()
+            .input_tokens(input)
+            .output_tokens(output)
+            .total_tokens(input + output)
     }
 
-    /// Rig reports all-zero usage when the provider reported nothing, so an
-    /// empty record must travel as an absent field rather than a measured
-    /// zero, and so must a cache count of zero.
+    /// A usage the provider did not report travels as an absent record, and
+    /// an unreported cache count as an absent field, never as a measured
+    /// zero.
     #[test]
     fn unreported_usage_and_unreported_cache_counts_are_absent() {
         assert_eq!(token_usage(&Usage::new()), None);
 
-        let mut usage = usage_of(10, 5);
-        usage.reasoning_tokens = 3;
+        let usage = usage_of(10, 5).reasoning_tokens(3);
         let mapped = token_usage(&usage).expect("a reported usage maps");
         assert_eq!(mapped.input_tokens, 10);
         assert_eq!(mapped.cache_read_tokens, None);
@@ -341,36 +306,46 @@ pub(super) mod tests {
         );
     }
 
-    /// An OpenAI-compatible server (sglang) counts cache hits inside the
-    /// prompt, and its total is prompt plus completion: the export takes them
-    /// out, so the harness's disjoint counts bill each token once.
+    /// A reported zero is a measurement: no cache hits, not "unknown".
     #[test]
-    fn cache_hits_folded_into_the_prompt_are_taken_out_of_the_input() {
-        let mut usage = usage_of(48_000, 300);
-        usage.cached_input_tokens = 46_500;
+    fn reported_zero_counts_stay_present() {
+        let usage = Usage::new()
+            .input_tokens(0)
+            .cached_input_tokens(0)
+            .cache_creation_input_tokens(0);
+        let mapped = token_usage(&usage).expect("a reported zero input maps");
+        assert_eq!(mapped.input_tokens, 0);
+        assert_eq!(mapped.output_tokens, 0);
+        assert_eq!(mapped.cache_read_tokens, Some(0));
+        assert_eq!(mapped.cache_write_tokens, Some(0));
+    }
+
+    /// Rig counts cache reads and writes inside the input on every provider:
+    /// the export takes them out, so the harness's disjoint counts bill each
+    /// token once.
+    #[test]
+    fn cache_counts_are_taken_out_of_the_input() {
+        let usage = usage_of(48_000, 300).cached_input_tokens(46_500);
         let mapped = token_usage(&usage).expect("a reported usage maps");
         assert_eq!(mapped.input_tokens, 1_500);
         assert_eq!(mapped.cache_read_tokens, Some(46_500));
         assert_eq!(mapped.cache_write_tokens, None);
-    }
 
-    /// Anthropic reports the uncached input alone and rig's total adds the
-    /// cache counts on top: those counts are already disjoint and pass as
-    /// they are.
-    #[test]
-    fn disjoint_cache_counts_pass_unchanged() {
-        let mut usage = usage_of(300, 50);
-        usage.cached_input_tokens = 7_000;
-        usage.cache_creation_input_tokens = 200;
-        usage.total_tokens = 300 + 7_000 + 200 + 50;
+        let usage = usage_of(7_500, 50)
+            .cached_input_tokens(7_000)
+            .cache_creation_input_tokens(200);
         let mapped = token_usage(&usage).expect("a reported usage maps");
         assert_eq!(mapped.input_tokens, 300);
         assert_eq!(mapped.cache_read_tokens, Some(7_000));
         assert_eq!(mapped.cache_write_tokens, Some(200));
+    }
 
-        // Without a total, a cache count larger than the input cannot be a
-        // part of it either.
-        usage.total_tokens = 0;
-        assert_eq!(uncached_input(&usage), 300);
+    /// A provider that breaks rig's contract (cache larger than the input)
+    /// yields zero uncached input instead of an underflow.
+    #[test]
+    fn cache_larger_than_the_input_saturates() {
+        let usage = usage_of(300, 50).cached_input_tokens(7_000);
+        assert_eq!(uncached_input(&usage), 0);
+        assert_eq!(uncached_input(&Usage::new()), 0);
     }
 }

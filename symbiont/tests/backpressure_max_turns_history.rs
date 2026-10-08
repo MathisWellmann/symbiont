@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 //! Backpressure integration test: a run that aborts inside the tool loop
-//! (rig `MaxTurnsError`) still produced messages before the abort, and the
+//! (rig `MaxTurns`) still produced messages before the abort, and the
 //! runtime recovers them into the retry history.
 //!
 //! Without the recovery, the retry request is byte-identical to the one that
@@ -66,10 +66,10 @@ async fn aborted_tool_run_messages_reach_the_retry() {
     let agent = ScriptedAgent::new([
         // Attempt 1: rig aborts the run after its tool exchanges and reports
         // the transcript it reached.
-        Turn::Fail(PromptError::MaxTurnsError {
+        Turn::Fail(PromptError::MaxTurns {
             max_turns: 3,
-            chat_history: Box::new(transcript.clone()),
-            prompt: Box::new(Message::user(BASE_PROMPT)),
+            chat_history: transcript.clone(),
+            prompt: Message::user(BASE_PROMPT),
         }),
         // Attempt 2: the retry sees the recovered tool results, so the model
         // can answer with the final code without further tool calls.
@@ -137,12 +137,12 @@ async fn aborted_tool_run_messages_reach_the_retry() {
         Turn::reply("oops, no code block here"),
         // Attempt 2: rig aborts the tool loop; the error transcript is the
         // two-message input plus the run's three messages.
-        Turn::Fail(PromptError::MaxTurnsError {
+        Turn::Fail(PromptError::MaxTurns {
             max_turns: 3,
-            chat_history: Box::new(transcript_mid.clone()),
-            prompt: Box::new(Message::user(
+            chat_history: transcript_mid.clone(),
+            prompt: Message::user(
                 "nudge: You exhausted the tool-call turn budget before producing code.",
-            )),
+            ),
         }),
         // Attempt 3: final code, recovered.
         Turn::reply(

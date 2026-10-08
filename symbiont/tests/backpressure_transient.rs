@@ -21,10 +21,7 @@ use common::{
 };
 use rig_agent::completion::PromptError;
 use rig_core::{
-    completion::{
-        CompletionError,
-        Usage,
-    },
+    completion::Usage,
     message::Message,
 };
 use symbiont::{
@@ -90,7 +87,7 @@ async fn transient_http_error_is_retried_with_unmodified_prompt() {
 }
 
 fn connection_reset() -> PromptError {
-    PromptError::CompletionError(CompletionError::HttpError(
+    PromptError::Provider(rig_core::ProviderError::from(
         rig_core::http_client::Error::Instance(Box::new(std::io::Error::other(
             "simulated connection reset",
         ))),
@@ -100,9 +97,7 @@ fn connection_reset() -> PromptError {
 /// The failed run had one answered turn (a tool call and its result) before
 /// the endpoint went away.
 async fn partial_run_is_kept(rt: &Runtime) {
-    let mut usage = Usage::new();
-    usage.input_tokens = 1200;
-    usage.output_tokens = 40;
+    let usage = Usage::new().input_tokens(1200).output_tokens(40);
     let produced = vec![
         Message::user(BASE_PROMPT),
         Message::assistant("let me look that up"),
@@ -114,7 +109,7 @@ async fn partial_run_is_kept(rt: &Runtime) {
             PartialRun {
                 new_messages: produced.clone(),
                 usage,
-                completion_calls: vec![CompletionCall::new(0, usage)],
+                completion_calls: vec![CompletionCall::new(0, usage, serde_json::Value::Null)],
                 timings: symbiont::RunTimings::default(),
             },
         ),
@@ -152,5 +147,5 @@ async fn partial_run_is_kept(rt: &Runtime) {
     assert_eq!(failed.completion_calls().len(), 1);
     assert_eq!(*failed.produced(), 0..3);
     assert!(failed.response().is_empty());
-    assert_eq!(trace.usage().input_tokens, 1200);
+    assert_eq!(trace.usage().input_tokens, Some(1200));
 }

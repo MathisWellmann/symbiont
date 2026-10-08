@@ -13,8 +13,10 @@ use std::{
     time::Duration,
 };
 
-use rig_agent::client::AgentClientExt;
-use rig_core::providers::openrouter;
+use rig_core::providers::openai::{
+    OpenAIConfig,
+    wire::OPENROUTER,
+};
 use rig_reqwest::{
     ReqwestClient,
     reqwest,
@@ -112,9 +114,10 @@ pub const DOC_TOOLS_MAX_TURNS: usize = 50;
 /// Rig drives the tool-calling loop internally during [`crate::Runtime::evolve`].
 /// When `doc_mode` registers the documentation tools, the builder gets a
 /// `default_max_turns` of [`DOC_TOOLS_MAX_TURNS`]. When you register your own
-/// tools, set `.default_max_turns(n)` with room for both: rig's default of
-/// `0` allows only a single tool round-trip and returns `MaxTurnsError` if
-/// the model chains tool calls.
+/// tools, set `.default_max_turns(n)` with room for both: the budget counts
+/// every model call of a run, and rig's default of `1` allows only the first,
+/// so the run returns `PromptError::MaxTurns` as soon as the model calls a
+/// tool.
 ///
 /// The builder builds a bare `rig_agent::Agent`. Before handing it to the
 /// runtime, wrap it with [`crate::Agent::new`], passing the same `base_url`.
@@ -147,25 +150,24 @@ pub async fn agent_builder(
     model: &str,
     thinking: impl Into<ThinkingLevel>,
 ) -> Result<crate::AgentBuilder> {
-    let client = openrouter::Client::builder()
-        .api_key(api_key)
-        .base_url(base_url)
-        // Replaces rig's default backend with the same `reqwest::Client`,
-        // wrapped so every outbound prompt payload is measured
+    // The OpenRouter dialect of rig's OpenAI-shaped client: it is the one
+    // that speaks the `/v1/chat/completions` of vLLM and llama-server too.
+    let client = OpenAIConfig::with_key(&OPENROUTER, api_key)
+        .with_base_url(base_url)
+        // Replaces rig's shared backend with a `reqwest::Client` that has a
+        // deadline, wrapped so every outbound prompt payload is measured
         // (`observability::REQUEST_BODY_BYTES`).
-        .http_client(MeteredHttpClient::new(ReqwestClient(
+        .connect(MeteredHttpClient::new(ReqwestClient::from(
             reqwest::Client::builder()
                 .timeout(INFERENCE_REQUEST_TIMEOUT)
                 .build()
                 .map_err(std::io::Error::other)?,
-        )))
-        .build()?;
+        )));
 
     let system_prompt = crate::system_prompt::system_prompt(opt_crate_name, doc_mode).await?;
     let thinking_level: ThinkingLevel = thinking.into();
 
-    let builder = client
-        .agent(model)
+    let builder = rig_agent::AgentBuilder::new(client.chat(model))
         .preamble(&system_prompt)
         .additional_params(thinking_level.to_additional_params());
 

@@ -13,7 +13,7 @@ use getset::CopyGetters;
 use rig_core::message::{
     AssistantContent,
     Message as RigMessage,
-    ReasoningContent,
+    ToolFunction,
     ToolResultContent,
     UserContent,
 };
@@ -174,15 +174,16 @@ impl Log {
                                 UserContent::ToolResult(result) => {
                                     // The harness measures a tool as
                                     // `tool/call` to `tool/result`.
-                                    if let Some(tool) = timings
-                                        .and_then(|timings| timings.tool(result.call.as_str()))
+                                    let call_id = result.call.wire();
+                                    if let Some(tool) =
+                                        timings.and_then(|timings| timings.tool(&call_id))
                                     {
                                         self.advance_to(at(tool.finished));
                                     }
                                     self.tool_result(
                                         turn,
                                         step,
-                                        result.call.as_str(),
+                                        &call_id,
                                         result.content.iter().map(tool_result_block).collect(),
                                     );
                                 }
@@ -190,7 +191,7 @@ impl Log {
                             }
                         }
                     }
-                    RigMessage::Assistant { content, .. } => {
+                    RigMessage::Assistant(assistant) => {
                         let call_timing = timings.and_then(|timings| timings.calls.get(call_index));
                         // One step is one model call plus the tool executions
                         // it asked for. A second assistant turn opens the next
@@ -216,7 +217,7 @@ impl Log {
                         }
 
                         let blocks: Vec<ContentBlock> =
-                            content.iter().map(assistant_block).collect();
+                            assistant.content.iter().map(assistant_block).collect();
                         // One completion call per assistant turn, in order, so
                         // the step's own token accounting travels with the
                         // message the harness folds it out of.
@@ -228,14 +229,14 @@ impl Log {
                         call_index += 1;
                         self.assistant_message(turn, step, trace, blocks, usage);
 
-                        for item in content.iter() {
+                        for item in &assistant.content {
                             if let AssistantContent::ToolCall(call) = item {
                                 let event = self.event(ToolCallData {
                                     turn,
                                     step,
                                     call_id: call.id.to_string(),
-                                    name: call.function.name.clone(),
-                                    arguments: call.function.arguments.to_string(),
+                                    name: call.function.name.to_string(),
+                                    arguments: raw_arguments(&call.function),
                                 });
                                 self.lines.push(LogLine::ToolCall(event));
                             }
@@ -550,28 +551,25 @@ fn assistant_block(content: &AssistantContent) -> ContentBlock {
         Text(text) => ContentBlock::Text {
             text: text.text.clone(),
         },
+        // A redacted block has no text; encrypted payloads live in `native`
+        // and carry nothing readable.
         Reasoning(reasoning) => ContentBlock::Reasoning {
-            text: reasoning
-                .content
-                .iter()
-                .filter_map(|item| match item {
-                    ReasoningContent::Text { text, .. } => Some(text.as_str()),
-                    ReasoningContent::Summary(summary) => Some(summary.as_str()),
-                    // Opaque provider payloads carry no readable text.
-                    ReasoningContent::Encrypted(_) | ReasoningContent::Redacted { .. } => None,
-                })
-                .collect(),
+            text: reasoning.text.clone(),
         },
         ToolCall(call) => ContentBlock::ToolCall {
             id: call.id.to_string(),
-            name: call.function.name.clone(),
-            // The harness wants the model's raw argument JSON, as a string.
-            arguments: call.function.arguments.to_string(),
+            name: call.function.name.to_string(),
+            arguments: raw_arguments(&call.function),
         },
         // A harness image block references an attachment the harness owns, so
         // an image out of a rig transcript has no faithful counterpart.
         Image(_) => ContentBlock::Text {
             text: "[image omitted]".to_string(),
+        },
+        // `Opaque` is a provider item only that provider can read back, and
+        // the enum is non-exhaustive: neither has readable text.
+        _ => ContentBlock::Text {
+            text: "[provider item omitted]".to_string(),
         },
     }
 }
@@ -629,9 +627,19 @@ fn outcome_notice(trace: &EvolutionTrace) -> String {
         trace.duration(),
         trace.attempts().len(),
         trace.completion_calls(),
-        usage.input_tokens,
-        usage.output_tokens,
+        usage.input_tokens.unwrap_or_default(),
+        usage.output_tokens.unwrap_or_default(),
     )
+}
+
+/// The model's argument JSON for a tool call, as a string: what the harness
+/// records. Arguments that were not a JSON object are kept verbatim, so the
+/// log shows what the model actually sent.
+fn raw_arguments(function: &ToolFunction) -> String {
+    function
+        .invalid_arguments
+        .clone()
+        .unwrap_or_else(|| function.arguments_value().to_string())
 }
 
 /// Why the turn of `ladder` ended, in the harness's vocabulary.

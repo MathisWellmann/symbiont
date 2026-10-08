@@ -22,11 +22,10 @@ use symbiont::{
 const BASE_PROMPT: &str = "Implement the function. Code only.";
 
 fn usage(input: u64, output: u64) -> Usage {
-    let mut usage = Usage::new();
-    usage.input_tokens = input;
-    usage.output_tokens = output;
-    usage.total_tokens = input + output;
-    usage
+    Usage::new()
+        .input_tokens(input)
+        .output_tokens(output)
+        .total_tokens(input + output)
 }
 
 #[tokio::test]

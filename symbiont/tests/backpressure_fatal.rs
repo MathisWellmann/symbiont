@@ -15,7 +15,6 @@ use common::{
     Turn,
 };
 use rig_agent::completion::PromptError;
-use rig_core::completion::CompletionError;
 use symbiont::{
     Error,
     Profile,
@@ -42,8 +41,8 @@ async fn fatal_agent_error_propagates_without_retry() {
 
     // A provider error is neither transient nor self-healable by prompt
     // feedback, so evolve must give up immediately.
-    let agent = ScriptedAgent::new([Turn::Fail(PromptError::CompletionError(
-        CompletionError::ProviderError("simulated provider failure".to_string()),
+    let agent = ScriptedAgent::new([Turn::Fail(PromptError::Provider(
+        rig_core::ProviderError::Provider("simulated provider failure".to_string()),
     ))]);
 
     let err = rt
