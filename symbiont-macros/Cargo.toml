@@ -3,12 +3,12 @@ authors = ["MathisWellmann <wellmannmathis@gmail.com>"]
 categories = ["artificial-intelligence"]
 description = "Proc macros for symbiont hot-reloadable function declarations."
 edition = "2024"
+homepage = "https://symbiont.rs"
 keywords = ["agent", "dylib", "dynamic", "harness", "llm"]
 license = "MPL-2.0"
 name = "symbiont-macros"
 repository = "https://github.com/MathisWellmann/symbiont"
 version.workspace = true
-website = "https://symbiont.rs"
 
 [lints]
 workspace = true

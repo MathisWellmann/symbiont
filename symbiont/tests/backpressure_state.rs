@@ -4,6 +4,10 @@
 //! compiling, the reason is fed back, and the agent recovers.
 //!
 //! One test per binary: [`symbiont::Runtime`] is a process-wide singleton.
+#![expect(
+    unused_crate_dependencies,
+    reason = "Integration tests don't use them all"
+)]
 
 mod common;
 
