@@ -66,6 +66,11 @@ pub enum Error {
         reason: String,
     },
 
+    /// The `evolvable!` block declares `type State`, and the candidate does
+    /// not define it as the harness needs.
+    #[error("Invalid `State` in evolvable code: {reason}")]
+    InvalidState { code: String, reason: String },
+
     #[error("Function `{fn_name}` is not implemented: {reason}")]
     UnimplementedFunction {
         code: String,
@@ -246,6 +251,11 @@ impl Error {
                 "nudge: Your generated code contains {construct}, which is forbidden in evolvable code: {reason}.\n
                 Rewrite the code without it, keeping the logic and the function signatures unchanged if possible.",
             ).expect("Can write to prompt"),
+            InvalidState { code: _, reason } => write!(prompt,
+                "nudge: The required functions take a `State` that your code defines and that \
+                lives between calls, but {reason}.\n\
+                Keep the logic and the function signatures unchanged.",
+            ).expect("Can write to prompt"),
             UnimplementedFunction { code, fn_name, reason } => write!(prompt,
                 "nudge: Your generated code leaves `fn {fn_name}` unimplemented: {reason}.\n
                 A stub or the unchanged default body is not an evolution.\n
@@ -285,6 +295,7 @@ impl Error {
             | SignatureMismatch { code, .. }
             | UnsafeCode { code, .. }
             | ForbiddenConstruct { code, .. }
+            | InvalidState { code, .. }
             | UnimplementedFunction { code, .. }
             | CompilationFailed { code, .. } => Some(code),
             _ => None,

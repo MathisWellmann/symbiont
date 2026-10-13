@@ -250,6 +250,197 @@ fn normalize_arg_idents(
         .collect()
 }
 
+/// The name of the state type a declared `type State` asks the agent for.
+const STATE_IDENT: &str = "State";
+
+/// With a declared `type State`, check that the candidate defines it the
+/// way the generated glue can use it, before any compile:
+///
+/// - exactly once, at the crate root, as a `struct`, `enum` or `type` alias:
+///   the glue names it as `super::State` from a child module of the root;
+/// - nowhere else, not in a nested module, a function body or an import
+///   (`use .. as State`): two `State`s make the code and the feedback
+///   ambiguous, and the compiler's errors about them point into the glue;
+/// - a `struct` or `enum` derives `Default` or implements it at the root.
+///   A `type` alias is left to the compiler, which checks the declared
+///   bounds on whatever it names.
+///
+/// Signatures need nothing extra: they are compared token by token, and
+/// `State` is a plain path there, the opaque declared type.
+pub(crate) fn check_state_definition(file: &syn::File) -> Result<()> {
+    let invalid = |reason: String| Error::InvalidState {
+        code: unparse(file),
+        reason,
+    };
+    let mut root = Vec::new();
+    for item in &file.items {
+        match item {
+            syn::Item::Struct(s) if s.ident == STATE_IDENT => root.push(("struct", item)),
+            syn::Item::Enum(e) if e.ident == STATE_IDENT => root.push(("enum", item)),
+            syn::Item::Type(t) if t.ident == STATE_IDENT => root.push(("type alias", item)),
+            _ => {}
+        }
+    }
+    let mut nested = NestedState::default();
+    for item in &file.items {
+        nested.visit_root_item(item);
+    }
+    if let Some(found) = nested.found {
+        return Err(invalid(format!(
+            "{found}. Define `State` only once, at the top level of your code, and do not \
+             import or nest another item named `State`"
+        )));
+    }
+    let [(kind, item)] = root.as_slice() else {
+        return Err(invalid(if root.is_empty() {
+            "your code does not define `State`. Define it at the top level, e.g. \
+             `#[derive(Default)] struct State { .. }`, with the fields your functions keep \
+             between calls (an empty `struct State;` if they need none)"
+                .to_string()
+        } else {
+            format!(
+                "your code defines `State` {} times at the top level. Define it exactly once",
+                root.len()
+            )
+        }));
+    };
+    let derives_default = match item {
+        syn::Item::Struct(s) => derives(&s.attrs, "Default"),
+        syn::Item::Enum(e) => derives(&e.attrs, "Default"),
+        _ => true,
+    };
+    if !derives_default && !implements_default(file) {
+        return Err(invalid(format!(
+            "your `{kind} State` neither derives nor implements `Default`, which the harness uses \
+             to create a fresh state for every run. Add `#[derive(Default)]` (for an enum, mark \
+             the default variant with `#[default]`) or `impl Default for State`"
+        )));
+    }
+    Ok(())
+}
+
+/// Whether `attrs` hold a `#[derive(.., name, ..)]`.
+fn derives(attrs: &[syn::Attribute], name: &str) -> bool {
+    attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident("derive"))
+        .any(|attr| {
+            let mut found = false;
+            // A malformed derive is the compiler's to report.
+            let _ = attr.parse_nested_meta(|meta| {
+                found |= meta.path.segments.last().is_some_and(|s| s.ident == name);
+                Ok(())
+            });
+            found
+        })
+}
+
+/// Whether the crate root holds an `impl Default for State`.
+fn implements_default(file: &syn::File) -> bool {
+    file.items.iter().any(|item| {
+        let syn::Item::Impl(imp) = item else {
+            return false;
+        };
+        let Some((path, _)) = &imp.trait_ else {
+            return false;
+        };
+        let is_state = matches!(
+            imp.self_ty.as_ref(),
+            Type::Path(p) if p.qself.is_none() && p.path.is_ident(STATE_IDENT)
+        );
+        is_state && path.segments.last().is_some_and(|s| s.ident == "Default")
+    })
+}
+
+/// Finds an item named `State` that is not one of the root definitions:
+/// inside a module or a block, or brought in by a `use`.
+#[derive(Default)]
+struct NestedState {
+    found: Option<String>,
+}
+
+impl NestedState {
+    /// Visit a root item: its own name is a root definition, everything
+    /// inside it is nested.
+    fn visit_root_item(&mut self, item: &syn::Item) {
+        let other_kind = match item {
+            syn::Item::Mod(m) if m.ident == STATE_IDENT => Some("module"),
+            syn::Item::Trait(t) if t.ident == STATE_IDENT => Some("trait"),
+            syn::Item::Union(u) if u.ident == STATE_IDENT => Some("union"),
+            _ => None,
+        };
+        if let Some(kind) = other_kind {
+            self.record(format!("your code defines another `{kind} State`"));
+        }
+        match item {
+            syn::Item::Use(u) => self.visit_item_use(u),
+            other => visit::visit_item(self, other),
+        }
+    }
+
+    fn record(&mut self, what: String) {
+        self.found.get_or_insert(what);
+    }
+}
+
+impl<'ast> Visit<'ast> for NestedState {
+    fn visit_item(&mut self, node: &'ast syn::Item) {
+        let ident = match node {
+            syn::Item::Struct(s) => Some(("struct", &s.ident)),
+            syn::Item::Enum(e) => Some(("enum", &e.ident)),
+            syn::Item::Type(t) => Some(("type alias", &t.ident)),
+            syn::Item::Union(u) => Some(("union", &u.ident)),
+            syn::Item::Trait(t) => Some(("trait", &t.ident)),
+            syn::Item::Mod(m) => Some(("module", &m.ident)),
+            _ => None,
+        };
+        if let Some((kind, ident)) = ident
+            && ident == STATE_IDENT
+        {
+            self.record(format!(
+                "your code defines another `{kind} State` inside a module or a function"
+            ));
+        }
+        visit::visit_item(self, node);
+    }
+
+    fn visit_item_use(&mut self, node: &'ast syn::ItemUse) {
+        let mut prefix = Vec::new();
+        self.check_use_tree(&node.tree, &mut prefix);
+    }
+}
+
+impl NestedState {
+    /// Record an import that brings another item into scope as `State`.
+    /// `use super::State` and `use crate::State` name the root definition
+    /// and are fine.
+    fn check_use_tree(&mut self, tree: &syn::UseTree, prefix: &mut Vec<String>) {
+        match tree {
+            syn::UseTree::Path(path) => {
+                prefix.push(path.ident.to_string());
+                self.check_use_tree(&path.tree, prefix);
+                prefix.pop();
+            }
+            syn::UseTree::Name(name) if name.ident == STATE_IDENT => {
+                let to_root = !prefix.is_empty()
+                    && (*prefix == ["crate"] || prefix.iter().all(|segment| segment == "super"));
+                if !to_root {
+                    self.record(format!("your code imports `{}::State`", prefix.join("::")));
+                }
+            }
+            syn::UseTree::Rename(rename) if rename.rename == STATE_IDENT => {
+                self.record(format!("your code imports `{} as State`", rename.ident));
+            }
+            syn::UseTree::Group(group) => {
+                for item in &group.items {
+                    self.check_use_tree(item, prefix);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Path prefixes that are always denied, independent of
 /// [`crate::DylibConfig`]: replacing the panic hook would break the
 /// harness's panic-reporting protocol — the injected preamble owns the
@@ -1413,5 +1604,144 @@ pub fn step(counter: &mut usize) -> usize {
             syn::parse_str("pub fn step(counter: &mut usize) { let _ = std::panic::take_hook(); }")
                 .expect("can parse");
         enforce_code_policy(&file, &[]).expect_err("hook tampering is always denied");
+    }
+
+    /// The reason `check_state_definition` rejects `code` with.
+    fn state_rejection(code: &str) -> String {
+        let file: syn::File = syn::parse_str(code).expect("can parse");
+        match check_state_definition(&file).expect_err("must be rejected") {
+            Error::InvalidState { reason, .. } => reason,
+            other => panic!("expected Error::InvalidState, got {other}"),
+        }
+    }
+
+    fn accepts_state(code: &str) {
+        let file: syn::File = syn::parse_str(code).expect("can parse");
+        check_state_definition(&file).expect("valid State");
+    }
+
+    const STEP: &str = "fn step(state: &mut State) { let _ = state; }";
+
+    #[test]
+    fn state_definitions_that_work() {
+        accepts_state(&format!(
+            "#[derive(Default)] struct State {{ n: usize }} {STEP}"
+        ));
+        accepts_state(&format!(
+            "#[derive(Debug, Default, Clone)] struct State; {STEP}"
+        ));
+        accepts_state(&format!(
+            "#[derive(core::default::Default)] pub struct State(u8); {STEP}"
+        ));
+        accepts_state(&format!(
+            "#[derive(Default)] enum State {{ #[default] Flat, Long(f64) }} {STEP}"
+        ));
+        accepts_state(&format!(
+            "struct State {{ n: usize }} impl Default for State {{ fn default() -> Self {{ Self {{ n: 3 }} }} }} {STEP}"
+        ));
+        // An alias is the compiler's to check against the bounds.
+        accepts_state(&format!("type State = Vec<f64>; {STEP}"));
+        // A helper module may name the root definition.
+        accepts_state(&format!(
+            "#[derive(Default)] struct State; mod helpers {{ use super::State; pub fn f(_: &State) {{}} }} {STEP}"
+        ));
+        accepts_state(&format!(
+            "#[derive(Default)] struct State; mod a {{ mod b {{ use super::super::State; use crate::State as S; }} }} {STEP}"
+        ));
+    }
+
+    #[test]
+    fn a_missing_state_is_rejected() {
+        let reason = state_rejection(STEP);
+        assert!(reason.contains("does not define `State`"), "{reason}");
+        assert!(
+            reason.contains("#[derive(Default)] struct State"),
+            "{reason}"
+        );
+    }
+
+    #[test]
+    fn a_state_without_default_is_rejected() {
+        let reason = state_rejection(&format!(
+            "#[derive(Debug)] struct State {{ n: usize }} {STEP}"
+        ));
+        assert!(
+            reason.contains("neither derives nor implements `Default`"),
+            "{reason}"
+        );
+        let reason = state_rejection(&format!("enum State {{ A, B }} {STEP}"));
+        assert!(reason.contains("`enum State`"), "{reason}");
+        assert!(reason.contains("#[default]"), "{reason}");
+        // `Default` for some other type does not count.
+        let reason = state_rejection(&format!(
+            "struct State; struct Other; impl Default for Other {{ fn default() -> Self {{ Other }} }} {STEP}"
+        ));
+        assert!(
+            reason.contains("neither derives nor implements"),
+            "{reason}"
+        );
+    }
+
+    #[test]
+    fn a_duplicate_state_is_rejected() {
+        let reason = state_rejection(&format!(
+            "#[derive(Default)] struct State; #[derive(Default)] enum State {{ #[default] A }} {STEP}"
+        ));
+        assert!(reason.contains("defines `State` 2 times"), "{reason}");
+    }
+
+    #[test]
+    fn a_nested_state_is_rejected() {
+        for (code, needle) in [
+            (
+                "#[derive(Default)] struct State; mod inner { #[derive(Default)] pub struct State; }",
+                "another `struct State`",
+            ),
+            (
+                "mod inner { #[derive(Default)] pub struct State; } use inner::State;",
+                "another `struct State`",
+            ),
+            (
+                "#[derive(Default)] struct State; fn helper() { struct State; }",
+                "another `struct State`",
+            ),
+            (
+                "#[derive(Default)] struct State; mod State {}",
+                "another `module State`",
+            ),
+            (
+                "#[derive(Default)] struct State; mod m { use std::vec::Vec as State; }",
+                "imports `Vec as State`",
+            ),
+            (
+                "#[derive(Default)] struct State; mod m { use other::State; }",
+                "imports `other::State`",
+            ),
+            (
+                "use std::collections::BTreeMap as State;",
+                "imports `BTreeMap as State`",
+            ),
+        ] {
+            let reason = state_rejection(&format!("{code} {STEP}"));
+            assert!(reason.contains(needle), "{code}: {reason}");
+            assert!(
+                reason.contains("only once, at the top level"),
+                "{code}: {reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_signature_compares_state_as_an_opaque_type() {
+        let file: syn::File =
+            syn::parse_str(&format!("#[derive(Default)] struct State; {STEP}")).expect("can parse");
+        let expected = vec!["fn step(state: &mut State)".to_string()];
+        validate_generated_ast(&file, &expected, &denied()).expect("matches");
+        let shared: syn::File =
+            syn::parse_str("#[derive(Default)] struct State; fn step(state: &State) {}")
+                .expect("can parse");
+        let err = validate_generated_ast(&shared, &expected, &denied())
+            .expect_err("`&State` is not `&mut State`");
+        assert!(matches!(err, Error::SignatureMismatch { .. }), "{err}");
     }
 }

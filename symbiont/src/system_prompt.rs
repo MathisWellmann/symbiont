@@ -187,6 +187,15 @@ Avoid:
 Static state inside the dynamic library is reset on every reload and should
 not be relied on.
 
+If a required function takes `state: &mut State` (or `&State`), you define
+`State` and the harness keeps one value of it per run, passed to every
+call. Define it exactly once at the top level, with `Default`, e.g.
+`#[derive(Default)] struct State { calls: usize }`; the harness creates a
+fresh run's state with `State::default()`. Use it for what must survive
+between calls (cooldowns, counters, your own estimators). Keep it bounded:
+fixed-size arrays or containers you trim, not a `Vec` that grows on every
+call.
+
 Respect explicit `len` arguments. Usually process only the first `len`
 elements and guard against `len > slice.len()` when appropriate.
 
