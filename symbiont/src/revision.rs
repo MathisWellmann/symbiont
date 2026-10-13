@@ -32,7 +32,17 @@ use crate::{
     Error,
     EvolvableDecl,
     Result,
+    layout::state_decl,
     runtime::TAKE_PANIC_PTR,
+    state::{
+        DROP_SYMBOL,
+        DropFn,
+        NEW_SYMBOL,
+        NewFn,
+        State,
+        TAG_SYMBOL,
+        TagFn,
+    },
 };
 
 /// Identifier of a successfully compiled, loaded, and registered dylib revision.
@@ -76,7 +86,7 @@ impl fmt::Display for Revision {
 ///
 /// The entry is dropped once the registry has released it
 /// ([`crate::Runtime::unload_revision`]) and the last [`RevisionFn`] handle
-/// pinning it is gone. Dropping unmaps the library and deletes its
+/// and [`crate::State`] pinning it are gone. Dropping unmaps the library and deletes its
 /// versioned file, in that order — Windows refuses to delete a mapped DLL.
 pub(crate) struct RevisionEntry {
     /// Keeps the mapped library alive for as long as this entry exists. As
@@ -92,9 +102,19 @@ pub(crate) struct RevisionEntry {
     fn_ptrs: Box<[*const ()]>,
     /// This revision's `__symbiont_take_panic` symbol.
     take_panic: *const (),
+    /// This revision's state protocol, if the declarations have a state.
+    state_fns: Option<StateFns>,
     /// The candidate this revision was compiled from: the agent's code as
     /// written, without the harness glue. Suitable for prompts and display.
     source: String,
+}
+
+/// The state symbols of one revision; see [`crate::state`].
+#[derive(Clone, Copy)]
+struct StateFns {
+    new: NewFn,
+    drop: DropFn,
+    tag: TagFn,
 }
 
 // SAFETY: The raw pointers are symbol addresses inside `library`, which is
@@ -157,14 +177,51 @@ impl RevisionEntry {
             };
             (fn_ptrs.into_boxed_slice(), *take_panic)
         };
+        let state_fns = match state_decl(decls) {
+            None => None,
+            // SAFETY: the dylib was generated from `decls`, whose state makes
+            // the glue export these symbols with exactly these signatures.
+            Some(_) => Some(unsafe {
+                StateFns {
+                    new: std::mem::transmute::<*const (), NewFn>(symbol(&library, NEW_SYMBOL)?),
+                    drop: std::mem::transmute::<*const (), DropFn>(symbol(&library, DROP_SYMBOL)?),
+                    tag: std::mem::transmute::<*const (), TagFn>(symbol(&library, TAG_SYMBOL)?),
+                }
+            }),
+        };
 
         Ok(Self {
             library: ManuallyDrop::new(library),
             so_path,
             fn_ptrs,
             take_panic,
+            state_fns,
             source,
         })
+    }
+
+    /// A fresh `State::default()` of this revision, pinning `entry`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NoStateDeclared`] if the declarations have no state, and
+    /// [`Error::StateDefaultPanicked`] if the agent's `Default` panicked.
+    pub(crate) fn new_state(entry: &Arc<Self>, revision: Revision) -> Result<State> {
+        let Some(fns) = entry.state_fns else {
+            return Err(Error::NoStateDeclared);
+        };
+        let data = (fns.new)();
+        if data.is_null() {
+            let message = entry
+                .take_panic()
+                .unwrap_or_else(|| "no message".to_string());
+            return Err(Error::StateDefaultPanicked { revision, message });
+        }
+        let tag = (fns.tag)();
+        let pin: Arc<dyn Send + Sync> = Arc::clone(entry) as Arc<dyn Send + Sync>;
+        // SAFETY: `data` was just returned by this revision's constructor,
+        // `tag` and `drop` are the same dylib's, and `pin` keeps it mapped.
+        Ok(unsafe { State::from_raw_parts(data, tag, revision, fns.drop, pin) })
     }
 
     /// Publish this revision's pointers into the per-function dispatch
@@ -201,6 +258,24 @@ impl RevisionEntry {
         // is still loaded, and matches the exported protocol.
         unsafe { read_panic_buffer(self.take_panic) }
     }
+}
+
+/// The address of the exported symbol `name` in `library`.
+///
+/// # Safety
+///
+/// As [`Library::get`]: the caller must use the address with the symbol's
+/// real type.
+unsafe fn symbol(library: &Library, name: &str) -> Result<*const ()> {
+    let c_name = CString::new(name).expect("symbol names have no interior NUL bytes");
+    // SAFETY: the address is only read here, and used by the caller with the
+    // symbol's real type (caller contract).
+    let sym: Symbol<'_, *const ()> = unsafe {
+        library
+            .get(c_name.as_bytes_with_nul())
+            .map_err(|e| Error::DylibLoad(format!("symbol '{name}' not found: {e}")))?
+    };
+    Ok(*sym)
 }
 
 /// Call a dylib's `__symbiont_take_panic` through `ptr` and decode the result.

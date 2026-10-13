@@ -36,6 +36,7 @@ async fn runtime() {
         .await
         .expect("Can init");
     assert_eq!(&rt.fn_sigs(), &["fn step(counter: &mut usize)".to_string()]);
+    assert!(rt.state_source().is_none());
     assert_eq!(
         &rt.fn_full_sources(),
         &[FullSource(
@@ -69,6 +70,7 @@ async fn runtime() {
     assert_eq!(rt.active_revision(), revision);
     assert_eq!(rt.revision_count(), 2);
     assert_eq!(&rt.fn_sigs(), &["fn step(counter: &mut usize)".to_string()]);
+    assert!(rt.state_source().is_none());
     assert_eq!(
         &rt.fn_full_sources(),
         &[FullSource(
