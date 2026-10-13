@@ -91,7 +91,7 @@ An LLM evolves a futures **trading strategy** as compiled Rust against a realist
 
 - ~1M raw BitMEX XBTUSD trades are aggregated into information-driven **volume candles** with [trade_aggregation](https://crates.io/crates/trade_aggregation).
 - Executions are simulated with the leveraged futures exchange [lfest](https://crates.io/crates/lfest) — taker fees, bid-ask spread and margin requirements included.
-- The evolvable `fn decide(candles: &[Candle], account: &AccountState) -> Action` receives a sliding window of candles plus the account state and returns a market-order action.
+- The evolvable `fn decide(state: &mut State, candles: &[Candle], account: &AccountState) -> Action` receives its own `State`, a sliding window of candles and the account state, and returns a market-order action. The agent defines `State`, so a strategy can remember its entry, wait out a cooldown or keep its own estimators between candles.
 - Each round, the backtest report (return, buy & hold benchmark, drawdown, Sharpe, fees, rejected orders) is fed back to the LLM; the best strategy is evaluated on a **held-out test segment** it has never seen.
 
 The LLM must discover features (momentum, volatility, order flow), position sizing and fee-awareness — quantitative reasoning expressed as hot-swapped native code.
@@ -138,6 +138,14 @@ cargo run -p fractal-studio-example --release
   ensembles, tournaments, A/B comparisons — or mix functions from different revisions;
   handle calls dispatch at active-pointer speed.
   See the [evolving-trader-example](examples/evolving-trader/README.md)'s top-3 ensemble.
+- **Agent state between calls**:
+  Declare `type State: Default + Send + 'static;` in `evolvable!` and the agent defines
+  `#[derive(Default)] struct State { .. }` next to its functions, which take `state: &mut State`.
+  The host holds an opaque `symbiont::State` per run (`new_state(revision)`); the dylib allocates,
+  uses and drops the value, the export wrappers check that a state is passed only to the revision
+  that created it, and a live state pins its revision against `unload_revision`.
+  Candidates that do not define `State` correctly get feedback before any compile.
+  See [state.rs](symbiont/src/state.rs) and the [state test](symbiont/tests/state.rs).
 - **Batched evolution**:
   `evolve_batch` runs one lane per prompt concurrently — eight slightly different prompts, eight
   independent retry budgets, eight candidate implementations. Against a server that batches
@@ -287,6 +295,10 @@ These constraints arise from the binary/dylib interaction boundary. The harness 
   The LLM can only rewrite function *bodies* — the signature declared in `evolvable!` is fixed at compile time and enforced on every evolution.
   This is by design (it's what makes constrained generation possible), but it means the agent cannot add parameters, change return types, or introduce new functions at runtime.
   It would be UB to hot-swap a different function signature in, when the main binary expects a certain memory layout.
+- **State is per revision and not serializable**:
+  A `State` lives on its revision's heap and has that revision's layout, so it works only with that revision (a call with another revision's state aborts the process) and cannot be cloned, inspected or saved.
+  A restart, or a switch to another revision, starts from `State::default()`; a live system that needs warm state must replay its history first.
+  `static` items and `thread_local!` stay forbidden: they would be shared by every run of a revision and reset on every reload.
 - **Sequential feedback loop**:
   All evolvable function calls must have returned before `evolve()` or `activate_revision()` is called.
   Retained revisions are only unmapped by an explicit `unload_revision`, so a violating in-flight call executes stale but still-mapped code rather than UB — the contract remains so a swap cannot publish a torn set of pointers from two different revisions, and so an unload after a swap never unmaps code that is still running.

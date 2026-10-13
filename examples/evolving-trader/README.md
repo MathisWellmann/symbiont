@@ -12,12 +12,16 @@ combining two real-world crates:
 An evolvable
 
 ```rust
-fn decide(candles: &[Candle], account: &AccountState) -> Action
+fn decide(state: &mut State, candles: &[Candle], account: &AccountState) -> Action
 ```
 
-function receives a sliding window of the 50 most recent candles (OHLC, volume and the
-buy-volume ratio as an order-flow feature) plus the current account state, and returns an
-`Action` (`Hold`, `Buy { qty }` or `Sell { qty }`). Actions execute as **market orders** against
+function receives its own `State`, a sliding window of the 50 most recent candles (OHLC,
+volume and the buy-volume ratio as an order-flow feature) plus the current account state, and
+returns an `Action` (`Hold`, `Buy { qty }` or `Sell { qty }`). The LLM defines `State` itself
+(`#[derive(Default)] struct State { .. }`); every backtest starts from `State::default()` and
+keeps it between candles, so the strategy can remember when it entered, wait out a cooldown or
+keep its own running estimators. In the final ensemble every member gets a state of its own
+revision. Actions execute as **market orders** against
 the simulated exchange, whose top of book is driven via `Exchange::set_best_bid_and_ask` from
 each candle close ± half spread — a reasonable execution proxy for market orders: buys fill at
 the ask, sells at the bid, both pay the taker fee.

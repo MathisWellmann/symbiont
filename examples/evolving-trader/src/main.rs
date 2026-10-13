@@ -8,9 +8,12 @@
 //! futures exchange [`lfest`](https://crates.io/crates/lfest), including
 //! taker fees, spread and margin requirements.
 //!
-//! The evolvable `decide` function receives a sliding window of candles plus
-//! the current account state and returns an [`Action`] (hold / market buy /
-//! market sell). Each round the harness backtests the evolved strategy on the
+//! The evolvable `decide` function receives its own `State`, a sliding
+//! window of candles and the current account state, and returns an
+//! [`Action`] (hold / market buy / market sell). The agent defines `State`;
+//! each backtest starts from `State::default()` and keeps it between
+//! candles, so a strategy can count candles since its entry, keep its own
+//! estimators, or wait out a cooldown. Each round the harness backtests the evolved strategy on the
 //! training segment of the data and feeds the performance report (return,
 //! drawdown, Sharpe, fees, rejected orders) back to the LLM. After the search,
 //! the best revision is re-activated — its dylib stayed loaded, so no
@@ -116,9 +119,22 @@ const DATA_URL: &str = "https://raw.githubusercontent.com/MathisWellmann/trade_a
 // The default implementation never trades — a perfectly safe strategy with
 // exactly zero return. The LLM must evolve it into something profitable.
 symbiont::evolvable! {
+    type State: Default + Send + 'static;
+
+    /// What the strategy remembers between candles. Each backtest starts
+    /// from `State::default()`; redefine the fields as you need.
+    #[derive(Default)]
+    struct State {
+        /// Candles seen since the last order.
+        candles_since_trade: usize,
+    }
+
     /// Decide the next trading action given the most recent `candles`
     /// (oldest first, `candles[candles.len() - 1]` is the current candle)
     /// and the current `account` state.
+    ///
+    /// `state` is yours: it lives for the whole backtest and is passed to
+    /// every call. Keep it bounded (fixed-size buffers, running estimators).
     ///
     /// Execution model: the returned action is executed immediately as a
     /// market order at the close of the current candle (plus spread and
@@ -141,7 +157,17 @@ symbiont::evolvable! {
     /// your own:
     ///
     /// ```rust
-    /// fn decide(candles: &[Candle], account: &AccountState) -> Action {
+    /// #[derive(Default)]
+    /// struct State {
+    ///     candles_since_trade: usize,
+    /// }
+    ///
+    /// fn decide(state: &mut State, candles: &[Candle], account: &AccountState) -> Action {
+    ///     state.candles_since_trade += 1;
+    ///     // Wait at least 5 candles between orders, so fees do not eat the edge.
+    ///     if state.candles_since_trade < 5 {
+    ///         return Action::Hold;
+    ///     }
     ///     // Need at least two candles to compare; stay flat otherwise.
     ///     let (Some(prev), Some(last)) = (
     ///         candles.get(candles.len().saturating_sub(2)),
@@ -166,17 +192,19 @@ symbiont::evolvable! {
     ///
     ///     // Act on the signal, respecting the current position to avoid
     ///     // pyramiding into an oversized position.
-    ///     if up_move && account.position_qty <= 0.0 {
+    ///     let action = if up_move && account.position_qty <= 0.0 {
     ///         Action::Buy { qty }
     ///     } else if !up_move && account.position_qty >= 0.0 {
     ///         Action::Sell { qty }
     ///     } else {
-    ///         Action::Hold
-    ///     }
+    ///         return Action::Hold;
+    ///     };
+    ///     state.candles_since_trade = 0;
+    ///     action
     /// }
     /// ```
-    fn decide(candles: &[Candle], account: &AccountState) -> Action {
-        let _ = (candles, account);
+    fn decide(state: &mut State, candles: &[Candle], account: &AccountState) -> Action {
+        let _ = (state, candles, account);
         Action::Hold
     }
 }
@@ -291,6 +319,23 @@ struct EvalResult {
 }
 
 impl EvalResult {
+    /// The result of a run that could not start, e.g. because the
+    /// strategy's `State::default()` panicked.
+    fn failed(message: String) -> Self {
+        Self {
+            ret_pct: 0.0,
+            buy_hold_ret_pct: 0.0,
+            max_dd_pct: 0.0,
+            sharpe: 0.0,
+            fills: 0,
+            rejected: 0,
+            fees: 0.0,
+            final_equity: STARTING_BALANCE as f64,
+            panic: Some(message),
+            equity_curve: Vec::new(),
+        }
+    }
+
     /// Scalar score used to rank strategies (training return %).
     fn score(&self) -> f64 {
         if self.panic.is_some() {
@@ -350,14 +395,24 @@ fn sharpe(curve: &[f64]) -> f64 {
     }
 }
 
-/// Backtest the currently active `decide` implementation over `candles`.
+/// Backtest the currently active `decide` implementation over `candles`,
+/// from a fresh `State` of the active revision.
 fn run_backtest(runtime: &Runtime, candles: &[Candle]) -> EvalResult {
-    run_backtest_with(decide, || runtime.take_panic(), candles)
+    let mut state = match runtime.new_state(runtime.active_revision()) {
+        Ok(state) => state,
+        Err(e) => return EvalResult::failed(e.to_string()),
+    };
+    run_backtest_with(
+        |window, account| decide(&mut state, window, account),
+        || runtime.take_panic(),
+        candles,
+    )
 }
 
 /// Backtest an arbitrary decision function over `candles`.
 ///
-/// `decide_impl` is called once per candle and `take_panic` is checked after
+/// `decide_impl` is called once per candle, and owns the strategy's state
+/// for the run. `take_panic` is checked after
 /// each call, so panics caught inside a dylib abort the run. Taking the
 /// decision as a closure is what allows backtesting [`symbiont::RevisionFn`]
 /// handles of retained revisions — including several combined into an
@@ -367,7 +422,7 @@ fn run_backtest(runtime: &Runtime, candles: &[Candle]) -> EvalResult {
 /// each candle close — a reasonable execution proxy when only market orders
 /// are used: buys fill at the ask, sells at the bid, both pay the taker fee.
 fn run_backtest_with(
-    decide_impl: impl Fn(&[Candle], &AccountState) -> Action,
+    mut decide_impl: impl FnMut(&[Candle], &AccountState) -> Action,
     take_panic: impl Fn() -> Option<String>,
     candles: &[Candle],
 ) -> EvalResult {
@@ -518,7 +573,9 @@ fn build_prompt(
          {best_so_far}\
          ## Direction\n\
          Compute features from the candle window (momentum, volatility, position of \
-         close within the recent range, order flow via `buy_volume_ratio`) and trade \
+         close within the recent range, order flow via `buy_volume_ratio`), keep what \
+         must survive between candles in your `State` (candles since entry, entry \
+         price, a cooldown, running estimators), and trade \
          only when the edge plausibly exceeds the round-trip cost. Size positions \
          deliberately from `account.available_balance` and manage open positions \
          (take profit / cut losses / flip). Beat the best strategy so far on return \
@@ -738,10 +795,14 @@ async fn main() -> symbiont::Result<()> {
 
     let fn_source = runtime.fn_full_sources();
     let fn_prelude = runtime.fn_prelude();
+    let state_source = runtime
+        .state_source()
+        .expect("the evolvable! block declares a state");
     let task = format!(
         "## Task\n\
-         Implement this evolvable trading strategy function:\n\
-         ```rust\n{:#?}\n{:#?}\n```\n\n\
+         Implement this evolvable trading strategy function and the `State` it keeps \
+         between candles:\n\
+         ```rust\n{:#?}\n{:#?}\n{:#?}\n```\n\n\
          ## Market & execution model\n\
          - Data: ~1M BitMEX XBTUSD trades aggregated into volume candles \
          (each candle contains the same traded volume, not the same time span).\n\
@@ -753,7 +814,9 @@ async fn main() -> symbiont::Result<()> {
          - Leverage is 1x: additional position notional (qty * price) is limited by \
          `account.available_balance`. Order quantities are in BTC (min step 0.0001).\n\
          - Non-finite, non-positive or unaffordable quantities are rejected and waste the candle.\n\
-         - The function is called once per candle; it must never panic.\n\n",
+         - The function is called once per candle; it must never panic. Every backtest \
+         starts from `State::default()`.\n\n",
+        state_source,
         fn_source[0],
         fn_prelude[0],
         fee_pct = TAKER_FEE * 100.0,
@@ -866,8 +929,10 @@ fn report_best(
 /// `decide_fn(rev)` (generated by `evolvable!`) returns a typed
 /// [`symbiont::RevisionFn`] handle pinning its revision's dylib: all members
 /// stay callable side by side as compiled code, independent of which revision
-/// is currently active. Each candle, every member votes and the signed
-/// quantities are averaged into one net market order.
+/// is currently active. Every member keeps its own `State`, made by its own
+/// revision with `new_state(rev)`: the types of two revisions differ. Each
+/// candle, every member votes and the signed quantities are averaged into
+/// one net market order.
 fn report_ensemble(top: &[BestStrategy], test: &[Candle]) {
     if top.len() < 2 {
         println!("(only one strategy beat the default — no ensemble to run)");
@@ -880,9 +945,18 @@ fn report_ensemble(top: &[BestStrategy], test: &[Candle]) {
     // Hoist the bare fn pointers once; the per-candle calls below are plain
     // indirect calls into each member's dylib.
     let members = Vec::from_iter(handles.iter().map(symbiont::RevisionFn::get));
+    let mut states = Vec::from_iter(top.iter().map(|b| {
+        new_state(b.rev).expect("top revisions built a state in their training backtest")
+    }));
 
     let result = run_backtest_with(
-        |window, state| combine_actions(members.iter().map(|f| f(window, state)), members.len()),
+        |window, account| {
+            let votes = members
+                .iter()
+                .zip(&mut states)
+                .map(|(f, state)| f(state, window, account));
+            combine_actions(votes, members.len())
+        },
         || handles.iter().find_map(|h| h.take_panic()),
         test,
     );
