@@ -233,6 +233,7 @@ pub(crate) mod failure_kind {
     pub(crate) const SIGNATURE: &str = "signature";
     pub(crate) const UNSAFE_CODE: &str = "unsafe";
     pub(crate) const FORBIDDEN: &str = "forbidden";
+    pub(crate) const STATE: &str = "state";
     pub(crate) const UNIMPLEMENTED: &str = "unimplemented";
     pub(crate) const COMPILE: &str = "compile";
     pub(crate) const EDIT: &str = "edit";
@@ -449,6 +450,7 @@ pub(crate) fn failure_kind_of(e: &crate::Error) -> &'static str {
         SignatureMismatch { .. } => failure_kind::SIGNATURE,
         UnsafeCode { .. } => failure_kind::UNSAFE_CODE,
         ForbiddenConstruct { .. } => failure_kind::FORBIDDEN,
+        InvalidState { .. } => failure_kind::STATE,
         UnimplementedFunction { .. } => failure_kind::UNIMPLEMENTED,
         CompilationFailed { .. } => failure_kind::COMPILE,
         EditFailed { .. } => failure_kind::EDIT,
@@ -872,6 +874,13 @@ mod tests {
                 reason: String::new()
             }),
             failure_kind::FORBIDDEN
+        );
+        assert_eq!(
+            failure_kind_of(&InvalidState {
+                code: String::new(),
+                reason: String::new()
+            }),
+            failure_kind::STATE
         );
         assert_eq!(
             failure_kind_of(&UnimplementedFunction {

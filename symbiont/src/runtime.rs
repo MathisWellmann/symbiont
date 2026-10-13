@@ -153,6 +153,7 @@ use crate::{
     },
     validation::{
         check_implementation_bodies,
+        check_state_definition,
         default_body_tokens,
         validate_generated_ast,
     },
@@ -744,6 +745,9 @@ impl Runtime {
         let result = parse(stages).and_then(|candidate| {
             // Validate signatures match declarations
             validate_generated_ast(candidate.ast(), &self.fn_sigs, &self.denied_paths)?;
+            if state_decl(self.decls).is_some() {
+                check_state_definition(candidate.ast())?;
+            }
             // Reject stub bodies outright, and candidates that implement
             // nothing: an echo of every declared default body. A candidate
             // that genuinely evolves one function while leaving others at
