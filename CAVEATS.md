@@ -13,11 +13,67 @@ dynamic loading, this introduces strict limitations.
 Any `static` variable inside the reloaded dylib is re-initialized
 on every reload. If the evolvable function relies on persistent
 state across calls, that state is lost when the function evolves
-— and every retained revision has its own instance. The harness
-forbids this by design: all state is owned by the host binary and
-passed into evolvable functions via arguments. Validation
-enforces the rule by rejecting `static` items and `thread_local!`
-in LLM-generated code before compilation.
+— and every retained revision has its own instance, shared by all
+runs of that revision. The harness forbids this by design.
+Validation rejects `static` items and `thread_local!` in
+LLM-generated code before compilation.
+
+State that must live between calls goes in a host-owned handle
+instead. Declare `type State: Default + Send + 'static;` in
+`evolvable!`; the agent defines `State` (validated before compile:
+once, at the top level, with `Default`), and the declared
+functions take `state: &mut State` or `&State`. The host creates
+one `symbiont::State` per run with `Runtime::new_state(revision)`
+and passes it to every call. See the next section for how the
+value crosses the boundary.
+
+## State handles
+
+The agent's `State` type exists only in the dylib, so the dylib
+owns everything about the value: `new_state` calls an exported
+constructor that boxes `State::default()` on the dylib's heap,
+every export wrapper borrows the box for one call, and the
+handle's `Drop` calls an exported destructor that frees it with
+the dylib's own drop glue. The host sees a `#[repr(C)]` handle:
+a thin pointer, a tag, the revision id, the destructor, and an
+`Arc` that pins the revision (see
+[`symbiont/src/state.rs`](symbiont/src/state.rs) and the
+dylib side in
+[`symbiont/src/state_preamble.rs`](symbiont/src/state_preamble.rs)).
+
+- **A state belongs to one revision.** Revisions are built from
+  the same crate name, so two revisions' `State` types can have
+  the same path and `TypeId` while their layouts differ. The tag
+  is therefore the address of a static inside the dylib that
+  made the value, unique while the dylib is mapped (and the
+  handle keeps it mapped). Every wrapper compares the tag with
+  its own before it touches the value, and aborts the process on
+  a mismatch: that is a host bug, and any access would be
+  undefined behaviour. When the active revision changes, create a
+  new state.
+- **Unload safety.** The destructor lives in the dylib. A live
+  state pins its revision like a `RevisionFn` handle:
+  `unload_revision` returns `Unloaded::Pinned` and the dylib is
+  unmapped only after the last state dropped. The handle frees the
+  value before it releases the pin.
+- **Panics.** A panicking `State::default()` makes `new_state`
+  return `Error::StateDefaultPanicked`; a panicking `Drop` leaks
+  the rest of the value and leaves its message in the revision's
+  panic buffer. Neither unwinds into the host.
+- **Thread safety.** `State` is `Send`, not `Sync`: the declared
+  `Send` bound is asserted on the agent's type in the generated
+  crate. Give each thread its own state.
+- **No serialization.** The host cannot read, clone or save the
+  value. A restart or a revision swap starts from
+  `State::default()`; a live system that needs a warm state must
+  replay its history through the new state first.
+- **Bounded memory is the agent's job.** The dylib cannot set its
+  own allocator, so nothing caps how much a `State` grows. Tell
+  the agent to keep it bounded (fixed-size buffers, running
+  estimators), and size runs accordingly.
+- **Determinism.** `HashMap` and `HashSet` with the default
+  `RandomState` are rejected by default (see below), so long-lived
+  state iterates in the same order on every run.
 
 ## Dangling pointers across reloads
 
@@ -60,8 +116,9 @@ unmapped when the process exits — at which point Rust destructors
 are not run. Any resources created inside the dylib (open files,
 background threads, heap allocations) will leak for the lifetime
 of the process. In practice this is not an issue because the
-generated dylib only contains pure functions operating on
-caller-provided memory. Avoid spawning threads or opening files
+generated dylib only contains functions operating on
+caller-provided memory, and a `State`'s heap data is freed by its
+handle's `Drop`, which runs before the dylib can be unmapped. Avoid spawning threads or opening files
 inside evolvable functions.
 
 ## Type layout and ABI
@@ -264,6 +321,11 @@ MIRIFLAGS="-Zmiri-disable-isolation" cargo miri test -p symbiont --lib
 
 Miri cannot spawn processes or `dlopen` libraries, so tests that
 compile and load dylibs are `#[cfg_attr(miri, ignore)]`d. The
+state protocol is covered the same way as the panic buffer: the
+dylib side lives in `symbiont/src/state_preamble.rs` and is
+compiled into the test binary next to the host's `State` handle
+(see the tests in `symbiont/src/state.rs`), so Miri checks the
+handle layout, the borrows and the drop order. The
 panic-buffer preamble that ships inside every generated dylib is
 still covered: it lives in `symbiont/src/panic_preamble.rs` and is
 compiled directly into the test binary (see the tests in
