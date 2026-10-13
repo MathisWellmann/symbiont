@@ -3,6 +3,10 @@
 //! between calls, belongs to one revision, and pins that revision.
 //!
 //! One test per binary: [`symbiont::Runtime`] is a process-wide singleton.
+#![expect(
+    unused_crate_dependencies,
+    reason = "Integration tests don't use them all"
+)]
 
 mod common;
 
