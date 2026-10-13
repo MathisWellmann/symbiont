@@ -451,6 +451,18 @@ const ALWAYS_DENIED_PATHS: &[&str] = &[
     "std::panic::update_hook",
 ];
 
+/// The paths of the randomly seeded hasher. While a denied prefix covers one
+/// of them, the scan also rejects its implicit uses; see
+/// [`PolicyScan::check_default_hasher`].
+const RANDOM_STATE_PATHS: &[&str] = &[
+    "std::hash::RandomState",
+    "std::collections::hash_map::RandomState",
+];
+
+/// The associated functions of `HashMap` and `HashSet` that exist only for
+/// the `RandomState` hasher.
+const RANDOM_STATE_CONSTRUCTORS: &[&str] = &["new", "with_capacity", "from"];
+
 /// Attributes that hijack the dylib's runtime and break its contract with
 /// the host (shared System allocator, unwinding panics, program entry).
 const DENIED_ATTRIBUTES: &[&str] = &[
@@ -514,9 +526,14 @@ pub(crate) fn enforce_code_policy(file: &syn::File, denied_paths: &[String]) -> 
     let mut collector = AliasCollector::default();
     collector.visit_file(file);
 
+    let deny_random_state = RANDOM_STATE_PATHS.iter().any(|path| {
+        let path: Vec<&str> = path.split("::").collect();
+        denied.iter().any(|prefix| path.starts_with(prefix))
+    });
     let mut scan = PolicyScan {
         denied: &denied,
         aliases: collector.aliases,
+        deny_random_state,
         finding: None,
     };
     scan.visit_file(file);
@@ -617,6 +634,8 @@ struct PolicyScan<'a> {
     denied: &'a [Vec<&'a str>],
     /// `use` aliases of this file, local name -> absolute segments.
     aliases: HashMap<String, Vec<String>>,
+    /// Whether `RandomState` is denied, and with it the implicit uses.
+    deny_random_state: bool,
     finding: Option<Finding>,
 }
 
@@ -654,6 +673,89 @@ impl PolicyScan<'_> {
             .iter()
             .find(|denied| expanded.len() >= denied.len() && expanded[..denied.len()] == denied[..])
             .map(|denied| denied.join("::"))
+    }
+
+    /// Reject the implicit uses of `RandomState` in `path`: `RandomState`
+    /// itself under any path (a host prelude may glob-import it), a
+    /// `HashMap` with fewer than three or a `HashSet` with fewer than two
+    /// type arguments, and the constructors that exist only for
+    /// `RandomState`.
+    ///
+    /// Matched by name, after the file's `use` aliases, because a type can
+    /// reach the candidate through a glob import of the host prelude, which
+    /// the alias table cannot see. A host type that happens to be called
+    /// `HashMap` is caught as well; such a host allows `RandomState`.
+    fn check_default_hasher(&mut self, path: &syn::Path) {
+        for (idx, segment) in path.segments.iter().enumerate() {
+            let ident = segment.ident.to_string();
+            let name = match self.aliases.get(&ident) {
+                Some(full) if idx == 0 => full.last().cloned().unwrap_or(ident),
+                _ => ident,
+            };
+            let required = match name.as_str() {
+                "HashMap" => 3,
+                "HashSet" => 2,
+                "RandomState" => {
+                    self.record_random_state("a use of `RandomState`", path);
+                    return;
+                }
+                _ => continue,
+            };
+            let defaulted = match &segment.arguments {
+                syn::PathArguments::AngleBracketed(args) => {
+                    let types = args
+                        .args
+                        .iter()
+                        .filter(|arg| matches!(arg, syn::GenericArgument::Type(_)))
+                        .count();
+                    types < required
+                }
+                syn::PathArguments::None => path.segments.get(idx + 1).is_some_and(|next| {
+                    RANDOM_STATE_CONSTRUCTORS
+                        .iter()
+                        .any(|ctor| next.ident == ctor)
+                }),
+                syn::PathArguments::Parenthesized(_) => false,
+            };
+            if defaulted {
+                self.record_random_state(&format!("a `{name}` with the default hasher"), path);
+                return;
+            }
+        }
+    }
+
+    /// Reject the implicit uses of `RandomState` in the tokens of a macro,
+    /// which the AST does not parse: `RandomState`, and `HashMap::new` and
+    /// the other `RandomState`-only constructors.
+    fn check_default_hasher_tokens(&mut self, node: &syn::Macro) {
+        let text = node.tokens.to_string();
+        let tokens: Vec<&str> = text.split_whitespace().collect();
+        let constructor = tokens.windows(3).find_map(|window| {
+            let [name, "::", ctor] = window else {
+                return None;
+            };
+            let is_map = *name == "HashMap" || *name == "HashSet";
+            (is_map && RANDOM_STATE_CONSTRUCTORS.contains(ctor)).then_some(*name)
+        });
+        if let Some(name) = constructor {
+            self.record_random_state(
+                &format!("a `{name}` with the default hasher inside a macro"),
+                node,
+            );
+        } else if tokens.contains(&"RandomState") {
+            self.record_random_state("a use of `RandomState` inside a macro", node);
+        }
+    }
+
+    fn record_random_state(&mut self, what: &str, tokens: &dyn ToTokens) {
+        self.record_forbidden(
+            what,
+            tokens,
+            "`HashMap` and `HashSet` with the default `RandomState` hasher iterate in an order \
+             that changes on every run, which makes results non-reproducible. Use `BTreeMap` or \
+             `BTreeSet` instead (hosts control this via `DylibConfig`)"
+                .to_string(),
+        );
     }
 
     fn check_path(&mut self, segments: Vec<String>, tokens: &dyn ToTokens) {
@@ -776,6 +878,9 @@ impl<'ast> Visit<'ast> for PolicyScan<'_> {
             .map(|segment| segment.ident.to_string())
             .collect();
         self.check_path(segments, node);
+        if self.deny_random_state {
+            self.check_default_hasher(node);
+        }
         visit::visit_path(self, node);
     }
 
@@ -796,6 +901,9 @@ impl<'ast> Visit<'ast> for PolicyScan<'_> {
         }
         if tokens_contain_unsafe(node.tokens.clone()) {
             self.record_unsafe("an `unsafe` token inside a macro", node);
+        }
+        if self.deny_random_state {
+            self.check_default_hasher_tokens(node);
         }
         // Denied paths inside macro tokens: `to_string` renders paths with
         // canonical `a :: b` spacing, so a plain substring match suffices.
@@ -1743,5 +1851,138 @@ pub fn step(counter: &mut usize) -> usize {
         let err = validate_generated_ast(&shared, &expected, &denied())
             .expect_err("`&State` is not `&mut State`");
         assert!(matches!(err, Error::SignatureMismatch { .. }), "{err}");
+    }
+
+    #[test]
+    fn maps_with_the_default_hasher_are_rejected() {
+        for (code, construct) in [
+            (
+                "use std::collections::HashMap; #[derive(Default)] struct State { m: HashMap<u64, f64> }",
+                "a `HashMap` with the default hasher",
+            ),
+            (
+                "fn f() { let m = std::collections::HashMap::<u64, f64>::new(); }",
+                "a `HashMap` with the default hasher",
+            ),
+            (
+                "fn f() { let s = std::collections::HashSet::new(); s.insert(1u8); }",
+                "a `HashSet` with the default hasher",
+            ),
+            // Through a host prelude glob: no `use` in the candidate.
+            (
+                "fn f() { let s = HashSet::with_capacity(4); }",
+                "a `HashSet` with the default hasher",
+            ),
+            (
+                "fn f() { let m = HashMap::from([(1u8, 2u8)]); }",
+                "a `HashMap` with the default hasher",
+            ),
+            (
+                "fn f(x: &[u8]) { let m: HashMap<_, _> = x.iter().map(|v| (*v, *v)).collect(); }",
+                "a `HashMap` with the default hasher",
+            ),
+            (
+                "fn f(x: &[u8]) { let n = x.iter().collect::<HashSet<_>>().len(); }",
+                "a `HashSet` with the default hasher",
+            ),
+            (
+                "fn f() -> Vec<std::collections::hash_map::HashMap<u8, u8>> { Vec::new() }",
+                "a `HashMap` with the default hasher",
+            ),
+            (
+                "use std::collections::HashMap as Map; struct S { m: Map<u8, u8> }",
+                "a `HashMap` with the default hasher",
+            ),
+            (
+                "use std::collections; fn f() { let m = collections::HashMap::<u8, u8>::new(); }",
+                "a `HashMap` with the default hasher",
+            ),
+            (
+                "type Map = HashMap<u64, f64>;",
+                "a `HashMap` with the default hasher",
+            ),
+            (
+                "fn f() { let m = <HashMap<u8, u8>>::default(); }",
+                "a `HashMap` with the default hasher",
+            ),
+            // Named explicitly, or reached through a glob of the host prelude.
+            (
+                "use std::hash::RandomState;",
+                "a use of `std::hash::RandomState`",
+            ),
+            (
+                "fn f() { let s = std::collections::hash_map::RandomState::new(); }",
+                "a use of `std::collections::hash_map::RandomState`",
+            ),
+            ("struct S { h: RandomState }", "a use of `RandomState`"),
+            (
+                "fn f() { let v = vec![HashMap::new()]; }",
+                "a `HashMap` with the default hasher inside a macro",
+            ),
+            (
+                "fn f() { let v = vec![RandomState::new()]; }",
+                "a use of `RandomState` inside a macro",
+            ),
+        ] {
+            let file: syn::File = syn::parse_str(code).expect("can parse");
+            match enforce_code_policy(&file, &denied()).expect_err(code) {
+                Error::ForbiddenConstruct {
+                    construct: found,
+                    reason,
+                    ..
+                } => {
+                    assert!(
+                        found.contains(construct),
+                        "{code}: expected `{construct}`, got `{found}`"
+                    );
+                    if found.contains("default hasher")
+                        || found.starts_with("a use of `RandomState`")
+                    {
+                        assert!(reason.contains("BTreeMap"), "{code}: {reason}");
+                    }
+                }
+                other => panic!("{code}: expected Error::ForbiddenConstruct, got {other}"),
+            }
+        }
+    }
+
+    #[test]
+    fn deterministic_maps_are_allowed() {
+        for code in [
+            "use std::collections::{BTreeMap, BTreeSet}; #[derive(Default)] struct State { m: BTreeMap<u64, f64>, s: BTreeSet<u8> }",
+            // An explicit fixed hasher iterates the same way on every run.
+            "use std::collections::HashMap; use std::hash::{BuildHasherDefault, DefaultHasher};
+             type Fixed = BuildHasherDefault<DefaultHasher>;
+             #[derive(Default)] struct State { m: HashMap<u64, f64, Fixed> }
+             fn f() { let m: HashMap<u8, u8, Fixed> = HashMap::default(); let s = std::collections::HashSet::<u8, Fixed>::with_hasher(Fixed::default()); }",
+            "use std::collections::hash_map::DefaultHasher;",
+            "use std::collections::HashMap;",
+            "fn f() { let it = HashMap::<u8, u8, MyHasher>::from_iter([(1, 2)]); }",
+            "fn f() { let v = vec![BTreeMap::<u8, u8>::new()]; }",
+        ] {
+            let file: syn::File = syn::parse_str(code).expect("can parse");
+            enforce_code_policy(&file, &denied()).unwrap_or_else(|e| panic!("{code}: {e}"));
+        }
+    }
+
+    #[test]
+    fn allowing_random_state_lifts_the_hasher_rule() {
+        let allowed = crate::DylibConfig::standalone(crate::Profile::Debug)
+            .with_allowed_path("std::hash::RandomState")
+            .with_allowed_path("std::collections::hash_map::RandomState");
+        for code in [
+            "use std::collections::HashMap; struct State { m: HashMap<u64, f64> }",
+            "fn f() { let v = vec![std::collections::HashSet::<u8>::new()]; }",
+            "use std::hash::RandomState;",
+        ] {
+            let file: syn::File = syn::parse_str(code).expect("can parse");
+            enforce_code_policy(&file, allowed.denied_paths())
+                .unwrap_or_else(|e| panic!("{code}: {e}"));
+        }
+        // With one of the two paths still denied, the implicit uses stay denied.
+        let half = crate::DylibConfig::standalone(crate::Profile::Debug)
+            .with_allowed_path("std::hash::RandomState");
+        let file: syn::File = syn::parse_str("struct S { m: HashMap<u8, u8> }").expect("can parse");
+        enforce_code_policy(&file, half.denied_paths()).expect_err("still denied");
     }
 }
