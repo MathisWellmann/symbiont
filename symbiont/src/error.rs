@@ -119,6 +119,15 @@ pub enum Error {
     #[error("Revision {revision} is the active revision and cannot be unloaded")]
     UnloadActiveRevision { revision: Revision },
 
+    /// [`crate::Runtime::new_state`] was called, but the `evolvable!` block
+    /// declares no `type State`.
+    #[error("The evolvable! block declares no `type State`")]
+    NoStateDeclared,
+
+    /// `State::default()` of the revision panicked, so no state was created.
+    #[error("`State::default()` of revision {revision} panicked: {message}")]
+    StateDefaultPanicked { revision: Revision, message: String },
+
     #[error("Evolution failed after {attempts} attempts. Last error: {last_error}")]
     MaxRetriesExceeded {
         attempts: usize,

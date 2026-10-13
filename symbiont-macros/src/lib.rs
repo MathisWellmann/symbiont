@@ -21,7 +21,13 @@ use syn::{
 };
 
 use crate::{
-    evolvable::EvolvableBlock,
+    evolvable::{
+        EvolvableBlock,
+        STATE_IDENT,
+        StateTypeDecl,
+        is_state_reference,
+        mentions_state,
+    },
     full_source::build_full_source,
     utils::format_signature,
 };
@@ -49,11 +55,41 @@ use crate::{
 /// compile error at the declaration site, so generated dylibs always
 /// compile.
 ///
+/// # State
+///
+/// A block may declare one state type that lives between calls:
+///
+/// ```rust,ignore
+/// symbiont::evolvable! {
+///     type State: Default + Send + 'static;
+///
+///     /// The initial definition (optional; a unit struct if omitted).
+///     #[derive(Default)]
+///     struct State {
+///         calls: usize,
+///     }
+///
+///     fn step(state: &mut State, counter: &mut usize) {
+///         state.calls += 1;
+///         *counter += state.calls;
+///     }
+/// }
+/// ```
+///
+/// The agent's code defines `State`; the host only sees `State` as an alias
+/// of the opaque `symbiont::State` handle and creates one per run with
+/// the generated `new_state(revision)`. `State` may cross the boundary only
+/// as `&mut State` or `&State`. The bounds must include `Default`, `Send`
+/// and `'static`; the generated dylib asserts all declared bounds on the
+/// agent's type.
+///
 /// This generates:
 /// - A `SYMBIONT_DECLS` constant with metadata for each function
 /// - Wrapper functions that dispatch calls through the loaded dylib
 /// - Per-function `<name>_fn(revision)` accessors returning typed
 ///   `RevisionFn` handles to any retained revision
+/// - With `type State`: the `State` alias and a `new_state(revision)`
+///   function
 #[proc_macro]
 #[expect(
     clippy::too_many_lines,
@@ -74,8 +110,24 @@ pub fn evolvable(input: TokenStream) -> TokenStream {
     let mut decl_entries = Vec::new();
     let mut wrapper_fns = Vec::new();
 
+    if let Some(state) = &block.state
+        && let Err(err) = check_state_bounds(state)
+    {
+        return err.to_compile_error().into();
+    }
+    let state_ref = if block.state.is_some() {
+        quote! { ::core::option::Option::Some(&SYMBIONT_STATE) }
+    } else {
+        quote! { ::core::option::Option::None }
+    };
+
     for func in &block.functions {
         let sig = func.sig();
+        if block.state.is_some()
+            && let Err(err) = check_state_in_signature(sig)
+        {
+            return err.to_compile_error().into();
+        }
         let vis = func.vis();
         let ident = &sig.ident;
         let fn_name_str = ident.to_string();
@@ -139,6 +191,7 @@ pub fn evolvable(input: TokenStream) -> TokenStream {
                 signature: #signature_str,
                 full_source: #full_source,
                 fn_ptr: &#static_name,
+                state: #state_ref,
             }
         });
 
@@ -185,8 +238,15 @@ pub fn evolvable(input: TokenStream) -> TokenStream {
         prelude_parts.push(quote! { #inline_prelude_source });
     }
 
+    let state_items = block
+        .state
+        .as_ref()
+        .map(|state| state_items(state, block.state_initial.as_ref()));
+
     let expanded = quote! {
         #(#prelude_items)*
+
+        #state_items
 
         #[doc(hidden)]
         const SYMBIONT_PRELUDE: &[&::core::primitive::str] = &[
@@ -201,6 +261,112 @@ pub fn evolvable(input: TokenStream) -> TokenStream {
     };
 
     expanded.into()
+}
+
+/// Reject a `type State` whose bounds lack one the runtime relies on:
+/// `Default` builds the value, `Send` lets a `symbiont::State` move to
+/// another thread, and `'static` lets it be boxed without a lifetime.
+fn check_state_bounds(state: &StateTypeDecl) -> syn::Result<()> {
+    if !state.decl.generics.params.is_empty() || state.decl.generics.where_clause.is_some() {
+        return Err(syn::Error::new_spanned(
+            &state.decl.generics,
+            "`type State` takes no generics or where clause",
+        ));
+    }
+    let has_trait = |name: &str| {
+        state.decl.bounds.iter().any(|bound| match bound {
+            syn::TypeParamBound::Trait(t) => {
+                t.path.segments.last().is_some_and(|s| s.ident == name)
+            }
+            _ => false,
+        })
+    };
+    let has_static = state.decl.bounds.iter().any(
+        |bound| matches!(bound, syn::TypeParamBound::Lifetime(lifetime) if lifetime.ident == "static"),
+    );
+    for (present, needed) in [
+        (has_trait("Default"), "Default"),
+        (has_trait("Send"), "Send"),
+        (has_static, "'static"),
+    ] {
+        if !present {
+            return Err(syn::Error::new_spanned(
+                &state.decl,
+                format!(
+                    "`type State` must be bounded by `{needed}`; declare it as \
+                     `type State: Default + Send + 'static;`"
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Reject a signature where `State` crosses the boundary other than as
+/// `&mut State` or `&State`: the host holds an opaque handle, so it can
+/// neither pass the value nor receive one.
+fn check_state_in_signature(sig: &syn::Signature) -> syn::Result<()> {
+    for arg in &sig.inputs {
+        if let FnArg::Typed(pat) = arg
+            && mentions_state(&pat.ty)
+            && !is_state_reference(&pat.ty)
+        {
+            return Err(syn::Error::new_spanned(
+                &pat.ty,
+                format!(
+                    "`{STATE_IDENT}` may only be passed as `&mut {STATE_IDENT}` or `&{STATE_IDENT}`"
+                ),
+            ));
+        }
+    }
+    if let ReturnType::Type(_, ty) = &sig.output
+        && mentions_state(ty)
+    {
+        return Err(syn::Error::new_spanned(
+            ty,
+            format!(
+                "an evolvable function cannot return `{STATE_IDENT}`; the host creates it with `new_state`"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// The host items of a declared `type State`: the alias of the opaque
+/// handle, the `SYMBIONT_STATE` declaration, and `new_state(revision)`.
+fn state_items(state: &StateTypeDecl, initial: Option<&syn::Item>) -> proc_macro2::TokenStream {
+    let attrs = &state.attrs;
+    let vis = &state.vis;
+    let ident = &state.decl.ident;
+    let bounds = &state.decl.bounds;
+    let bounds_str = quote!(#bounds).to_string();
+    let initial_str = match initial {
+        Some(item) => prettyplease::unparse(&syn::File {
+            shebang: None,
+            frontmatter: None,
+            attrs: Vec::new(),
+            items: vec![item.clone()],
+        }),
+        None => "#[derive(Default)]\nstruct State;\n".to_string(),
+    };
+    quote! {
+        #(#attrs)*
+        #vis type #ident = ::symbiont::State;
+
+        #[doc(hidden)]
+        static SYMBIONT_STATE: ::symbiont::StateDecl = ::symbiont::StateDecl {
+            bounds: #bounds_str,
+            initial: #initial_str,
+        };
+
+        /// A fresh `State::default()` of `revision`, to pass to the evolvable
+        /// functions of that revision. See `symbiont::Runtime::new_state`.
+        #vis fn new_state(
+            revision: ::symbiont::Revision,
+        ) -> ::symbiont::Result<#ident> {
+            ::symbiont::__internal::new_state(revision)
+        }
+    }
 }
 
 /// Generate the per-function `AtomicPtr` static and the lock-free dispatch

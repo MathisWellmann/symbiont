@@ -34,6 +34,7 @@ mod parser;
 mod profile;
 mod revision;
 mod runtime;
+mod state;
 mod system_prompt;
 mod thinking_level;
 pub mod tools;
@@ -134,6 +135,10 @@ pub use runtime::{
 // provider parameters need it nameable without depending on `serde_json`
 // directly.
 pub use serde_json::Value;
+pub use state::{
+    State,
+    StateDecl,
+};
 /// Evolvable return types must implement [`Default`]: when an evolved
 /// implementation panics, the in-dylib `catch_unwind` wrapper substitutes
 /// `Default::default()` as a safe placeholder return value. The bound is
@@ -145,6 +150,50 @@ pub use serde_json::Value;
 /// symbiont::evolvable! {
 ///     fn make() -> NoDefault;
 /// }
+/// ```
+///
+/// A declared `type State` must be bounded by `Default + Send + 'static`:
+///
+/// ```compile_fail
+/// symbiont::evolvable! {
+///     type State: Default;
+///     fn step(state: &mut State);
+/// }
+/// ```
+///
+/// and crosses the boundary only as `&mut State` or `&State`, because the
+/// host holds an opaque handle:
+///
+/// ```compile_fail
+/// symbiont::evolvable! {
+///     type State: Default + Send + 'static;
+///     fn step(state: State);
+/// }
+/// ```
+///
+/// ```compile_fail
+/// symbiont::evolvable! {
+///     type State: Default + Send + 'static;
+///     fn fresh() -> Option<Box<State>>;
+/// }
+/// ```
+///
+/// With the bounds and references it expands:
+///
+/// ```
+/// symbiont::evolvable! {
+///     type State: Default + Send + 'static;
+///     #[derive(Default)]
+///     struct State {
+///         calls: usize,
+///     }
+///     fn step(state: &mut State, input: f64) -> f64 {
+///         state.calls += 1;
+///         input
+///     }
+/// }
+/// let _: fn(&mut State, f64) -> f64 = step;
+/// let _: fn(symbiont::Revision) -> symbiont::Result<symbiont::State> = new_state;
 /// ```
 pub use symbiont_macros::evolvable;
 pub use system_prompt::{
@@ -295,7 +344,10 @@ pub mod __internal {
         CallGuard,
         enter_call,
     };
-    pub use crate::runtime::revision_fn_lookup;
+    pub use crate::runtime::{
+        new_state,
+        revision_fn_lookup,
+    };
 }
 
 #[cfg(test)]
