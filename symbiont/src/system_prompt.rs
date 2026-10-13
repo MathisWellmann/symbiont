@@ -71,7 +71,9 @@ state resets on every reload — keep state host-owned and passed via arguments;
 use `const` for constants), `macro_rules!` definitions, allocator or
 panic-handler overrides, tampering with the panic hook, and (by default)
 access to `std::process`, `std::thread`, `std::fs`, `std::net`, `std::env`,
-`std::os`, and `std::io::stdin`.
+`std::os`, and `std::io::stdin`. `HashMap` and `HashSet` with the default
+`RandomState` hasher are rejected too: their iteration order changes on
+every run. Use `BTreeMap` and `BTreeSet`.
 
 # Repairing a compile error
 

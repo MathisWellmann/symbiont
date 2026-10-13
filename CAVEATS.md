@@ -243,7 +243,11 @@ overrides, tampering with the panic hook, and — by default —
 references to `std::process`, `std::thread`, `std::fs`,
 `std::net`, `std::env`, `std::os`, and `std::io::stdin` (matched
 through `use` aliases and inside macro tokens; glob imports of
-denied modules are rejected outright). Hosts widen or narrow the
+denied modules are rejected outright), and `HashMap` / `HashSet`
+with the default `RandomState` hasher, whose iteration order
+changes on every run (also when the hasher is implicit:
+`HashMap<K, V>`, `HashSet::new()`, `collect::<HashSet<_>>()`; an
+explicit fixed hasher is fine). Hosts widen or narrow the
 capability surface with `DylibConfig::with_allowed_path` /
 `with_denied_path`. Note this bounds what evolvable code can
 *name*; it is *not* a security sandbox — safe Rust reached through

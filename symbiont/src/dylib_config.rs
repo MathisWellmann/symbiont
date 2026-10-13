@@ -59,8 +59,19 @@ impl DylibConfig {
     /// the host instantly, bypassing panic capture), threads
     /// (`std::thread` — spawned threads escape the feedback-loop contract),
     /// filesystem and network I/O (`std::fs`, `std::net`), host environment
-    /// (`std::env`), OS extension traits (`std::os`), and blocking stdin
-    /// (`std::io::stdin`).
+    /// (`std::env`), OS extension traits (`std::os`), blocking stdin
+    /// (`std::io::stdin`), and the randomly seeded hasher
+    /// (`std::hash::RandomState`, re-exported as
+    /// `std::collections::hash_map::RandomState`).
+    ///
+    /// `RandomState` gives every map a new seed, so a `HashMap` or `HashSet`
+    /// iterates in another order on every run. In state that lives between
+    /// calls that makes runs non-reproducible. Denying it also rejects its
+    /// implicit uses: a `HashMap<K, V>` or `HashSet<T>` that leaves the
+    /// hasher at its default, and the constructors that exist only for
+    /// `RandomState` (`new`, `with_capacity`, `from`). Maps with an explicit
+    /// fixed hasher stay allowed. Allow both paths with
+    /// [`DylibConfig::with_allowed_path`] to lift the rule.
     ///
     /// This bounds what evolvable code can *name*; it is a guidance
     /// mechanism for the evolution loop, not a security sandbox.
@@ -74,6 +85,8 @@ impl DylibConfig {
             "std::env",
             "std::os",
             "std::io::stdin",
+            "std::hash::RandomState",
+            "std::collections::hash_map::RandomState",
         ]
         .map(String::from)
         .to_vec()
