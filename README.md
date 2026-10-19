@@ -180,7 +180,10 @@ cargo run -p fractal-studio-example --release
   This lets the agent gather information (run tests, probe black-box systems, query data) before committing to an implementation.
   See the [tool-calling-example](examples/tool-calling/src/main.rs).
 - **Tiny Core**:
-  Only ~1000 LOC for the Agent harness and constrained generation part.
+  ~5.5k lines of code for the agent harness and constrained generation part (the evolve loop,
+  parsing, validation, edits, diagnostics, compilation and the revision registry), counted
+  without comments, blank lines and tests. The whole crate is ~12k, adding the API docs for
+  prompts, revision tools, inference gating, DSH export and observability.
 - **Catches Agent Code Panics**
   Any LLM code that generate a runtime panic will be caught using `catch_unwind`, and the panic message is used
   to provide backpressure in the prompt. See [layout.rs](symbiont/src/layout.rs) and [unwind.rs](symbiont/src/unwind.rs) for details.
