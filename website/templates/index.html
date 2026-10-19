@@ -25,6 +25,7 @@
       <ul class="hero-features">
         <li>Constrained Generation</li>
         <li>Batched Population Search</li>
+        <li>Memory Across Rounds</li>
         <li>Auto-Research</li>
         <li>Function Performance Optimization</li>
         <li>Black-Box Parameter Search</li>
@@ -144,7 +145,7 @@
       <h2>Quick Start</h2>
       <pre><code><span style="color:#FF6B35">symbiont::evolvable!</span> {
     <span style="color:#FF6B35">fn</span> <span style="color:#4ECDC4">step</span>(counter: &amp;<span style="color:#FF6B35">mut</span> usize) {
-        <span style="color:#8b949e">// Default body will be entrely evolved by the Agent</span>
+        <span style="color:#8b949e">// default implementation body, entirely evolved by the LLM</span>
         *counter += <span style="color:#F7C948">1</span>;
         <span style="color:#4ECDC4">println!</span>(<span style="color:#F7C948">"doing stuff in iteration {}"</span>, counter);
     }
@@ -152,10 +153,10 @@
 
 <span style="color:#8b949e">#[tokio::main]</span>
 <span style="color:#FF6B35">async fn</span> <span style="color:#4ECDC4">main</span>() -&gt; symbiont::Result&lt;()&gt; {
-    <span style="color:#FF6B35">let</span> runtime = symbiont::Runtime::init(SYMBIONT_DECLS).<span style="color:#FF6B35">await</span>?;
-    <span style="color:#FF6B35">let</span> agent = symbiont::inference::init_agent()?;
+    <span style="color:#FF6B35">let</span> runtime = symbiont::Runtime::new(SYMBIONT_DECLS, SYMBIONT_PRELUDE, symbiont::Profile::Debug).<span style="color:#FF6B35">await</span>?;
+    <span style="color:#FF6B35">let</span> agent = symbiont::inference::init_agent(<span style="color:#FF6B35">None</span>)?;
     <span style="color:#FF6B35">let</span> fn_sigs = runtime.fn_sigs();
-    <span style="color:#FF6B35">let</span> prompt = <span style="color:#4ECDC4">format!</span>(
+    <span style="color:#FF6B35">let</span> base_prompt = <span style="color:#4ECDC4">format!</span>(
         <span style="color:#F7C948">"Give a concise implementation for this function signature: ```{}```, \
         that increments the counter by a constant in the range (5..20). \
         Give Rust Code Only."</span>,
@@ -163,22 +164,37 @@
     );
 
     <span style="color:#FF6B35">let mut</span> counter = <span style="color:#F7C948">0</span>;
+    <span style="color:#FF6B35">let mut</span> last_evolution = std::time::Instant::now();
     <span style="color:#FF6B35">loop</span> {
-        step(&amp;<span style="color:#FF6B35">mut</span> counter);  <span style="color:#8b949e">// bare-metal: native dylib call</span>
+        step(&amp;<span style="color:#FF6B35">mut</span> counter);  <span style="color:#8b949e">// bare-metal: calls into the hot-loaded native dylib</span>
         <span style="color:#4ECDC4">println!</span>(<span style="color:#F7C948">"counter: {counter}"</span>);
 
-        <span style="color:#8b949e">// LLM rewrites the fn, harness validates + compiles + hot-swaps</span>
-        runtime.evolve(&amp;agent, &amp;prompt).<span style="color:#FF6B35">await</span>?;
-        <span style="color:#8b949e">// `step` function was updated and new Agent code runs in the next loop iteration</span>
+        <span style="color:#FF6B35">if</span> last_evolution.elapsed() &gt;= std::time::Duration::from_secs(<span style="color:#F7C948">10</span>) {
+            <span style="color:#8b949e">// LLM rewrites the function, harness validates + compiles + hot-swaps</span>
+            runtime.evolve(&amp;agent, &amp;base_prompt).<span style="color:#FF6B35">await</span>?;
+            last_evolution = std::time::Instant::now();
+            <span style="color:#8b949e">// New Agent code runs the next time `step` is called, natively.</span>
+        }
     }
 }</code></pre>
       <div class="video-demo">
-        <p>Similar code to the above can be run with <code>cargo run --bin counter-example</code> in the repo to showcase the function evolution.<br>Here the function is evolved every 5 seconds.</p>
+        <p>Similar code to the above can be run with <code>cargo run -p counter-example</code> in the repo to showcase the function evolution.<br>Here the function is evolved every 5 seconds.</p>
         <video autoplay muted loop playsinline>
           <source src="/symbiont-counter-example.mp4" type="video/mp4">
         </video>
         <p class="tagline-below">Now that you grok the core concept, a whole new world of opportunity opens up...</p>
       </div>
+      <h3 class="setup-title">Development setup</h3>
+      <p class="setup-intro">The project uses <a href="https://nixos.org/">Nix</a> for reproducible
+         builds. Examples run against any OpenAI-compatible inference endpoint, configured in
+         <code>.env</code>:</p>
+      <pre><code>{O}export{E} API_KEY={Y}""{E}
+{O}export{E} BASE_URL={Y}"http://127.0.0.1:8000/v1"{E}
+{O}export{E} MODEL={Y}"Qwen/Qwen3.8-27B-FP8"{E}
+
+{G}# Rust nightly, cargo tools and formatters{E}
+nix develop
+cargo run -p counter-example</code></pre>
     </div>
   </section>
 
@@ -209,6 +225,105 @@
       <p class="showcase-cta">
         <a href="{{ config.extra.github_url }}/tree/main/examples/fractal-studio">
           Explore the fractal-studio example &rarr;
+        </a>
+      </p>
+    </div>
+  </section>
+
+  <!-- Showcase: Evolving Trader -->
+  <section class="showcase">
+    <div class="container">
+      <h2>Showcase: Evolving a Trading Strategy</h2>
+      <p class="showcase-intro">
+        The most complete demonstration: an LLM evolves a futures
+        <strong>trading strategy</strong> as compiled Rust against a realistic exchange
+        simulation. The evolvable
+        <code>fn decide(state: &amp;mut State, candles: &amp;[Candle], account: &amp;AccountState) -&gt; Action</code>
+        keeps its own <code>State</code> between candles, and must discover features, position
+        sizing and fee-awareness &mdash; quantitative reasoning as hot-swapped native code.
+      </p>
+      <img src="/img/evolving-trader-example.png" class="showcase-img"
+           alt="Evolving trader backtest report and equity curve" loading="lazy">
+      <ul class="showcase-points">
+        <li>~1M raw BitMEX XBTUSD trades are aggregated into information-driven
+            <strong>volume candles</strong> with
+            <a href="https://crates.io/crates/trade_aggregation">trade_aggregation</a>.</li>
+        <li>Executions are simulated with the leveraged futures exchange
+            <a href="https://crates.io/crates/lfest">lfest</a> &mdash; taker fees, bid-ask
+            spread and margin requirements included.</li>
+        <li>The agent defines <code>State</code>, so a strategy can remember its entry, wait
+            out a cooldown or keep its own estimators between candles.</li>
+        <li>Each round, the backtest report (return, buy &amp; hold benchmark, drawdown,
+            Sharpe, fees, rejected orders) is fed back to the LLM; the best strategy is
+            evaluated on a <strong>held-out test segment</strong> it has never seen.</li>
+      </ul>
+      <p class="showcase-cta">
+        <a href="{{ config.extra.github_url }}/tree/main/examples/evolving-trader">
+          Explore the evolving-trader example &rarr;
+        </a>
+      </p>
+    </div>
+  </section>
+
+  <!-- Showcase: Memory -->
+  <section class="showcase memory">
+    <div class="container">
+      <h2>Memory Across Rounds</h2>
+      <p class="showcase-intro">
+        The runtime forgets every <code>evolve</code> call on purpose, so request sizes stay
+        bounded in long-lived processes. The optional <code>symbiont-memory</code> crate
+        renders what a population learned into the next prompt &mdash; plain data owned by
+        one task, with a sans-IO reflection step that any model can serve.
+      </p>
+      <div class="bench-grid memory-parts">
+        <div class="bench-card">
+          <h3>Archive</h3>
+          <div class="unit">every evaluated attempt: the best with source, the newest with
+            their report &mdash; bad results warn the next lane</div>
+        </div>
+        <div class="bench-card">
+          <h3>Known pitfalls</h3>
+          <div class="unit">recurring compile errors and panics, counted from the evolution
+            traces, no model call</div>
+        </div>
+        <div class="bench-card">
+          <h3>ACE playbook</h3>
+          <div class="unit">lessons with helpful/harmful counters, curated by one
+            reflection call per round</div>
+        </div>
+        <div class="bench-card">
+          <h3>Islands</h3>
+          <div class="unit">separate memories per sub-population, ring migration and a
+            near-copy check</div>
+        </div>
+      </div>
+      <pre><code><span style="color:#FF6B35">let</span> rendered = memory.render(island, &amp;parents);
+<span style="color:#FF6B35">let</span> prompt = <span style="color:#4ECDC4">format!</span>(<span style="color:#F7C948">"{task}{}{hint}"</span>, rendered.text());
+<span style="color:#8b949e">// ... evolve, then evaluate the candidate ...</span>
+memory.commit_trace(info.trace());
+memory.commit(Evaluated::builder()
+    .id(source_hash).source(code).score(score).report(report)
+    .island(island).bullets_shown(rendered.bullets().to_vec())
+    .build());
+
+<span style="color:#FF6B35">if</span> memory.reflection_due(island) {
+    <span style="color:#FF6B35">let</span> request = memory.reflection_request(island, &amp;task).expect(<span style="color:#F7C948">"due"</span>);
+    <span style="color:#FF6B35">let</span> answer = reflector.run_without_tools(request.user_prompt(), <span style="color:#4ECDC4">vec!</span>[]).<span style="color:#FF6B35">await</span>?.output;
+    memory.apply_reflection(&amp;request, &amp;answer)?;
+}</code></pre>
+      <ul class="showcase-points">
+        <li>The playbook follows <a href="https://arxiv.org/abs/2510.04618">ACE</a>
+            (Agentic Context Engineering): itemized bullets that are only ever added, tagged
+            or pruned by deterministic code, never rewritten wholesale &mdash; so detail does
+            not erode over many rounds. New lessons must cite a measured attempt.</li>
+        <li>Rendering is a pure function of the state, shared part first, then island, then
+            lane, so a server&rsquo;s prefix cache stays warm across a batch.</li>
+        <li><code>RUST_LOG=symbiont_memory=debug</code> shows every commit, rendered section,
+            reflection, new or pruned lesson and migration as it happens.</li>
+      </ul>
+      <p class="showcase-cta">
+        <a href="{{ config.extra.github_url }}/tree/main/examples/memory">
+          Explore the memory example &rarr;
         </a>
       </p>
     </div>
@@ -353,7 +468,7 @@
       <div class="grid">
         <div class="card">
           <h3>Type-safe agentic code</h3>
-          <p>LLms express intent as Rust functions with
+          <p>Agents express intent as Rust functions with
              enforced signatures. The compiler is the guardrail.</p>
         </div>
         <div class="card">
@@ -382,6 +497,46 @@
           <p>Every hot-swapped dylib stays loaded and addressable.
              Roll back, A/B compare, or run an ensemble of past
              revisions concurrently &mdash; no recompilation.</p>
+        </div>
+        <div class="card">
+          <h3>Typed revision handles</h3>
+          <p><code>&lt;name&gt;_fn(revision)</code> returns a typed <code>RevisionFn</code>
+             pinned to any retained revision. Ensembles, tournaments and A/B comparisons
+             dispatch at active-pointer speed.</p>
+        </div>
+        <div class="card">
+          <h3>Agent state between calls</h3>
+          <p>Declare <code>type State</code> in <code>evolvable!</code> and the agent defines
+             the struct its functions keep between calls. The dylib owns the value; a live
+             state pins its revision.</p>
+        </div>
+        <div class="card">
+          <h3>Memory across rounds</h3>
+          <p>Optional <code>symbiont-memory</code>: archive of attempts, known pitfalls, an
+             ACE playbook of curated lessons and islands &mdash; rendered into the next
+             prompt.</p>
+        </div>
+        <div class="card">
+          <h3>Cheap repair rounds</h3>
+          <p>Compile errors come back numbered with line numbers into the agent&rsquo;s own
+             code; it edits instead of retyping. rustc&rsquo;s machine-applicable fixes are
+             applied before the agent is asked at all.</p>
+        </div>
+        <div class="card">
+          <h3>Tool calling</h3>
+          <p>Register any rig <code>Tool</code> and the agent can run tests, probe black-box
+             systems or query data before it commits to an implementation.</p>
+        </div>
+        <div class="card">
+          <h3>Revision tools</h3>
+          <p>The pipeline as tool calls: build, edit, read back and submit revisions inside
+             one run, compare variants with a host evaluator, and choose the best.</p>
+        </div>
+        <div class="card">
+          <h3>Observability</h3>
+          <p>Metrics for attempts, failures, LLM usage, request sizes, pipeline timings,
+             revisions and dylib sizes via the <code>metrics</code> facade, with an optional
+             Prometheus exporter.</p>
         </div>
         <div class="card">
           <h3>Panic catching</h3>
@@ -523,6 +678,28 @@
             <h3>Counter &mdash; Basic hot-reload</h3>
             <p>The simplest example: a counter function hot-swapped
                every 5 seconds with a new LLM implementation.</p>
+          </div>
+        </a>
+        <a href="https://github.com/MathisWellmann/symbiont/tree/main/examples/memory" class="example text-only">
+          <div class="caption">
+            <h3>Memory &mdash; Learning across rounds</h3>
+            <p>An island population on a symbolic-regression task: an archive of attempts,
+               pitfalls from the traces, one reflection call per island and round curating an
+               ACE playbook, ring migration and a near-copy check.</p>
+          </div>
+        </a>
+        <a href="https://github.com/MathisWellmann/symbiont/tree/main/examples/batched-evolution" class="example text-only">
+          <div class="caption">
+            <h3>Batched Evolution &mdash; Population search</h3>
+            <p>Eight prompt variants evolved concurrently, benchmarked against each other
+               through pinned revision handles, and only the fastest correct one activated.</p>
+          </div>
+        </a>
+        <a href="https://github.com/MathisWellmann/symbiont/tree/main/examples/fractal-studio" class="example text-only">
+          <div class="caption">
+            <h3>Fractal Studio &mdash; Human in the loop</h3>
+            <p>An interactive canvas whose per-pixel shader the LLM writes and hot-swaps while
+               the animation keeps running. The user is the evaluator.</p>
           </div>
         </a>
       </div>
