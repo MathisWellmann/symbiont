@@ -206,10 +206,14 @@ ref_option_ref = "warn"
 
 [workspace.dependencies]
 # rig 0.x breaks its API on every minor release, so bump all three together and deliberately.
+getset = "0.1.6"
 rig-agent = "0.44"
 rig-core = "0.44"
 rig-reqwest = "0.44"
 romu = "0.8"
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
 tokio = { version = "1.0", features = ["full"] }
 tracing = "0.1"
+typed-builder = "0.23"
