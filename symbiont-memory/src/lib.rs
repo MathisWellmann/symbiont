@@ -86,6 +86,16 @@
 //! same bytes, which keeps a server's prefix cache warm and makes a recorded
 //! run replayable.
 //!
+//! # Watching it work
+//!
+//! Every state change logs a `tracing` event at `debug` level: commits and
+//! evictions, pitfalls that start to be shown, the size of every rendered
+//! memory section, reflection requests and what each answer changed,
+//! migrations, resets and near-copy verdicts. They are verbose, one or more
+//! per lane and round, so they stay off at the default level. An operator
+//! turns them on with `RUST_LOG=symbiont_memory=debug` (with
+//! `symbiont::init_tracing` or any `EnvFilter` subscriber).
+//!
 //! # Example
 //!
 //! ```
@@ -118,6 +128,7 @@ use serde::{
     Deserialize,
     Serialize,
 };
+use tracing::debug;
 
 use crate::reflection::Pending;
 pub use crate::{
@@ -319,9 +330,36 @@ impl<I: PartialEq + Clone> Memory<I> {
         let island = evaluated.island();
         self.assert_island(island);
         let bullets = evaluated.bullets_shown().to_vec();
+        let shown = bullets.len();
         let committed = self.archive.commit(evaluated);
-        if let Committed::Inserted { seq, .. } = committed {
-            self.pending.push(Pending::new(seq, island, bullets));
+        match committed {
+            Committed::Inserted { seq, evicted } => {
+                self.pending.push(Pending::new(seq, island, bullets));
+                let entry = self
+                    .archive
+                    .by_seq(seq)
+                    .expect("just inserted and protected");
+                debug!(
+                    %seq,
+                    %island,
+                    score = entry.score().get(),
+                    bullets_shown = shown,
+                    evicted = ?evicted.map(|e| e.to_string()),
+                    awaiting_review = self.pending.len(),
+                    archive_len = self.archive.len(),
+                    "memory: committed a new attempt"
+                );
+            }
+            Committed::Updated { seq } => {
+                let entry = self.archive.by_seq(seq).expect("just updated");
+                debug!(
+                    %seq,
+                    %island,
+                    score = entry.score().get(),
+                    islands = ?entry.islands(),
+                    "memory: re-scored a known attempt"
+                );
+            }
         }
         committed
     }
@@ -381,6 +419,15 @@ impl<I: PartialEq + Clone> Memory<I> {
         let taken = pending.len();
         let request = reflection::request(id, self, island, scope, task, pending);
         assert_eq!(request.reviewed().count(), taken);
+        debug!(
+            request = id.get(),
+            %island,
+            ?scope,
+            reviewed = taken,
+            still_waiting = self.pending.len(),
+            prompt_tokens = estimate_tokens(request.user_prompt()),
+            "memory: built a reflection request"
+        );
         Some(request)
     }
 
@@ -400,9 +447,54 @@ impl<I: PartialEq + Clone> Memory<I> {
         if !self.outstanding.contains(&request.id()) {
             return Err(ReflectionError::NotOutstanding(request.id()));
         }
-        let report = reflection::apply(request, answer, &mut self.playbook, &self.archive)?;
+        let report = match reflection::apply(request, answer, &mut self.playbook, &self.archive) {
+            Ok(report) => report,
+            Err(e) => {
+                debug!(
+                    request = request.id().get(),
+                    answer_bytes = answer.len(),
+                    "memory: reflection answer holds no reflection JSON, request stays outstanding"
+                );
+                return Err(e);
+            }
+        };
         self.outstanding.retain(|id| *id != request.id());
+        self.log_curation(request, &report);
         Ok(report)
+    }
+
+    fn log_curation(&self, request: &ReflectionRequest, report: &CurationReport) {
+        debug!(
+            request = request.id().get(),
+            island = %request.island(),
+            added = report.added().len(),
+            rejected = report.rejected().len(),
+            helpful = report.helpful(),
+            harmful = report.harmful(),
+            neutral = report.neutral(),
+            ignored_tags = report.ignored_tags(),
+            unsupported_ops = report.unsupported(),
+            pruned = report.pruned().len(),
+            playbook_len = self.playbook.bullets().len(),
+            key_insight = report.key_insight().as_str(),
+            "memory: applied a reflection"
+        );
+        for id in report.added() {
+            let bullet = self.playbook.get(*id).expect("just added");
+            debug!(
+                bullet = bullet.label().as_str(),
+                scope = ?bullet.scope(),
+                evidence = ?bullet.evidence(),
+                content = bullet.content().as_str(),
+                "memory: playbook lesson added"
+            );
+        }
+        for (content, reason) in report.rejected() {
+            debug!(%reason, content = content.as_str(), "memory: playbook lesson rejected");
+        }
+        for id in report.pruned() {
+            debug!(bullet = id.get(), "memory: refuted playbook lesson pruned");
+        }
     }
 
     /// Return the attempts of an unanswered request to the front of the
@@ -413,9 +505,18 @@ impl<I: PartialEq + Clone> Memory<I> {
             return;
         }
         self.outstanding.retain(|r| *r != id);
+        let island = request.island();
         let mut queue = request.into_pending();
+        let requeued = queue.len();
         queue.append(&mut self.pending);
         self.pending = queue;
+        debug!(
+            request = id.get(),
+            %island,
+            requeued,
+            awaiting_review = self.pending.len(),
+            "memory: abandoned a reflection request, its attempts wait for the next one"
+        );
     }
 
     /// Count the rejected attempts of one lane, see [`Failures::commit_trace`].
@@ -424,6 +525,13 @@ impl<I: PartialEq + Clone> Memory<I> {
     /// method the host type lacks is missing on every island.
     pub fn commit_trace(&mut self, trace: &symbiont::EvolutionTrace) {
         self.failures.commit_trace(trace);
+        debug!(
+            lane = %trace.lane(),
+            attempts = trace.attempts().len(),
+            tracked_failures = self.failures.pitfalls().len(),
+            shown_pitfalls = self.failures.shown().len(),
+            "memory: counted a lane's failures"
+        );
     }
 
     /// Count a panic the host caught while it evaluated a candidate.
@@ -445,11 +553,21 @@ impl<I: PartialEq + Clone> Memory<I> {
             render::render_archive(&self.archive, island, exclude, &self.config.render);
         let (mut shared, mut bullets) = self.playbook.render(Scope::Global);
         shared.push_str(&self.failures.render());
-        let (island, island_bullets) = self.playbook.render(Scope::Island(island));
+        let (island_text, island_bullets) = self.playbook.render(Scope::Island(island));
         bullets.extend(island_bullets);
+        debug!(
+            %island,
+            shared_tokens = estimate_tokens(&shared),
+            island_tokens = estimate_tokens(&island_text),
+            lane_tokens = estimate_tokens(&lane),
+            entries = entries.len(),
+            bullets = bullets.len(),
+            pitfalls = self.failures.shown().len(),
+            "memory: rendered the memory for a lane"
+        );
         Rendered {
             shared,
-            island,
+            island: island_text,
             lane,
             entries,
             bullets,
@@ -494,10 +612,30 @@ impl<I: PartialEq + Clone> Memory<I> {
                 .map(Bullet::id),
         );
         for id in ripe {
-            if self.playbook.promote(id).is_ok() {
-                migration.promoted.push(id);
+            match self.playbook.promote(id) {
+                Ok(()) => migration.promoted.push(id),
+                Err(reason) => {
+                    debug!(bullet = id.get(), %reason, "memory: island lesson not promoted");
+                }
             }
         }
+        for (seq, to) in &migration.migrated {
+            debug!(%seq, to = %to, "memory: attempt migrated");
+        }
+        for id in &migration.promoted {
+            let bullet = self.playbook.get(*id).expect("just promoted");
+            debug!(
+                bullet = bullet.label().as_str(),
+                net = bullet.net(),
+                content = bullet.content().as_str(),
+                "memory: island lesson promoted to the global playbook"
+            );
+        }
+        debug!(
+            migrated = migration.migrated.len(),
+            promoted = migration.promoted.len(),
+            "memory: migration done"
+        );
         migration
     }
 
@@ -516,6 +654,12 @@ impl<I: PartialEq + Clone> Memory<I> {
         self.playbook.clear_island(island);
         self.pending.retain(|p| p.island() != island);
         assert_eq!(self.archive.members(island).count(), 0);
+        debug!(
+            %island,
+            archive_len = self.archive.len(),
+            playbook_len = self.playbook.bullets().len(),
+            "memory: island reset"
+        );
     }
 
     /// The attempt on `island` most similar to `source`, by token trigrams.
@@ -543,10 +687,12 @@ impl<I: PartialEq + Clone> Memory<I> {
             })
             .max_by_key(|&(seq, percent)| (percent, std::cmp::Reverse(seq)))?;
         assert!(percent <= 100);
+        let novel = percent < self.config.islands.novelty_percent();
+        debug!(%island, nearest = %seq, percent, novel, "memory: novelty check");
         Some(Nearest {
             seq,
             percent,
-            novel: percent < self.config.islands.novelty_percent(),
+            novel,
         })
     }
 
@@ -941,5 +1087,23 @@ mod tests {
     fn unknown_islands_are_rejected() {
         let memory = Memory::<u64>::new(islands(2));
         let _ = memory.render(IslandId::new(2), &[]);
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn state_changes_are_logged_at_debug() {
+        let mut memory = Memory::<u64>::new(MemoryConfig::default());
+        let island = IslandId::default();
+        let _ = memory.commit(attempt(1, vec![], 1.0, &[]));
+        let _ = memory.render(island, &[]);
+        let request = memory.reflection_request(island, "t").expect("pending");
+        let answer = r#"{"operations": [{"type": "ADD", "section": "others",
+            "content": "A logged lesson.", "evidence": [0]}]}"#;
+        let _ = memory.apply_reflection(&request, answer).expect("applies");
+        assert!(logs_contain("memory: committed a new attempt"));
+        assert!(logs_contain("memory: rendered the memory for a lane"));
+        assert!(logs_contain("memory: built a reflection request"));
+        assert!(logs_contain("memory: applied a reflection"));
+        assert!(logs_contain("A logged lesson."));
     }
 }

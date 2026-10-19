@@ -6432,6 +6432,8 @@ dependencies = [
  "serde_json",
  "symbiont",
  "thiserror 2.0.20",
+ "tracing",
+ "tracing-test",
  "typed-builder",
 ]
 

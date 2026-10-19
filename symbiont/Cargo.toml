@@ -51,7 +51,7 @@ metrics-util = { version = "0.20", features = ["debugging"] }
 # `MockCompletionModel` + `MockAddTool`: drive the real rig agent loop, and
 # the hooks `Agent` installs on it, without a provider.
 rig-agent = { workspace = true, features = ["test-utils"] }
-tracing-test = "0.2"
+tracing-test.workspace = true
 
 [features]
 default = []

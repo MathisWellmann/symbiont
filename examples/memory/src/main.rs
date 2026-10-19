@@ -21,6 +21,10 @@
 //!
 //! Prompts put the memory's shared part first, then the island part, then
 //! the lane part, so a server with a prefix cache reuses as much as it can.
+//!
+//! Run it with `RUST_LOG=info,symbiont_memory=debug` to watch the memory
+//! work: every commit, rendered section, reflection, new or pruned lesson,
+//! migration and near-copy verdict is logged at `debug` level.
 
 use std::{
     env::var,

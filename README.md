@@ -164,7 +164,8 @@ cargo run -p fractal-studio-example --release
   next prompt: an archive of evaluated attempts, known pitfalls counted from the evolution traces,
   an [ACE](https://arxiv.org/abs/2510.04618) playbook of lessons curated by one reflection call per
   round, and islands with ring migration and a near-copy check. It is plain data owned by one task,
-  and the reflection step is sans-IO, so any model can serve it.
+  and the reflection step is sans-IO, so any model can serve it. `RUST_LOG=symbiont_memory=debug`
+  logs every commit, rendered section, reflection and migration as it happens.
   See the [memory-example](examples/memory/src/main.rs).
 - **Bare-metal performance**:
   Evolved functions run as native compiled code.
