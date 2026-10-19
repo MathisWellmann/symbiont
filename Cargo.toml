@@ -16,6 +16,7 @@ members = [
   "symbiont-dream-rsi",
   "symbiont-dsh-log",
   "symbiont-macros",
+  "symbiont-memory",
 ]
 resolver = "2"
 
