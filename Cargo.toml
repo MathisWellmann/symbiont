@@ -6,6 +6,7 @@ members = [
   "examples/evolving-trader",
   "examples/fizzbuzz",
   "examples/fractal-studio",
+  "examples/memory",
   "examples/quantize",
   "examples/rastrigin",
   "examples/sort",

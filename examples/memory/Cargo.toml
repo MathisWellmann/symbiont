@@ -1,0 +1,18 @@
+[package]
+edition = "2024"
+license = "MPL-2.0"
+name = "memory-example"
+publish = false
+version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# local workspace crates
+symbiont = { path = "../../symbiont" }
+symbiont-memory = { path = "../../symbiont-memory" }
+
+# workspace dependencies
+tokio.workspace = true
+tracing.workspace = true

@@ -246,7 +246,9 @@ struct Operation {
     evidence: Vec<Value>,
 }
 
-pub(crate) const SYSTEM_PROMPT: &str = "\
+/// The system prompt of every [`ReflectionRequest`]. It never changes, so a
+/// host can build its reflection agent with it as the preamble up front.
+pub const REFLECTION_SYSTEM_PROMPT: &str = "\
 You are an expert analyst and a curator of knowledge. A code-evolution harness asks a model to \
 write a Rust function for an optimization problem, compiles it and scores it. You review a batch \
 of these evaluated attempts and maintain the playbook of lessons that every future attempt is \
@@ -345,7 +347,7 @@ pub(crate) fn request<I: PartialEq + Clone>(
         id,
         island,
         scope,
-        system_prompt: SYSTEM_PROMPT.to_string(),
+        system_prompt: REFLECTION_SYSTEM_PROMPT.to_string(),
         user_prompt: user,
         pending,
         shown,

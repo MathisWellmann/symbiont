@@ -155,6 +155,7 @@ pub use crate::{
     },
     reflection::{
         CurationReport,
+        REFLECTION_SYSTEM_PROMPT,
         ReflectionConfig,
         ReflectionError,
         ReflectionRequest,

@@ -158,6 +158,14 @@ cargo run -p fractal-studio-example --release
   hill-climbing into an actual population search.
   See the [batched-evolution-example](examples/batched-evolution/README.md) and the
   [throughput benchmark](symbiont/benches/vllm/README.md).
+- **Memory across evolve calls (optional)**:
+  The runtime forgets every `evolve` call on purpose, so request sizes stay bounded. The separate
+  [`symbiont-memory`](symbiont-memory/src/lib.rs) crate renders what a population learned into the
+  next prompt: an archive of evaluated attempts, known pitfalls counted from the evolution traces,
+  an [ACE](https://arxiv.org/abs/2510.04618) playbook of lessons curated by one reflection call per
+  round, and islands with ring migration and a near-copy check. It is plain data owned by one task,
+  and the reflection step is sans-IO, so any model can serve it.
+  See the [memory-example](examples/memory/src/main.rs).
 - **Bare-metal performance**:
   Evolved functions run as native compiled code.
   The dispatch overhead is **~1 ns per call** (a single atomic pointer load + indirect call).
@@ -219,6 +227,8 @@ cargo run -p fractal-studio-example --release
   - See [quatize-example](examples/quantize/README.md)
 - Population search: many prompt variants per round, evaluated against each other before one is adopted.
   - See [batched-evolution-example](examples/batched-evolution/README.md)
+- Population search that learns across rounds: archive, pitfalls, a curated playbook and islands.
+  - See [memory-example](examples/memory/src/main.rs)
 - Black-box optimization of inputs that produce desired outputs, e.g. Parameter Search.
 - Self-evolving feature processing pipelines.
 - Agentic code evolution generally.
