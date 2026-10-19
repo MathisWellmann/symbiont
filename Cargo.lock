@@ -3713,6 +3713,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "memory-example"
+version = "0.44.0"
+dependencies = [
+ "symbiont",
+ "symbiont-memory",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "metrics"
 version = "0.24.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
