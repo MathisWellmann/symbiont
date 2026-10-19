@@ -123,6 +123,12 @@ impl RequestId {
     pub(crate) fn new(n: u32) -> Self {
         Self(n)
     }
+
+    /// The number.
+    #[must_use]
+    pub fn get(self) -> u32 {
+        self.0
+    }
 }
 
 /// The prompts of one reflection call. Send [`Self::system_prompt`] as the

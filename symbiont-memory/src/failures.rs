@@ -21,6 +21,7 @@ use symbiont::{
     EvolutionTrace,
     LadderEvent,
 };
+use tracing::debug;
 
 use crate::render::EXPECT_WRITE;
 
@@ -156,6 +157,14 @@ impl Failures {
         if let Some(pitfall) = self.pitfalls.iter_mut().find(|p| p.signature == signature) {
             pitfall.count += 1;
             pitfall.last_seen = self.clock;
+            if pitfall.count == self.config.min_occurrences {
+                debug!(
+                    kind = pitfall.kind.as_str(),
+                    count = pitfall.count,
+                    signature = pitfall.signature.as_str(),
+                    "memory: failure recurred, now a known pitfall candidate"
+                );
+            }
             return;
         }
         if self.pitfalls.len() >= self.config.max_tracked {
