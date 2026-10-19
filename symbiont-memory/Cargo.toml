@@ -14,7 +14,7 @@ workspace = true
 
 [dependencies]
 # local workspace crates
-symbiont = { version = "0.44.0", path = "../symbiont" }
+symbiont = { version = "0.45.0", path = "../symbiont" }
 
 # workspace dependencies
 getset.workspace = true

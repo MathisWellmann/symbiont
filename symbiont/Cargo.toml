@@ -16,8 +16,8 @@ version.workspace = true
 workspace = true
 
 [dependencies]
-dsh-log = { version = "0.44.0", path = "../symbiont-dsh-log", package = "symbiont-dsh-log" }
-symbiont-macros = { version = "0.44.0", path = "../symbiont-macros" }
+dsh-log = { version = "0.45.0", path = "../symbiont-dsh-log", package = "symbiont-dsh-log" }
+symbiont-macros = { version = "0.45.0", path = "../symbiont-macros" }
 
 getset.workspace = true
 rig-agent.workspace = true
