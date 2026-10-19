@@ -20,6 +20,7 @@ use typed_builder::TypedBuilder;
 use crate::{
     BulletId,
     ConfigError,
+    IslandId,
 };
 
 /// A finite fitness value. Higher is better.
@@ -140,6 +141,9 @@ pub struct Evaluated<I> {
     /// panics. It goes into later prompts as is.
     #[builder(default, setter(into))]
     report: String,
+    /// The island of the lane that wrote it.
+    #[builder(default)]
+    island: IslandId,
     /// The playbook bullets the lane that wrote this attempt was shown, from
     /// [`crate::Rendered::bullets`]. The reflection step tags exactly these.
     #[builder(default)]
@@ -149,6 +153,10 @@ pub struct Evaluated<I> {
 impl<I> Evaluated<I> {
     pub(crate) fn bullets_shown(&self) -> &[BulletId] {
         &self.bullets_shown
+    }
+
+    pub(crate) fn island(&self) -> IslandId {
+        self.island
     }
 }
 
@@ -173,12 +181,15 @@ pub struct Entry<I> {
     /// The latest evaluation report.
     #[getset(get = "pub")]
     report: String,
+    /// The islands that hold it, ascending.
+    #[getset(get = "pub")]
+    islands: Vec<IslandId>,
 }
 
 /// The size limits of an [`Archive`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, CopyGetters)]
 pub struct ArchiveConfig {
-    /// The most entries the archive holds.
+    /// The most entries one island holds.
     #[getset(get_copy = "pub")]
     capacity: usize,
     /// The newest entries that eviction never removes, so the record of what
@@ -220,17 +231,18 @@ impl Default for ArchiveConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[must_use]
 pub enum Committed {
-    /// The id was new. The entry got `seq`, and committing it pushed the
-    /// archive over capacity by one, so the `evicted` entry was dropped.
+    /// The id was new. The entry got `seq`. If committing it pushed its
+    /// island over capacity, the `evicted` entry left that island (and the
+    /// archive, unless another island still holds it).
     Inserted {
         /// The commit number of the new entry.
         seq: EntrySeq,
-        /// The entry eviction removed, if the archive was full.
+        /// The entry eviction removed from the island, if it was full.
         evicted: Option<EntrySeq>,
     },
     /// The id was already in the archive, for example a re-evaluation after
     /// the data window moved. Its score and report were replaced; it keeps
-    /// its commit number.
+    /// its commit number and joined the committing island.
     Updated {
         /// The commit number of the existing entry.
         seq: EntrySeq,
@@ -247,7 +259,11 @@ impl Committed {
     }
 }
 
-/// Every evaluated attempt, up to [`ArchiveConfig::capacity`].
+/// Every evaluated attempt, up to [`ArchiveConfig::capacity`] per island.
+///
+/// An entry belongs to one or more islands: the one that committed it, and
+/// any it migrated to. Capacity is enforced per island, so a strong island
+/// cannot evict a weak island's whole history.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Archive<I> {
     /// Ascending by `seq`.
@@ -280,12 +296,18 @@ impl<I: PartialEq + Clone> Archive<I> {
             source,
             score,
             report,
+            island,
             bullets_shown: _,
         } = evaluated;
-        if let Some(entry) = self.entries.iter_mut().find(|e| e.id == id) {
+        if let Some(idx) = self.entries.iter().position(|e| e.id == id) {
+            let entry = &mut self.entries[idx];
             entry.score = score;
             entry.report = report;
-            return Committed::Updated { seq: entry.seq };
+            let seq = entry.seq;
+            if self.join(idx, island) {
+                let _ = self.evict_over(island);
+            }
+            return Committed::Updated { seq };
         }
 
         let seq = EntrySeq(self.next_seq);
@@ -297,26 +319,77 @@ impl<I: PartialEq + Clone> Archive<I> {
             source,
             score,
             report,
+            islands: vec![island],
         });
-        let evicted = (self.entries.len() > self.config.capacity).then(|| self.evict());
-        assert!(self.entries.len() <= self.config.capacity);
+        let evicted = self.evict_over(island);
+        assert!(self.members(island).count() <= self.config.capacity);
         if let Some(evicted) = evicted {
             assert_ne!(evicted, seq, "the new entry is protected");
         }
         Committed::Inserted { seq, evicted }
     }
 
-    /// Remove the worst entry outside the protected recent tail. Ties go to
-    /// the older entry.
-    fn evict(&mut self) -> EntrySeq {
-        let open = self.entries.len() - self.config.protect_recent;
+    /// Add `island` to the entry at `idx`. Returns whether it was new.
+    fn join(&mut self, idx: usize, island: IslandId) -> bool {
+        let islands = &mut self.entries[idx].islands;
+        match islands.binary_search(&island) {
+            Ok(_) => false,
+            Err(at) => {
+                islands.insert(at, island);
+                true
+            }
+        }
+    }
+
+    /// If `island` holds more than its capacity, drop its worst member
+    /// outside the protected recent tail from it. Ties go to the older
+    /// entry. An entry that no island holds any more leaves the archive.
+    fn evict_over(&mut self, island: IslandId) -> Option<EntrySeq> {
+        let members = Vec::from_iter(
+            self.entries
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| e.islands.contains(&island))
+                .map(|(idx, _)| idx),
+        );
+        if members.len() <= self.config.capacity {
+            return None;
+        }
+        let open = members.len() - self.config.protect_recent;
         assert!(open > 0, "capacity exceeds protect_recent");
-        let (idx, _) = self.entries[..open]
+        let idx = *members[..open]
             .iter()
-            .enumerate()
-            .min_by_key(|(_, e)| (e.score, e.seq))
-            .expect("at least one unprotected entry");
-        self.entries.remove(idx).seq
+            .min_by_key(|&&idx| (self.entries[idx].score, self.entries[idx].seq))
+            .expect("at least one unprotected member");
+        let seq = self.entries[idx].seq;
+        self.entries[idx].islands.retain(|i| *i != island);
+        if self.entries[idx].islands.is_empty() {
+            self.entries.remove(idx);
+        }
+        Some(seq)
+    }
+
+    /// Add an entry to another island, as migration does. Returns `false` if
+    /// the entry is unknown or already there. The island may evict a member
+    /// to make room, possibly the newcomer itself if it is the worst.
+    pub(crate) fn migrate(&mut self, seq: EntrySeq, island: IslandId) -> bool {
+        let Ok(idx) = self.entries.binary_search_by_key(&seq, |e| e.seq) else {
+            return false;
+        };
+        if !self.join(idx, island) {
+            return false;
+        }
+        let _ = self.evict_over(island);
+        true
+    }
+
+    /// Drop every entry from `island`. Entries no other island holds leave
+    /// the archive.
+    pub(crate) fn clear_island(&mut self, island: IslandId) {
+        for entry in &mut self.entries {
+            entry.islands.retain(|i| *i != island);
+        }
+        self.entries.retain(|e| !e.islands.is_empty());
     }
 
     /// Replace the score and report of a known candidate. Returns `false` if
@@ -361,18 +434,28 @@ impl<I: PartialEq + Clone> Archive<I> {
         self.entries.iter()
     }
 
-    /// Every entry, best first. Ties go to the older entry, so the order is
-    /// stable from one call to the next.
+    /// The entries `island` holds, oldest first.
+    pub fn members(&self, island: IslandId) -> impl Iterator<Item = &Entry<I>> {
+        self.entries
+            .iter()
+            .filter(move |e| e.islands.contains(&island))
+    }
+
+    /// The entries `island` holds, best first. Ties go to the older entry,
+    /// so the order is stable from one call to the next.
     #[must_use]
-    pub fn ranked(&self) -> Vec<&Entry<I>> {
-        let mut ranked = Vec::from_iter(self.entries.iter());
+    pub fn ranked(&self, island: IslandId) -> Vec<&Entry<I>> {
+        let mut ranked = Vec::from_iter(self.members(island));
         ranked.sort_by(|a, b| b.score.cmp(&a.score).then(a.seq.cmp(&b.seq)));
         ranked
     }
 
-    /// Every entry, newest first.
-    pub fn recent(&self) -> impl Iterator<Item = &Entry<I>> {
-        self.entries.iter().rev()
+    /// The entries `island` holds, newest first.
+    pub fn recent(&self, island: IslandId) -> impl Iterator<Item = &Entry<I>> {
+        self.entries
+            .iter()
+            .rev()
+            .filter(move |e| e.islands.contains(&island))
     }
 
     /// The number of entries.
@@ -473,9 +556,14 @@ mod tests {
         for (id, score) in [(1, 1.0), (2, 3.0), (3, 3.0), (4, -1.0)] {
             let _ = archive.commit(eval(id, score));
         }
-        let ids = Vec::from_iter(archive.ranked().into_iter().map(|e| *e.id()));
+        let ids = Vec::from_iter(
+            archive
+                .ranked(IslandId::default())
+                .into_iter()
+                .map(|e| *e.id()),
+        );
         assert_eq!(ids, vec![2, 3, 1, 4]);
-        let recent = Vec::from_iter(archive.recent().map(|e| *e.id()));
+        let recent = Vec::from_iter(archive.recent(IslandId::default()).map(|e| *e.id()));
         assert_eq!(recent, vec![4, 3, 2, 1]);
     }
 
@@ -491,5 +579,73 @@ mod tests {
         assert!(archive.remove(&2).is_none());
         archive.retain(|e| e.score().get() < 5.0);
         assert!(archive.is_empty());
+    }
+
+    fn on(island: u16, id: u64, score: f64) -> Evaluated<u64> {
+        Evaluated::builder()
+            .id(id)
+            .source(String::new())
+            .score(Score::new(score).expect("finite"))
+            .island(IslandId::new(island))
+            .build()
+    }
+
+    #[test]
+    fn capacity_is_per_island() {
+        let mut archive = Archive::new(ArchiveConfig::new(2, 0).expect("valid"));
+        let _ = archive.commit(on(0, 1, 9.0));
+        let _ = archive.commit(on(0, 2, 8.0));
+        let _ = archive.commit(on(1, 3, 1.0));
+        let _ = archive.commit(on(1, 4, 0.0));
+        // Island 0 is full of strong entries; island 1 keeps its weak ones.
+        let committed = archive.commit(on(1, 5, 0.5));
+        assert_eq!(
+            committed,
+            Committed::Inserted {
+                seq: EntrySeq(4),
+                evicted: Some(EntrySeq(3)),
+            }
+        );
+        assert_eq!(archive.members(IslandId::new(0)).count(), 2);
+        let island1 = Vec::from_iter(
+            archive
+                .ranked(IslandId::new(1))
+                .into_iter()
+                .map(|e| *e.id()),
+        );
+        assert_eq!(island1, vec![3, 5]);
+    }
+
+    #[test]
+    fn migration_shares_an_entry_between_islands() {
+        let mut archive = Archive::new(ArchiveConfig::new(2, 0).expect("valid"));
+        let a = archive.commit(on(0, 1, 9.0)).seq();
+        let _ = archive.commit(on(1, 2, 1.0));
+        let _ = archive.commit(on(1, 3, 2.0));
+        assert!(archive.migrate(a, IslandId::new(1)));
+        assert!(!archive.migrate(a, IslandId::new(1)), "already there");
+        assert!(!archive.migrate(EntrySeq(99), IslandId::new(1)));
+        let entry = archive.by_seq(a).expect("known");
+        assert_eq!(entry.islands(), &[IslandId::new(0), IslandId::new(1)]);
+        // The migrant pushed island 1's worst member out.
+        assert!(archive.get(&2).is_none());
+
+        archive.clear_island(IslandId::new(0));
+        assert_eq!(
+            archive.by_seq(a).expect("still on 1").islands(),
+            &[IslandId::new(1)]
+        );
+        archive.clear_island(IslandId::new(1));
+        assert!(archive.is_empty());
+    }
+
+    #[test]
+    fn a_known_id_joins_the_committing_island() {
+        let mut archive = Archive::new(ArchiveConfig::default());
+        let seq = archive.commit(on(0, 1, 1.0)).seq();
+        assert_eq!(archive.commit(on(1, 1, 2.0)), Committed::Updated { seq });
+        let entry = archive.get(&1).expect("known");
+        assert_eq!(entry.islands(), &[IslandId::new(0), IslandId::new(1)]);
+        assert_eq!(entry.score().get(), 2.0);
     }
 }
