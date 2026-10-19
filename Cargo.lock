@@ -6419,6 +6419,7 @@ version = "0.44.0"
 dependencies = [
  "getset",
  "serde",
+ "serde_json",
  "symbiont",
  "thiserror 2.0.20",
  "typed-builder",

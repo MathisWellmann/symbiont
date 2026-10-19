@@ -17,7 +17,10 @@ use serde::{
 };
 use typed_builder::TypedBuilder;
 
-use crate::ConfigError;
+use crate::{
+    BulletId,
+    ConfigError,
+};
 
 /// A finite fitness value. Higher is better.
 ///
@@ -98,7 +101,6 @@ pub struct EntrySeq(u64);
 
 impl EntrySeq {
     /// The handle with number `n`, for parsing a `#n` the model wrote.
-    #[cfg(test)]
     pub(crate) const fn from_raw(n: u64) -> Self {
         Self(n)
     }
@@ -138,6 +140,16 @@ pub struct Evaluated<I> {
     /// panics. It goes into later prompts as is.
     #[builder(default, setter(into))]
     report: String,
+    /// The playbook bullets the lane that wrote this attempt was shown, from
+    /// [`crate::Rendered::bullets`]. The reflection step tags exactly these.
+    #[builder(default)]
+    bullets_shown: Vec<BulletId>,
+}
+
+impl<I> Evaluated<I> {
+    pub(crate) fn bullets_shown(&self) -> &[BulletId] {
+        &self.bullets_shown
+    }
 }
 
 /// An attempt in the [`Archive`].
@@ -268,6 +280,7 @@ impl<I: PartialEq + Clone> Archive<I> {
             source,
             score,
             report,
+            bullets_shown: _,
         } = evaluated;
         if let Some(entry) = self.entries.iter_mut().find(|e| e.id == id) {
             entry.score = score;
