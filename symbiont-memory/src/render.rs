@@ -35,6 +35,10 @@ pub fn estimate_tokens(text: &str) -> usize {
 
 /// How much of the archive goes into a prompt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, CopyGetters)]
+// Missing fields take their defaults, so a config file names only what it
+// changes. Deserializing skips the constructors: check with
+// `MemoryConfig::validate`.
+#[serde(default)]
 #[getset(get_copy = "pub")]
 pub struct RenderConfig {
     /// The best entries shown with their report.
@@ -140,7 +144,13 @@ pub(crate) fn render_archive<I: PartialEq + Clone>(
     }
 
     if !elite_blocks.is_empty() {
-        text.push_str("## Best attempts so far\n\n");
+        // With exclusions the host shows its own (better) members itself, so
+        // "best so far" would be false next to them.
+        text.push_str(if exclude.is_empty() {
+            "## Best attempts so far\n\n"
+        } else {
+            "## Best attempts not shown above\n\n"
+        });
         text.extend(elite_blocks);
     }
     if !recent_blocks.is_empty() {
@@ -282,6 +292,7 @@ mod tests {
         );
         assert_eq!(shown, vec![EntrySeq::from_raw(0)]);
         assert!(!text.contains("report of 1"));
+        assert!(text.starts_with("## Best attempts not shown above"));
     }
 
     #[test]

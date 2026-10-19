@@ -237,6 +237,10 @@ impl Tag {
 
 /// The limits of a [`Playbook`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, CopyGetters)]
+// Missing fields take their defaults, so a config file names only what it
+// changes. Deserializing skips the constructors: check with
+// `MemoryConfig::validate`.
+#[serde(default)]
 #[getset(get_copy = "pub")]
 pub struct PlaybookConfig {
     /// The most bullets kept per scope (the global playbook, and each
