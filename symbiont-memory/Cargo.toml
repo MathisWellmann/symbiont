@@ -1,7 +1,7 @@
 [package]
 authors = ["MathisWellmann <wellmannmathis@gmail.com>"]
 categories = ["algorithms", "artificial-intelligence"]
-description = "Optional memory across symbiont evolve calls: an archive of evaluated programs, rendered into the next prompt."
+description = "Optional memory across symbiont evolve calls: an archive of evaluated programs and recurring failures, rendered into the next prompt."
 edition = "2024"
 keywords = ["agent", "evolution", "llm", "memory"]
 license = "MPL-2.0"
@@ -13,6 +13,9 @@ version.workspace = true
 workspace = true
 
 [dependencies]
+# local workspace crates
+symbiont = { version = "0.44.0", path = "../symbiont" }
+
 # workspace dependencies
 getset.workspace = true
 serde.workspace = true
