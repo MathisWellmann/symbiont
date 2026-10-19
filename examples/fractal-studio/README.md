@@ -20,8 +20,10 @@ hot-swaps the dylib. The live animation morphs in place, no restart.
   fractal workloads running hundreds of iterations per pixel. The ~1.6 ns
   dispatch overhead makes the hot-swap abstraction effectively free — an
   interpreted agent-code loop would be orders of magnitude too slow to animate.
-- **Human-in-the-loop evolution**: the user is the evaluator. The runtime keeps
-  the chat history, so follow-up prompts refine the current shader.
+- **Human-in-the-loop evolution**: the user is the evaluator. The runtime
+  forgets every evolve call, so the example keeps the session itself: each
+  follow-up prompt carries the running shader's code and the requests behind
+  it, so "now make the palette cycle with time" refines the current shader.
 - **Constrained generation, visibly**: the side panel shows the exact code that
   is currently running; parse/signature/compiler errors are fed back to the
   agent automatically until the code is valid.

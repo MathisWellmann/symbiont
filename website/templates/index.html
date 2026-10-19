@@ -201,8 +201,8 @@
         <li><code>shade</code> is called once per pixel (~0.5M calls/frame), parallelized
             over all cores &mdash; an interpreted agent-code loop would be orders of
             magnitude too slow to animate.</li>
-        <li>The user is the evaluator: the runtime keeps the chat history, so follow-up
-            prompts refine the current shader.</li>
+        <li>The user is the evaluator: each follow-up prompt carries the running shader&rsquo;s
+            code and the requests behind it, so follow-ups refine the current shader.</li>
         <li>Agent code panics are caught inside the dylib (rendered as black pixels)
             and fed back into the next evolution prompt.</li>
       </ul>
