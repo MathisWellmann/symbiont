@@ -31,6 +31,10 @@ const MAX_SIGNATURE_BYTES: usize = 200;
 
 /// How the pitfall list is kept and shown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, CopyGetters)]
+// Missing fields take their defaults, so a config file names only what it
+// changes. Deserializing skips the constructors: check with
+// `MemoryConfig::validate`.
+#[serde(default)]
 #[getset(get_copy = "pub")]
 pub struct FailureConfig {
     /// How many lanes must hit a failure before it is shown. One hit can be

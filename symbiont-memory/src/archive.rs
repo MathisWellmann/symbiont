@@ -188,6 +188,10 @@ pub struct Entry<I> {
 
 /// The size limits of an [`Archive`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, CopyGetters)]
+// Missing fields take their defaults, so a config file names only what it
+// changes. Deserializing skips the constructors: check with
+// `MemoryConfig::validate`.
+#[serde(default)]
 pub struct ArchiveConfig {
     /// The most entries one island holds.
     #[getset(get_copy = "pub")]

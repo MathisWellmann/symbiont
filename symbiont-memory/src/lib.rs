@@ -195,10 +195,22 @@ pub enum ConfigError {
     /// There must be at least one island.
     #[error("the island count must be positive")]
     NoIslands,
+    /// A limit outside the range it works in.
+    #[error("{field} {reason}")]
+    Range {
+        /// The config field, e.g. `playbook.max_bullets`.
+        field: &'static str,
+        /// What the value must be.
+        reason: &'static str,
+    },
 }
 
 /// The configuration of a [`Memory`].
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+// Missing fields take their defaults, so a config file names only what it
+// changes. Deserializing skips the constructors: check with
+// `MemoryConfig::validate`.
+#[serde(default)]
 pub struct MemoryConfig {
     /// The archive limits.
     pub archive: ArchiveConfig,
@@ -212,6 +224,77 @@ pub struct MemoryConfig {
     pub reflection: ReflectionConfig,
     /// The islands.
     pub islands: IslandConfig,
+}
+
+impl MemoryConfig {
+    /// Check the limits that the constructors of the parts enforce, for a
+    /// config that came from a file: deserializing bypasses them.
+    ///
+    /// # Errors
+    ///
+    /// The first [`ConfigError`] found.
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        let archive = self.archive;
+        let _ = ArchiveConfig::new(archive.capacity(), archive.protect_recent())?;
+        let islands = self.islands;
+        let _ = IslandConfig::new(
+            islands.count(),
+            islands.migrants(),
+            islands.promote_net(),
+            islands.novelty_percent(),
+        )?;
+        let checks = [
+            (
+                self.reflection.reflect_every() == 0,
+                "reflection.reflect_every",
+                "must be positive",
+            ),
+            (
+                self.reflection.max_reviewed() == 0,
+                "reflection.max_reviewed",
+                "must be positive",
+            ),
+            (
+                self.playbook.max_bullets() == 0,
+                "playbook.max_bullets",
+                "must be positive",
+            ),
+            (
+                self.playbook.prune_margin() == 0,
+                "playbook.prune_margin",
+                "must be positive",
+            ),
+            (
+                self.playbook.duplicate_percent() > 100,
+                "playbook.duplicate_percent",
+                "must be at most 100",
+            ),
+            (
+                self.failures.min_occurrences() == 0,
+                "failures.min_occurrences",
+                "must be positive",
+            ),
+            (
+                self.failures.max_tracked() < self.failures.max_shown().max(1),
+                "failures.max_tracked",
+                "must be positive and at least failures.max_shown",
+            ),
+            (
+                islands.promote_net() == 0,
+                "islands.promote_net",
+                "must be positive",
+            ),
+            (
+                islands.novelty_percent() > 100,
+                "islands.novelty_percent",
+                "must be at most 100",
+            ),
+        ];
+        match checks.into_iter().find(|(bad, _, _)| *bad) {
+            Some((_, field, reason)) => Err(ConfigError::Range { field, reason }),
+            None => Ok(()),
+        }
+    }
 }
 
 /// The memory of one optimization problem.
@@ -296,8 +379,16 @@ impl Rendered {
 
 impl<I: PartialEq + Clone> Memory<I> {
     /// An empty memory.
+    ///
+    /// # Panics
+    ///
+    /// If [`MemoryConfig::validate`] rejects `config`: a host that reads the
+    /// config from a file validates it first.
     #[must_use]
     pub fn new(config: MemoryConfig) -> Self {
+        if let Err(e) = config.validate() {
+            panic!("invalid memory config: {e}");
+        }
         Self {
             archive: Archive::new(config.archive),
             failures: Failures::new(config.failures),
@@ -1105,5 +1196,47 @@ mod tests {
         assert!(logs_contain("memory: built a reflection request"));
         assert!(logs_contain("memory: applied a reflection"));
         assert!(logs_contain("A logged lesson."));
+    }
+
+    #[test]
+    fn configs_fill_missing_fields_and_validate() {
+        let config: MemoryConfig =
+            serde_json::from_str(r#"{"islands": {"count": 3}}"#).expect("partial config parses");
+        assert_eq!(config.islands.count(), 3);
+        assert_eq!(
+            config.islands.migrants(),
+            IslandConfig::default().migrants()
+        );
+        assert_eq!(config.archive, ArchiveConfig::default());
+        assert_eq!(config.validate(), Ok(()));
+        assert_eq!(MemoryConfig::default().validate(), Ok(()));
+
+        let no_islands: MemoryConfig =
+            serde_json::from_str(r#"{"islands": {"count": 0}}"#).expect("parses");
+        assert_eq!(no_islands.validate(), Err(ConfigError::NoIslands));
+        let full: MemoryConfig =
+            serde_json::from_str(r#"{"archive": {"capacity": 4, "protect_recent": 4}}"#)
+                .expect("parses");
+        assert!(matches!(
+            full.validate(),
+            Err(ConfigError::ArchiveCapacity { .. })
+        ));
+        let zero: MemoryConfig =
+            serde_json::from_str(r#"{"playbook": {"max_bullets": 0}}"#).expect("parses");
+        assert_eq!(
+            zero.validate(),
+            Err(ConfigError::Range {
+                field: "playbook.max_bullets",
+                reason: "must be positive",
+            })
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid memory config")]
+    fn new_rejects_an_invalid_config() {
+        let config: MemoryConfig =
+            serde_json::from_str(r#"{"reflection": {"max_reviewed": 0}}"#).expect("parses");
+        let _ = Memory::<u64>::new(config);
     }
 }

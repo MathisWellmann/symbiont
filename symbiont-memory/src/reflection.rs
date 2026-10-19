@@ -48,6 +48,10 @@ use crate::{
 
 /// When and how much the reflection step reviews.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, CopyGetters)]
+// Missing fields take their defaults, so a config file names only what it
+// changes. Deserializing skips the constructors: check with
+// `MemoryConfig::validate`.
+#[serde(default)]
 #[getset(get_copy = "pub")]
 pub struct ReflectionConfig {
     /// [`crate::Memory::reflection_due`] turns true once this many new

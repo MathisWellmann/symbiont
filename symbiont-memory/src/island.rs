@@ -80,6 +80,10 @@ impl Scope {
 
 /// How many islands there are and how they exchange knowledge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, CopyGetters)]
+// Missing fields take their defaults, so a config file names only what it
+// changes. Deserializing skips the constructors: check with
+// `MemoryConfig::validate`.
+#[serde(default)]
 #[getset(get_copy = "pub")]
 pub struct IslandConfig {
     /// The number of islands. With one island, every lesson is global and
