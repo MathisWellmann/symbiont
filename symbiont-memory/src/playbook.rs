@@ -471,6 +471,30 @@ impl Playbook {
     }
 }
 
+impl Playbook {
+    /// Every bullet in ACE's line format, grouped by section, with no budget:
+    /// the reviewer must see the whole playbook to avoid proposing a
+    /// duplicate.
+    pub(crate) fn lines(&self) -> String {
+        let mut text = String::new();
+        for section in Section::ALL {
+            let mut in_section = self
+                .bullets
+                .iter()
+                .filter(|b| b.section == section)
+                .peekable();
+            if in_section.peek().is_none() {
+                continue;
+            }
+            writeln!(text, "### {}", section.header()).expect(EXPECT_WRITE);
+            for bullet in in_section {
+                text.push_str(&line(bullet));
+            }
+        }
+        text
+    }
+}
+
 const PLAYBOOK_HEADER: &str = "## Playbook\n\n\
     Lessons from earlier rounds, as `[id] helpful=X harmful=Y :: lesson`. \
     The counts say how often a review confirmed or refuted a lesson.\n\n";
