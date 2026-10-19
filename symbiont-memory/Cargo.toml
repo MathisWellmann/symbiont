@@ -1,0 +1,20 @@
+[package]
+authors = ["MathisWellmann <wellmannmathis@gmail.com>"]
+categories = ["algorithms", "artificial-intelligence"]
+description = "Optional memory across symbiont evolve calls: an archive of evaluated programs, rendered into the next prompt."
+edition = "2024"
+keywords = ["agent", "evolution", "llm", "memory"]
+license = "MPL-2.0"
+name = "symbiont-memory"
+repository = "https://github.com/MathisWellmann/symbiont"
+version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# workspace dependencies
+getset.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+typed-builder.workspace = true
