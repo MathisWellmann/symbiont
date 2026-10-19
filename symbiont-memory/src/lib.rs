@@ -23,6 +23,15 @@
 //! the prompt, so the next lane does not invent the same method or index out
 //! of bounds again. Counting needs no model call.
 //!
+//! # The playbook
+//!
+//! [`Playbook`] holds lessons as itemized bullets with helpful and harmful
+//! counters, as in ACE (*Agentic Context Engineering*,
+//! [arXiv:2510.04618](https://arxiv.org/abs/2510.04618)). Bullets are only
+//! ever added, tagged or removed by deterministic code, never rewritten as a
+//! whole, which keeps detail from eroding over many rounds. A host can seed
+//! it with lessons it already knows through [`Memory::playbook_mut`].
+//!
 //! # Ownership and determinism
 //!
 //! A [`Memory`] is plain data. It is owned by one task, mutated through
@@ -55,6 +64,7 @@
 
 mod archive;
 mod failures;
+mod playbook;
 mod render;
 
 use serde::{
@@ -77,6 +87,15 @@ pub use crate::{
         FailureConfig,
         Failures,
         Pitfall,
+    },
+    playbook::{
+        Bullet,
+        BulletId,
+        Playbook,
+        PlaybookConfig,
+        Rejection,
+        Section,
+        Tag,
     },
     render::{
         RenderConfig,
@@ -109,6 +128,8 @@ pub struct MemoryConfig {
     pub render: RenderConfig,
     /// How recurring failures are kept and shown.
     pub failures: FailureConfig,
+    /// The playbook limits.
+    pub playbook: PlaybookConfig,
 }
 
 /// The memory of one optimization problem.
@@ -117,6 +138,7 @@ pub struct Memory<I> {
     config: MemoryConfig,
     archive: Archive<I>,
     failures: Failures,
+    playbook: Playbook,
 }
 
 /// The prompt text of a [`Memory`], see [`Memory::render`].
@@ -126,6 +148,7 @@ pub struct Rendered {
     shared: String,
     lane: String,
     entries: Vec<EntrySeq>,
+    bullets: Vec<BulletId>,
 }
 
 impl Rendered {
@@ -139,8 +162,8 @@ impl Rendered {
         text
     }
 
-    /// The part every lane sees alike, such as the known pitfalls. It changes
-    /// rarely, so a host that cares about a server's prefix cache puts it
+    /// The part every lane sees alike: the playbook and the known pitfalls.
+    /// It changes rarely, so a host that cares about a server's prefix cache puts it
     /// before anything lane-specific in the prompt.
     #[must_use]
     pub fn shared(&self) -> &str {
@@ -162,6 +185,12 @@ impl Rendered {
     pub fn entries(&self) -> &[EntrySeq] {
         &self.entries
     }
+
+    /// The playbook bullets the text shows.
+    #[must_use]
+    pub fn bullets(&self) -> &[BulletId] {
+        &self.bullets
+    }
 }
 
 impl<I: PartialEq + Clone> Memory<I> {
@@ -171,6 +200,7 @@ impl<I: PartialEq + Clone> Memory<I> {
         Self {
             archive: Archive::new(config.archive),
             failures: Failures::new(config.failures),
+            playbook: Playbook::new(config.playbook),
             config,
         }
     }
@@ -198,10 +228,13 @@ impl<I: PartialEq + Clone> Memory<I> {
     /// as the parents of a mutation, so they are not repeated.
     pub fn render(&self, exclude: &[I]) -> Rendered {
         let (lane, entries) = render::render_archive(&self.archive, exclude, &self.config.render);
+        let (mut shared, bullets) = self.playbook.render();
+        shared.push_str(&self.failures.render());
         Rendered {
-            shared: self.failures.render(),
+            shared,
             lane,
             entries,
+            bullets,
         }
     }
 
@@ -220,6 +253,17 @@ impl<I: PartialEq + Clone> Memory<I> {
     #[must_use]
     pub fn failures(&self) -> &Failures {
         &self.failures
+    }
+
+    /// The playbook.
+    #[must_use]
+    pub fn playbook(&self) -> &Playbook {
+        &self.playbook
+    }
+
+    /// The playbook, for seeding it with lessons the host already knows.
+    pub fn playbook_mut(&mut self) -> &mut Playbook {
+        &mut self.playbook
     }
 
     /// The configuration.
@@ -260,5 +304,20 @@ mod tests {
             format!("{}{}", rendered.shared(), rendered.lane())
         );
         assert_eq!(rendered.entries().len(), 1);
+        assert!(rendered.bullets().is_empty());
+
+        let seq = rendered.entries()[0];
+        let id = memory
+            .playbook_mut()
+            .add(Section::Mistakes, "Guard every division.", vec![seq])
+            .expect("added");
+        let rendered = memory.render(&[]);
+        assert_eq!(rendered.bullets(), [id]);
+        let playbook = rendered.shared().find("## Playbook").expect("present");
+        let pitfalls = rendered
+            .shared()
+            .find("## Known pitfalls")
+            .expect("present");
+        assert!(playbook < pitfalls);
     }
 }
