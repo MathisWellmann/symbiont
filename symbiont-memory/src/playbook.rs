@@ -34,6 +34,8 @@ use serde::{
 
 use crate::{
     EntrySeq,
+    IslandId,
+    Scope,
     estimate_tokens,
     render::EXPECT_WRITE,
 };
@@ -178,6 +180,9 @@ pub struct Bullet {
     /// The section.
     #[getset(get_copy = "pub")]
     section: Section,
+    /// Where it applies.
+    #[getset(get_copy = "pub")]
+    scope: Scope,
     /// The lesson, one line.
     #[getset(get = "pub")]
     content: String,
@@ -234,8 +239,9 @@ impl Tag {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, CopyGetters)]
 #[getset(get_copy = "pub")]
 pub struct PlaybookConfig {
-    /// The most bullets kept. A new bullet beyond it replaces the bullet with
-    /// the lowest [`Bullet::net`], the oldest among ties.
+    /// The most bullets kept per scope (the global playbook, and each
+    /// island). A new bullet beyond it replaces the bullet of the same scope
+    /// with the lowest [`Bullet::net`], the oldest among ties.
     max_bullets: usize,
     /// The longest bullet content accepted, in bytes. A lesson is one
     /// actionable line, not an essay.
@@ -323,13 +329,15 @@ impl Playbook {
     }
 
     /// Add a lesson, unless it is empty, too long, without evidence or a
-    /// duplicate. A full playbook makes room by dropping its weakest bullet.
+    /// duplicate of a bullet visible in `scope`. A full scope makes room by
+    /// dropping its weakest bullet.
     ///
     /// # Errors
     ///
     /// Returns the [`Rejection`] reason.
     pub fn add(
         &mut self,
+        scope: Scope,
         section: Section,
         content: &str,
         evidence: Vec<EntrySeq>,
@@ -344,35 +352,86 @@ impl Playbook {
         if self.config.require_evidence && evidence.is_empty() {
             return Err(Rejection::NoEvidence);
         }
-        let words = word_set(content);
-        if let Some(twin) = self.bullets.iter().find(|b| {
-            jaccard_percent(&words, &word_set(&b.content)) >= self.config.duplicate_percent
-        }) {
-            return Err(Rejection::Duplicate(twin.label()));
+        if let Some(twin) = self.twin(scope, content, None) {
+            return Err(Rejection::Duplicate(twin));
         }
-        if self.bullets.len() >= self.config.max_bullets {
-            let (idx, _) = self
-                .bullets
-                .iter()
-                .enumerate()
-                .min_by_key(|(_, b)| (b.net(), b.id))
-                .expect("max_bullets is positive, so a full playbook is not empty");
-            self.bullets.remove(idx);
-        }
+        self.make_room(scope);
 
         let id = BulletId(self.next_id);
         self.next_id += 1;
         self.bullets.push(Bullet {
             id,
             section,
+            scope,
             content: content.to_string(),
             helpful: 0,
             harmful: 0,
             evidence,
         });
-        assert!(self.bullets.len() <= self.config.max_bullets);
+        assert!(
+            self.bullets.iter().filter(|b| b.scope == scope).count() <= self.config.max_bullets
+        );
         assert!(self.bullets.windows(2).all(|w| w[0].id < w[1].id));
         Ok(id)
+    }
+
+    /// The label of a bullet that a new bullet in `scope` would duplicate:
+    /// a global bullet, or one of the same island. `skip` excludes the bullet
+    /// being moved.
+    fn twin(&self, scope: Scope, content: &str, skip: Option<BulletId>) -> Option<String> {
+        let words = word_set(content);
+        self.bullets
+            .iter()
+            .filter(|b| Some(b.id) != skip)
+            .filter(|b| b.scope == Scope::Global || b.scope == scope)
+            .find(|b| {
+                jaccard_percent(&words, &word_set(&b.content)) >= self.config.duplicate_percent
+            })
+            .map(Bullet::label)
+    }
+
+    /// Drop the weakest bullet of `scope` if the scope is full.
+    fn make_room(&mut self, scope: Scope) {
+        let in_scope = self.bullets.iter().filter(|b| b.scope == scope).count();
+        if in_scope < self.config.max_bullets {
+            return;
+        }
+        let (idx, _) = self
+            .bullets
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| b.scope == scope)
+            .min_by_key(|(_, b)| (b.net(), b.id))
+            .expect("max_bullets is positive, so a full scope is not empty");
+        self.bullets.remove(idx);
+    }
+
+    /// Move an island bullet to the global playbook, keeping its id and
+    /// counters.
+    ///
+    /// # Errors
+    ///
+    /// [`Rejection::Duplicate`] if a global bullet already says the same.
+    pub(crate) fn promote(&mut self, id: BulletId) -> Result<(), Rejection> {
+        let bullet = self.get(id).expect("promote is called with known ids");
+        assert_ne!(bullet.scope, Scope::Global);
+        let content = bullet.content.clone();
+        if let Some(twin) = self.twin(Scope::Global, &content, Some(id)) {
+            return Err(Rejection::Duplicate(twin));
+        }
+        self.make_room(Scope::Global);
+        let bullet = self
+            .bullets
+            .iter_mut()
+            .find(|b| b.id == id)
+            .expect("known, and making global room keeps island bullets");
+        bullet.scope = Scope::Global;
+        Ok(())
+    }
+
+    /// Remove every bullet of `island`.
+    pub(crate) fn clear_island(&mut self, island: IslandId) {
+        self.bullets.retain(|b| b.scope != Scope::Island(island));
     }
 
     /// Count a reflection's tag. Returns `false` for an unknown id.
@@ -426,18 +485,27 @@ impl Playbook {
         &self.bullets
     }
 
-    /// The playbook as a prompt section, within
+    /// The bullets of exactly `scope` as a prompt section, within
     /// [`PlaybookConfig::playbook_tokens`], and the bullets it shows.
     ///
     /// The lines use ACE's format, `[str-00003] helpful=2 harmful=0 ::
     /// lesson`, so the model sees how much each lesson has been confirmed.
     #[must_use]
-    pub fn render(&self) -> (String, Vec<BulletId>) {
-        let lines = Vec::from_iter(self.bullets.iter().map(|b| (b, line(b))));
+    pub fn render(&self, scope: Scope) -> (String, Vec<BulletId>) {
+        let header = match scope {
+            Scope::Global => PLAYBOOK_HEADER,
+            Scope::Island(_) => ISLAND_HEADER,
+        };
+        let lines = Vec::from_iter(
+            self.bullets
+                .iter()
+                .filter(|b| b.scope == scope)
+                .map(|b| (b, line(b))),
+        );
         // Keep the strongest bullets that fit, then print in section order.
         let mut by_strength = Vec::from_iter(lines.iter());
         by_strength.sort_by(|(a, _), (b, _)| b.net().cmp(&a.net()).then(a.id.cmp(&b.id)));
-        let mut used = estimate_tokens(PLAYBOOK_HEADER);
+        let mut used = estimate_tokens(header);
         let mut kept = Vec::with_capacity(lines.len());
         for (bullet, text) in by_strength {
             let cost = estimate_tokens(text) + SECTION_HEADER_TOKENS;
@@ -452,7 +520,7 @@ impl Playbook {
         }
         kept.sort_unstable();
 
-        let mut text = String::from(PLAYBOOK_HEADER);
+        let mut text = String::from(header);
         for section in Section::ALL {
             let mut in_section = lines
                 .iter()
@@ -472,16 +540,16 @@ impl Playbook {
 }
 
 impl Playbook {
-    /// Every bullet in ACE's line format, grouped by section, with no budget:
-    /// the reviewer must see the whole playbook to avoid proposing a
-    /// duplicate.
-    pub(crate) fn lines(&self) -> String {
+    /// Every bullet visible on `island` in ACE's line format, grouped by
+    /// section, with no budget: the reviewer must see the whole playbook to
+    /// avoid proposing a duplicate.
+    pub(crate) fn lines(&self, island: IslandId) -> String {
         let mut text = String::new();
         for section in Section::ALL {
             let mut in_section = self
                 .bullets
                 .iter()
-                .filter(|b| b.section == section)
+                .filter(|b| b.section == section && b.scope.visible_on(island))
                 .peekable();
             if in_section.peek().is_none() {
                 continue;
@@ -498,6 +566,9 @@ impl Playbook {
 const PLAYBOOK_HEADER: &str = "## Playbook\n\n\
     Lessons from earlier rounds, as `[id] helpful=X harmful=Y :: lesson`. \
     The counts say how often a review confirmed or refuted a lesson.\n\n";
+
+const ISLAND_HEADER: &str = "## Lessons of this island\n\n\
+    Lessons only this sub-population has learned so far, in the same format.\n\n";
 
 /// A generous share of a section header per bullet, so the budget holds
 /// even when every kept bullet opens a section.
@@ -576,6 +647,7 @@ mod tests {
     fn add_assigns_labels_and_strips_copied_prefixes() {
         let mut pb = playbook();
         let a = pb.add(
+            Scope::Global,
             Section::Mistakes,
             "Never divide by the window range.",
             seq(),
@@ -584,6 +656,7 @@ mod tests {
         assert_eq!(pb.get(a).expect("known").label(), "err-00001");
         let b = pb
             .add(
+                Scope::Global,
                 Section::Strategies,
                 "[str-00009] helpful=3 harmful=0 :: Cut losses at 2 ATR.",
                 seq(),
@@ -604,18 +677,22 @@ mod tests {
     #[test]
     fn add_rejects_bad_bullets() {
         let mut pb = playbook();
-        assert_eq!(pb.add(Section::Others, "  ", seq()), Err(Rejection::Empty));
+        assert_eq!(
+            pb.add(Scope::Global, Section::Others, "  ", seq()),
+            Err(Rejection::Empty)
+        );
         let long = "x".repeat(401);
         assert_eq!(
-            pb.add(Section::Others, &long, seq()),
+            pb.add(Scope::Global, Section::Others, &long, seq()),
             Err(Rejection::TooLong(401))
         );
         assert_eq!(
-            pb.add(Section::Others, "a lesson", Vec::new()),
+            pb.add(Scope::Global, Section::Others, "a lesson", Vec::new()),
             Err(Rejection::NoEvidence)
         );
         let _ = pb
             .add(
+                Scope::Global,
                 Section::Others,
                 "Use a sieve for counting primes below n.",
                 seq(),
@@ -623,6 +700,7 @@ mod tests {
             .expect("added");
         assert_eq!(
             pb.add(
+                Scope::Global,
                 Section::Mistakes,
                 "use a SIEVE for counting primes below n!",
                 seq()
@@ -632,7 +710,7 @@ mod tests {
         let lax = PlaybookConfig::new(4, 400, 2_000, 3, 80, false);
         assert!(
             Playbook::new(lax)
-                .add(Section::Others, "a lesson", Vec::new())
+                .add(Scope::Global, Section::Others, "a lesson", Vec::new())
                 .is_ok()
         );
     }
@@ -641,10 +719,10 @@ mod tests {
     fn tags_count_and_prune_removes_refuted_bullets() {
         let mut pb = playbook();
         let a = pb
-            .add(Section::Strategies, "alpha beta", seq())
+            .add(Scope::Global, Section::Strategies, "alpha beta", seq())
             .expect("added");
         let b = pb
-            .add(Section::Strategies, "gamma delta", seq())
+            .add(Scope::Global, Section::Strategies, "gamma delta", seq())
             .expect("added");
         assert!(pb.tag(a, Tag::Helpful));
         assert!(pb.tag(a, Tag::Neutral));
@@ -661,10 +739,16 @@ mod tests {
     #[test]
     fn a_full_playbook_drops_its_weakest_bullet() {
         let mut pb = Playbook::new(PlaybookConfig::new(2, 400, 2_000, 3, 80, true));
-        let a = pb.add(Section::Others, "one", seq()).expect("added");
-        let b = pb.add(Section::Others, "two", seq()).expect("added");
+        let a = pb
+            .add(Scope::Global, Section::Others, "one", seq())
+            .expect("added");
+        let b = pb
+            .add(Scope::Global, Section::Others, "two", seq())
+            .expect("added");
         assert!(pb.tag(a, Tag::Helpful));
-        let c = pb.add(Section::Others, "three", seq()).expect("added");
+        let c = pb
+            .add(Scope::Global, Section::Others, "three", seq())
+            .expect("added");
         assert_eq!(
             Vec::from_iter(pb.bullets().iter().map(Bullet::id)),
             vec![a, c]
@@ -675,14 +759,24 @@ mod tests {
     #[test]
     fn render_groups_by_section_and_respects_the_budget() {
         let mut pb = playbook();
-        assert_eq!(pb.render(), (String::new(), Vec::new()));
+        assert_eq!(pb.render(Scope::Global), (String::new(), Vec::new()));
         let m = pb
-            .add(Section::Mistakes, "Do not index past the window.", seq())
+            .add(
+                Scope::Global,
+                Section::Mistakes,
+                "Do not index past the window.",
+                seq(),
+            )
             .expect("added");
         let s = pb
-            .add(Section::Strategies, "Trade only above the fee.", seq())
+            .add(
+                Scope::Global,
+                Section::Strategies,
+                "Trade only above the fee.",
+                seq(),
+            )
             .expect("added");
-        let (text, shown) = pb.render();
+        let (text, shown) = pb.render(Scope::Global);
         assert_eq!(shown, vec![m, s]);
         let strategies = text.find("### STRATEGIES & INSIGHTS").expect("present");
         let mistakes = text.find("### COMMON MISTAKES TO AVOID").expect("present");
@@ -695,7 +789,7 @@ mod tests {
             config: PlaybookConfig::new(64, 400, one, 3, 80, true),
             ..pb
         };
-        let (text, shown) = tight.render();
+        let (text, shown) = tight.render(Scope::Global);
         assert_eq!(shown, vec![m], "the stronger bullet wins the space");
         assert!(!text.contains("fee"));
     }
@@ -714,5 +808,60 @@ mod tests {
         assert_eq!(Tag::parse("HARMFUL"), Some(Tag::Harmful));
         assert_eq!(Tag::parse("neutral"), Some(Tag::Neutral));
         assert_eq!(Tag::parse("great"), None);
+    }
+
+    #[test]
+    fn scopes_separate_bullets() {
+        let mut pb = playbook();
+        let (a, b) = (IslandId::new(0), IslandId::new(1));
+        let global = pb
+            .add(Scope::Global, Section::Others, "Shared lesson here.", seq())
+            .expect("added");
+        // An island bullet duplicating a global one is rejected ...
+        assert_eq!(
+            pb.add(
+                Scope::Island(a),
+                Section::Others,
+                "shared lesson here",
+                seq()
+            ),
+            Err(Rejection::Duplicate("misc-00001".to_string()))
+        );
+        let on_a = pb
+            .add(
+                Scope::Island(a),
+                Section::Others,
+                "Lesson of island a.",
+                seq(),
+            )
+            .expect("added");
+        // ... but two islands may learn the same thing independently.
+        let on_b = pb
+            .add(
+                Scope::Island(b),
+                Section::Others,
+                "Lesson of island a.",
+                seq(),
+            )
+            .expect("added");
+        assert_eq!(pb.render(Scope::Global).1, vec![global]);
+        assert_eq!(pb.render(Scope::Island(a)).1, vec![on_a]);
+        assert!(
+            pb.render(Scope::Island(a))
+                .0
+                .starts_with("## Lessons of this island")
+        );
+        assert!(pb.lines(a).contains("Shared lesson here."));
+        assert!(!pb.lines(a).contains("misc-00003"));
+
+        assert!(pb.promote(on_a).is_ok());
+        assert_eq!(pb.get(on_a).expect("kept").scope(), Scope::Global);
+        assert_eq!(
+            pb.promote(on_b),
+            Err(Rejection::Duplicate("misc-00002".to_string()))
+        );
+        pb.clear_island(b);
+        assert!(pb.get(on_b).is_none());
+        assert_eq!(pb.bullets().len(), 2);
     }
 }

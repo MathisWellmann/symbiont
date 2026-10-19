@@ -43,10 +43,10 @@
 //! a reviewed attempt as evidence. The memory never performs I/O itself.
 //!
 //! ```
-//! use symbiont_memory::{Evaluated, Memory, MemoryConfig, Score};
+//! use symbiont_memory::{Evaluated, IslandId, Memory, MemoryConfig, Score};
 //!
 //! let mut memory = Memory::<u64>::new(MemoryConfig::default());
-//! let rendered = memory.render(&[]);
+//! let rendered = memory.render(IslandId::default(), &[]);
 //! let _ = memory.commit(
 //!     Evaluated::builder()
 //!         .id(1)
@@ -57,15 +57,25 @@
 //!         .build(),
 //! );
 //! let request = memory
-//!     .reflection_request("Minimize f on [-1, 1].")
+//!     .reflection_request(IslandId::default(), "Minimize f on [-1, 1].")
 //!     .expect("one attempt awaits review");
 //! // let answer = model.complete(request.system_prompt(), request.user_prompt()).await?;
 //! let answer = r#"{"operations": [{"type": "ADD", "section": "mistakes",
 //!     "content": "Guard the division: x can be 0.", "evidence": [0]}]}"#;
 //! let report = memory.apply_reflection(&request, answer).expect("valid answer");
 //! assert_eq!(report.added().len(), 1);
-//! assert!(memory.render(&[]).shared().contains("Guard the division"));
+//! assert!(memory.render(IslandId::default(), &[]).shared().contains("Guard the division"));
 //! ```
+//!
+//! # Islands
+//!
+//! With [`IslandConfig::count`] above one, every attempt belongs to the
+//! island of the lane that wrote it, each island keeps its own archive
+//! members and lessons, and [`Memory::migrate`] moves the best attempts
+//! around a ring and promotes proven island lessons to the global playbook.
+//! This keeps one shared memory from collapsing the whole population onto
+//! one program. [`Memory::novelty`] flags candidates that nearly copy an
+//! archived attempt, before the host pays for their evaluation.
 //!
 //! # Ownership and determinism
 //!
@@ -79,7 +89,7 @@
 //! # Example
 //!
 //! ```
-//! use symbiont_memory::{Evaluated, Memory, MemoryConfig, Score};
+//! use symbiont_memory::{Evaluated, IslandId, Memory, MemoryConfig, Score};
 //!
 //! let mut memory = Memory::<u64>::new(MemoryConfig::default());
 //! // After the host evaluated a candidate:
@@ -92,13 +102,14 @@
 //!         .build(),
 //! );
 //! // Before the next evolve call:
-//! let rendered = memory.render(&[]);
+//! let rendered = memory.render(IslandId::default(), &[]);
 //! let prompt = format!("Improve the function.\n\n{}", rendered.text());
 //! assert!(prompt.contains("return 1.25%"));
 //! ```
 
 mod archive;
 mod failures;
+mod island;
 mod playbook;
 mod reflection;
 mod render;
@@ -117,6 +128,7 @@ pub use crate::{
         Entry,
         EntrySeq,
         Evaluated,
+        EvaluatedBuilder,
         NonFiniteScore,
         Score,
     },
@@ -124,6 +136,13 @@ pub use crate::{
         FailureConfig,
         Failures,
         Pitfall,
+    },
+    island::{
+        IslandConfig,
+        IslandId,
+        Migration,
+        Nearest,
+        Scope,
     },
     playbook::{
         Bullet,
@@ -161,6 +180,9 @@ pub enum ConfigError {
         /// The requested protected tail.
         protect_recent: usize,
     },
+    /// There must be at least one island.
+    #[error("the island count must be positive")]
+    NoIslands,
 }
 
 /// The configuration of a [`Memory`].
@@ -176,6 +198,8 @@ pub struct MemoryConfig {
     pub playbook: PlaybookConfig,
     /// When and how much the reflection step reviews.
     pub reflection: ReflectionConfig,
+    /// The islands.
+    pub islands: IslandConfig,
 }
 
 /// The memory of one optimization problem.
@@ -198,6 +222,7 @@ pub struct Memory<I> {
 #[must_use]
 pub struct Rendered {
     shared: String,
+    island: String,
     lane: String,
     entries: Vec<EntrySeq>,
     bullets: Vec<BulletId>,
@@ -205,25 +230,35 @@ pub struct Rendered {
 
 impl Rendered {
     /// The whole memory section, ready to go into a prompt: the
-    /// [`Self::shared`] part, then the [`Self::lane`] part.
+    /// [`Self::shared`], [`Self::island`] and [`Self::lane`] parts in that
+    /// order.
     #[must_use]
     pub fn text(&self) -> String {
-        let mut text = String::with_capacity(self.shared.len() + self.lane.len());
+        let mut text =
+            String::with_capacity(self.shared.len() + self.island.len() + self.lane.len());
         text.push_str(&self.shared);
+        text.push_str(&self.island);
         text.push_str(&self.lane);
         text
     }
 
-    /// The part every lane sees alike: the playbook and the known pitfalls.
-    /// It changes rarely, so a host that cares about a server's prefix cache puts it
-    /// before anything lane-specific in the prompt.
+    /// The part every lane sees alike: the global playbook and the known
+    /// pitfalls. It changes rarely, so a host that cares about a server's
+    /// prefix cache puts it before anything lane-specific in the prompt.
     #[must_use]
     pub fn shared(&self) -> &str {
         &self.shared
     }
 
-    /// The part that depends on the lane and changes with every commit: the
-    /// archive of attempts.
+    /// The lessons of the lane's island; empty with a single island. Lanes of
+    /// one island share it.
+    #[must_use]
+    pub fn island(&self) -> &str {
+        &self.island
+    }
+
+    /// The part that changes with every commit: the island's archive of
+    /// attempts.
     #[must_use]
     pub fn lane(&self) -> &str {
         &self.lane
@@ -238,7 +273,9 @@ impl Rendered {
         &self.entries
     }
 
-    /// The playbook bullets the text shows.
+    /// The playbook bullets the text shows. Pass them on with
+    /// [`EvaluatedBuilder`]'s `bullets_shown`, so the reflection step knows
+    /// which lessons the attempt was given.
     #[must_use]
     pub fn bullets(&self) -> &[BulletId] {
         &self.bullets
@@ -260,31 +297,45 @@ impl<I: PartialEq + Clone> Memory<I> {
         }
     }
 
+    fn assert_island(&self, island: IslandId) {
+        assert!(
+            island.get() < self.config.islands.count(),
+            "{island} out of range for {} islands",
+            self.config.islands.count()
+        );
+    }
+
     /// Record an evaluated attempt. See [`Archive::commit`].
     ///
-    /// A new attempt also awaits review by the next reflection request. A
-    /// re-evaluation of a known id does not: it is not a new attempt.
+    /// A new attempt also awaits review by the next reflection request of
+    /// its island. A re-evaluation of a known id does not: it is not a new
+    /// attempt.
+    ///
+    /// # Panics
+    ///
+    /// If the attempt's island is not below [`IslandConfig::count`].
     pub fn commit(&mut self, evaluated: Evaluated<I>) -> Committed {
+        let island = evaluated.island();
+        self.assert_island(island);
         let bullets = evaluated.bullets_shown().to_vec();
         let committed = self.archive.commit(evaluated);
-        if let Committed::Inserted { seq, evicted } = committed {
-            if let Some(evicted) = evicted {
-                self.pending.retain(|p| p.seq() != evicted);
-            }
-            self.pending.push(Pending::new(seq, bullets));
+        if let Committed::Inserted { seq, .. } = committed {
+            self.pending.push(Pending::new(seq, island, bullets));
         }
         committed
     }
 
-    /// Whether [`ReflectionConfig::reflect_every`] attempts await review.
+    /// Whether [`ReflectionConfig::reflect_every`] attempts of `island`
+    /// await review.
     #[must_use]
-    pub fn reflection_due(&self) -> bool {
-        self.pending.len() >= self.config.reflection.reflect_every()
+    pub fn reflection_due(&self, island: IslandId) -> bool {
+        let waiting = self.pending.iter().filter(|p| p.island() == island).count();
+        waiting >= self.config.reflection.reflect_every()
     }
 
-    /// The prompts that review the attempts awaiting review, oldest first, at
-    /// most [`ReflectionConfig::max_reviewed`] of them. `None` if no attempt
-    /// awaits review.
+    /// The prompts that review the attempts of `island` awaiting review,
+    /// oldest first, at most [`ReflectionConfig::max_reviewed`] of them.
+    /// `None` if none awaits review.
     ///
     /// `task` describes the optimization problem to the reviewer, typically
     /// the task part of the host's evolve prompt.
@@ -292,33 +343,43 @@ impl<I: PartialEq + Clone> Memory<I> {
     /// The reviewed attempts leave the queue. Apply the answer with
     /// [`Self::apply_reflection`]; if the model call fails, hand the request
     /// back with [`Self::abandon_reflection`] so the attempts are reviewed
-    /// later.
-    pub fn reflection_request(&mut self, task: &str) -> Option<ReflectionRequest> {
+    /// later. With several islands the new lessons belong to `island`; they
+    /// reach the other islands once [`Self::migrate`] promotes them.
+    ///
+    /// # Panics
+    ///
+    /// If `island` is not below [`IslandConfig::count`].
+    pub fn reflection_request(
+        &mut self,
+        island: IslandId,
+        task: &str,
+    ) -> Option<ReflectionRequest> {
+        self.assert_island(island);
         let archive = &self.archive;
         self.pending.retain(|p| archive.by_seq(p.seq()).is_some());
-        if self.pending.is_empty() {
+        let max = self.config.reflection.max_reviewed();
+        let mut pending = Vec::with_capacity(max);
+        self.pending.retain(|p| {
+            let take = p.island() == island && pending.len() < max;
+            if take {
+                pending.push(p.clone());
+            }
+            !take
+        });
+        if pending.is_empty() {
             return None;
         }
-        let take = self
-            .pending
-            .len()
-            .min(self.config.reflection.max_reviewed());
-        let pending = Vec::from_iter(self.pending.drain(..take));
         let id = RequestId::new(self.next_request);
         self.next_request += 1;
         self.outstanding.push(id);
-        let request = reflection::request(
-            id,
-            reflection::PromptInput::new(
-                task,
-                &self.archive,
-                &self.playbook,
-                &self.failures,
-                pending,
-                &self.config.reflection,
-            ),
-        );
-        assert_eq!(request.reviewed().count(), take);
+        let scope = if self.config.islands.count() > 1 {
+            Scope::Island(island)
+        } else {
+            Scope::Global
+        };
+        let taken = pending.len();
+        let request = reflection::request(id, self, island, scope, task, pending);
+        assert_eq!(request.reviewed().count(), taken);
         Some(request)
     }
 
@@ -358,7 +419,8 @@ impl<I: PartialEq + Clone> Memory<I> {
 
     /// Count the rejected attempts of one lane, see [`Failures::commit_trace`].
     /// Call it for every lane, successful or not: a lane that succeeded on
-    /// its third attempt still hit two failures.
+    /// its third attempt still hit two failures. Pitfalls are global: a
+    /// method the host type lacks is missing on every island.
     pub fn commit_trace(&mut self, trace: &symbiont::EvolutionTrace) {
         self.failures.commit_trace(trace);
     }
@@ -368,20 +430,123 @@ impl<I: PartialEq + Clone> Memory<I> {
         self.failures.commit_panic(message);
     }
 
-    /// The memory as prompt text for the next lane.
+    /// The memory as prompt text for the next lane on `island`.
     ///
     /// `exclude` names candidates the host already shows in its prompt, such
     /// as the parents of a mutation, so they are not repeated.
-    pub fn render(&self, exclude: &[I]) -> Rendered {
-        let (lane, entries) = render::render_archive(&self.archive, exclude, &self.config.render);
-        let (mut shared, bullets) = self.playbook.render();
+    ///
+    /// # Panics
+    ///
+    /// If `island` is not below [`IslandConfig::count`].
+    pub fn render(&self, island: IslandId, exclude: &[I]) -> Rendered {
+        self.assert_island(island);
+        let (lane, entries) =
+            render::render_archive(&self.archive, island, exclude, &self.config.render);
+        let (mut shared, mut bullets) = self.playbook.render(Scope::Global);
         shared.push_str(&self.failures.render());
+        let (island, island_bullets) = self.playbook.render(Scope::Island(island));
+        bullets.extend(island_bullets);
         Rendered {
             shared,
+            island,
             lane,
             entries,
             bullets,
         }
+    }
+
+    /// Exchange knowledge between islands: every island sends its
+    /// [`IslandConfig::migrants`] best attempts to the next island in the
+    /// ring, and island lessons whose [`Bullet::net`] reached
+    /// [`IslandConfig::promote_net`] move to the global playbook (unless a
+    /// global bullet already says the same). Does nothing with one island.
+    ///
+    /// The migrants are chosen before any of them moves, so an attempt
+    /// travels one island per call. Call it every few rounds; how often is
+    /// the classic trade-off between diversity and spreading discoveries.
+    pub fn migrate(&mut self) -> Migration {
+        let islands = self.config.islands;
+        if islands.count() < 2 {
+            return Migration::default();
+        }
+        let moves = Vec::from_iter(islands.ids().flat_map(|from| {
+            let to = islands.next(from);
+            let best = self.archive.ranked(from);
+            Vec::from_iter(
+                best.into_iter()
+                    .take(islands.migrants())
+                    .map(move |e| (e.seq(), to)),
+            )
+        }));
+        let mut migration = Migration::default();
+        for (seq, to) in moves {
+            if self.archive.migrate(seq, to) {
+                migration.migrated.push((seq, to));
+            }
+        }
+        let ripe = Vec::from_iter(
+            self.playbook
+                .bullets()
+                .iter()
+                .filter(|b| b.scope() != Scope::Global)
+                .filter(|b| b.net() >= i64::from(islands.promote_net()))
+                .map(Bullet::id),
+        );
+        for id in ripe {
+            if self.playbook.promote(id).is_ok() {
+                migration.promoted.push(id);
+            }
+        }
+        migration
+    }
+
+    /// Forget an island: its archive membership, its lessons and its queued
+    /// attempts. Use it when the host resets a stagnant sub-population; the
+    /// next [`Self::migrate`] re-seeds it from its neighbour. An outstanding
+    /// reflection request for the island still applies afterwards, adding
+    /// fresh lessons to the empty island.
+    ///
+    /// # Panics
+    ///
+    /// If `island` is not below [`IslandConfig::count`].
+    pub fn reset_island(&mut self, island: IslandId) {
+        self.assert_island(island);
+        self.archive.clear_island(island);
+        self.playbook.clear_island(island);
+        self.pending.retain(|p| p.island() != island);
+        assert_eq!(self.archive.members(island).count(), 0);
+    }
+
+    /// The attempt on `island` most similar to `source`, by token trigrams.
+    /// `None` if the island holds no attempt.
+    ///
+    /// Call it before an expensive evaluation and skip candidates that are
+    /// not [`Nearest::novel`]: a near copy of an archived attempt would
+    /// mostly re-measure a known score.
+    ///
+    /// # Panics
+    ///
+    /// If `island` is not below [`IslandConfig::count`].
+    #[must_use]
+    pub fn novelty(&self, island: IslandId, source: &str) -> Option<Nearest> {
+        self.assert_island(island);
+        let candidate = island::shingles(source);
+        let (seq, percent) = self
+            .archive
+            .members(island)
+            .map(|e| {
+                (
+                    e.seq(),
+                    island::similarity(&candidate, &island::shingles(e.source())),
+                )
+            })
+            .max_by_key(|&(seq, percent)| (percent, std::cmp::Reverse(seq)))?;
+        assert!(percent <= 100);
+        Some(Nearest {
+            seq,
+            percent,
+            novel: percent < self.config.islands.novelty_percent(),
+        })
     }
 
     /// The archive.
@@ -426,7 +591,7 @@ mod tests {
     #[test]
     fn shared_part_comes_before_the_lane_part() {
         let mut memory = Memory::<u64>::new(MemoryConfig::default());
-        assert_eq!(memory.render(&[]), Rendered::default());
+        assert_eq!(memory.render(IslandId::default(), &[]), Rendered::default());
         let _ = memory.commit(
             Evaluated::builder()
                 .id(1)
@@ -437,7 +602,7 @@ mod tests {
         );
         memory.commit_panic("attempt to divide by zero");
         memory.commit_panic("attempt to divide by zero");
-        let rendered = memory.render(&[]);
+        let rendered = memory.render(IslandId::default(), &[]);
         assert!(
             rendered
                 .shared()
@@ -455,9 +620,14 @@ mod tests {
         let seq = rendered.entries()[0];
         let id = memory
             .playbook_mut()
-            .add(Section::Mistakes, "Guard every division.", vec![seq])
+            .add(
+                Scope::Global,
+                Section::Mistakes,
+                "Guard every division.",
+                vec![seq],
+            )
             .expect("added");
-        let rendered = memory.render(&[]);
+        let rendered = memory.render(IslandId::default(), &[]);
         assert_eq!(rendered.bullets(), [id]);
         let playbook = rendered.shared().find("## Playbook").expect("present");
         let pitfalls = rendered
@@ -481,10 +651,19 @@ mod tests {
     #[test]
     fn reflection_round_trip() {
         let mut memory = Memory::<u64>::new(MemoryConfig::default());
-        assert!(memory.reflection_request("task").is_none());
+        assert!(
+            memory
+                .reflection_request(IslandId::default(), "task")
+                .is_none()
+        );
         let shown = memory
             .playbook_mut()
-            .add(Section::Strategies, "Prefer a sieve.", vec![])
+            .add(
+                Scope::Global,
+                Section::Strategies,
+                "Prefer a sieve.",
+                vec![],
+            )
             .err();
         assert_eq!(shown, Some(Rejection::NoEvidence));
 
@@ -492,6 +671,7 @@ mod tests {
         let seed = memory
             .playbook_mut()
             .add(
+                Scope::Global,
                 Section::Strategies,
                 "Prefer a sieve.",
                 vec![EntrySeq::from_raw(0)],
@@ -500,6 +680,7 @@ mod tests {
         let other = memory
             .playbook_mut()
             .add(
+                Scope::Global,
                 Section::Mistakes,
                 "Never allocate per call.",
                 vec![EntrySeq::from_raw(0)],
@@ -508,10 +689,10 @@ mod tests {
         let _ = memory.commit(attempt(2, vec![1], 3.0, &[seed]));
         // A re-evaluation is not a new attempt.
         let _ = memory.commit(attempt(2, vec![1], 3.5, &[seed]));
-        assert!(!memory.reflection_due());
+        assert!(!memory.reflection_due(IslandId::default()));
 
         let request = memory
-            .reflection_request("Count primes.")
+            .reflection_request(IslandId::default(), "Count primes.")
             .expect("two pending");
         assert_eq!(
             Vec::from_iter(request.reviewed()),
@@ -528,7 +709,9 @@ mod tests {
             "only shown bullets are tagged"
         );
         assert!(
-            memory.reflection_request("again").is_none(),
+            memory
+                .reflection_request(IslandId::default(), "again")
+                .is_none(),
             "the queue was drained"
         );
 
@@ -573,16 +756,20 @@ mod tests {
         let mut memory = Memory::<u64>::new(config);
         let _ = memory.commit(attempt(1, vec![], 1.0, &[]));
         let _ = memory.commit(attempt(2, vec![], 2.0, &[]));
-        assert!(memory.reflection_due());
-        let first = memory.reflection_request("t").expect("pending");
+        assert!(memory.reflection_due(IslandId::default()));
+        let first = memory
+            .reflection_request(IslandId::default(), "t")
+            .expect("pending");
         assert_eq!(
             Vec::from_iter(first.reviewed()),
             vec![EntrySeq::from_raw(0)]
         );
-        assert!(!memory.reflection_due());
+        assert!(!memory.reflection_due(IslandId::default()));
         memory.abandon_reflection(first);
-        assert!(memory.reflection_due());
-        let again = memory.reflection_request("t").expect("pending");
+        assert!(memory.reflection_due(IslandId::default()));
+        let again = memory
+            .reflection_request(IslandId::default(), "t")
+            .expect("pending");
         assert_eq!(
             Vec::from_iter(again.reviewed()),
             vec![EntrySeq::from_raw(0)]
@@ -601,10 +788,157 @@ mod tests {
         // Evicts #1 (the worst unprotected entry).
         let _ = memory.commit(attempt(3, vec![], 2.0, &[]));
         let _ = memory.archive_mut().remove(&1);
-        let request = memory.reflection_request("t").expect("pending");
+        let request = memory
+            .reflection_request(IslandId::default(), "t")
+            .expect("pending");
         assert_eq!(
             Vec::from_iter(request.reviewed()),
             vec![EntrySeq::from_raw(2)]
         );
+    }
+
+    fn islands(count: u16) -> MemoryConfig {
+        MemoryConfig {
+            archive: ArchiveConfig::new(8, 1).expect("valid"),
+            reflection: ReflectionConfig::new(1, 8, 1_000, 1),
+            islands: IslandConfig::new(count, 1, 2, 90).expect("valid"),
+            ..MemoryConfig::default()
+        }
+    }
+
+    fn on(island: u16, id: u64, score: f64, source: &str) -> Evaluated<u64> {
+        Evaluated::builder()
+            .id(id)
+            .source(source)
+            .score(Score::new(score).expect("finite"))
+            .report(format!("report {id}"))
+            .island(IslandId::new(island))
+            .build()
+    }
+
+    #[test]
+    fn islands_keep_separate_archives_and_lessons() {
+        let mut memory = Memory::<u64>::new(islands(2));
+        let (a, b) = (IslandId::new(0), IslandId::new(1));
+        let _ = memory.commit(on(0, 1, 5.0, "fn a() {}"));
+        let _ = memory.commit(on(1, 2, 1.0, "fn b() {}"));
+        assert!(memory.render(a, &[]).lane().contains("report 1"));
+        assert!(!memory.render(a, &[]).lane().contains("report 2"));
+        assert!(memory.reflection_due(b));
+
+        let request = memory.reflection_request(b, "t").expect("pending on b");
+        assert_eq!(request.scope(), Scope::Island(b));
+        assert_eq!(
+            Vec::from_iter(request.reviewed()),
+            vec![EntrySeq::from_raw(1)]
+        );
+        assert!(
+            !request.user_prompt().contains("report 1"),
+            "a's attempts stay on a"
+        );
+        let answer = r#"{"operations": [{"type": "ADD", "section": "others",
+            "content": "Island b lesson.", "evidence": [1]}]}"#;
+        let report = memory.apply_reflection(&request, answer).expect("applies");
+        let lesson = report.added()[0];
+        assert!(memory.render(b, &[]).island().contains("Island b lesson."));
+        assert!(memory.render(b, &[]).bullets().contains(&lesson));
+        assert!(memory.render(a, &[]).island().is_empty());
+        assert!(memory.render(a, &[]).shared().is_empty());
+
+        // Promotion needs a net of 2.
+        assert!(memory.migrate().promoted.is_empty());
+        for _ in 0..2 {
+            assert!(memory.playbook_mut().tag(lesson, Tag::Helpful));
+        }
+        let migration = memory.migrate();
+        assert_eq!(migration.promoted, vec![lesson]);
+        assert!(memory.render(a, &[]).shared().contains("Island b lesson."));
+        // Every island sent its best attempt on; the first call already did.
+        assert!(
+            memory
+                .archive()
+                .get(&1)
+                .expect("known")
+                .islands()
+                .contains(&b)
+        );
+        assert!(
+            memory
+                .archive()
+                .get(&2)
+                .expect("known")
+                .islands()
+                .contains(&a)
+        );
+    }
+
+    #[test]
+    fn migration_moves_one_island_per_call() {
+        let mut memory = Memory::<u64>::new(islands(3));
+        let _ = memory.commit(on(0, 1, 5.0, "fn a() {}"));
+        let migration = memory.migrate();
+        assert_eq!(
+            migration.migrated,
+            vec![(EntrySeq::from_raw(0), IslandId::new(1))]
+        );
+        let islands = memory.archive().get(&1).expect("known").islands().clone();
+        assert_eq!(islands, vec![IslandId::new(0), IslandId::new(1)]);
+        let _ = memory.migrate();
+        assert_eq!(memory.archive().get(&1).expect("known").islands().len(), 3);
+        assert_eq!(
+            Memory::<u64>::new(MemoryConfig::default()).migrate(),
+            Migration::default()
+        );
+    }
+
+    #[test]
+    fn reset_forgets_an_island() {
+        let mut memory = Memory::<u64>::new(islands(2));
+        let (a, b) = (IslandId::new(0), IslandId::new(1));
+        let _ = memory.commit(on(0, 1, 5.0, "fn a() {}"));
+        let _ = memory.commit(on(1, 2, 1.0, "fn b() {}"));
+        let seq = EntrySeq::from_raw(1);
+        let _ = memory
+            .playbook_mut()
+            .add(Scope::Island(b), Section::Others, "b only", vec![seq])
+            .expect("added");
+        memory.reset_island(b);
+        assert!(memory.render(b, &[]).text().is_empty());
+        assert!(memory.archive().get(&2).is_none());
+        assert!(memory.reflection_request(b, "t").is_none());
+        assert!(memory.reflection_request(a, "t").is_some());
+    }
+
+    #[test]
+    fn novelty_flags_near_copies() {
+        let mut memory = Memory::<u64>::new(islands(2));
+        let island = IslandId::new(0);
+        assert_eq!(memory.novelty(island, "fn f() {}"), None);
+        let source = "fn f(xs: &[f64]) -> f64 { xs.iter().map(|x| x * x).sum::<f64>().sqrt() }";
+        let _ = memory.commit(on(0, 1, 1.0, source));
+        let reformatted = source.replace("{ ", "{\n    // norm\n    ");
+        let copy = memory.novelty(island, &reformatted).expect("one member");
+        assert_eq!(copy.seq, EntrySeq::from_raw(0));
+        assert_eq!(copy.percent, 100);
+        assert!(!copy.novel);
+        let other = memory
+            .novelty(
+                island,
+                "fn f(xs: &[f64]) -> f64 { xs.iter().fold(0.0, f64::max) }",
+            )
+            .expect("one member");
+        assert!(other.novel);
+        assert_eq!(
+            memory.novelty(IslandId::new(1), source),
+            None,
+            "other island"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "island 2 out of range for 2 islands")]
+    fn unknown_islands_are_rejected() {
+        let memory = Memory::<u64>::new(islands(2));
+        let _ = memory.render(IslandId::new(2), &[]);
     }
 }

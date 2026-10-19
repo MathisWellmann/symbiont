@@ -33,8 +33,11 @@ use crate::{
     BulletId,
     EntrySeq,
     Failures,
+    IslandId,
+    Memory,
     Playbook,
     Rejection,
+    Scope,
     Section,
     Tag,
     render::{
@@ -90,16 +93,25 @@ impl Default for ReflectionConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Pending {
     seq: EntrySeq,
+    island: IslandId,
     bullets: Vec<BulletId>,
 }
 
 impl Pending {
-    pub(crate) fn new(seq: EntrySeq, bullets: Vec<BulletId>) -> Self {
-        Self { seq, bullets }
+    pub(crate) fn new(seq: EntrySeq, island: IslandId, bullets: Vec<BulletId>) -> Self {
+        Self {
+            seq,
+            island,
+            bullets,
+        }
     }
 
     pub(crate) fn seq(&self) -> EntrySeq {
         self.seq
+    }
+
+    pub(crate) fn island(&self) -> IslandId {
+        self.island
     }
 }
 
@@ -122,6 +134,13 @@ pub struct ReflectionRequest {
     /// The id.
     #[getset(get_copy = "pub")]
     id: RequestId,
+    /// The island whose attempts it reviews.
+    #[getset(get_copy = "pub")]
+    island: IslandId,
+    /// Where the bullets it adds go: the island's own lessons when there
+    /// are several islands, else the global playbook.
+    #[getset(get_copy = "pub")]
+    scope: Scope,
     /// The system prompt.
     #[getset(get = "pub")]
     system_prompt: String,
@@ -260,49 +279,45 @@ Respond with one JSON object only, no markdown:
 }";
 
 /// Everything the user prompt is built from.
-pub(crate) struct PromptInput<'a, I> {
+struct PromptInput<'a, I> {
+    island: IslandId,
     task: &'a str,
     archive: &'a Archive<I>,
     playbook: &'a Playbook,
     failures: &'a Failures,
-    pending: Vec<Pending>,
+    pending: &'a [Pending],
     config: &'a ReflectionConfig,
 }
 
-impl<'a, I> PromptInput<'a, I> {
-    pub(crate) fn new(
-        task: &'a str,
-        archive: &'a Archive<I>,
-        playbook: &'a Playbook,
-        failures: &'a Failures,
-        pending: Vec<Pending>,
-        config: &'a ReflectionConfig,
-    ) -> Self {
-        Self {
-            task,
-            archive,
-            playbook,
-            failures,
-            pending,
-            config,
-        }
-    }
-}
-
-/// Build the request for `input.pending`, which must not be empty.
+/// Build the request that reviews `pending`, all from `island`, against the
+/// state of `memory`. Bullets it adds go to `scope`.
 pub(crate) fn request<I: PartialEq + Clone>(
     id: RequestId,
-    input: PromptInput<'_, I>,
+    memory: &Memory<I>,
+    island: IslandId,
+    scope: Scope,
+    task: &str,
+    pending: Vec<Pending>,
 ) -> ReflectionRequest {
-    assert!(!input.pending.is_empty());
-    let mut shown = Vec::from_iter(input.pending.iter().flat_map(|p| p.bullets.iter().copied()));
+    assert!(!pending.is_empty());
+    assert!(pending.iter().all(|p| p.island == island));
+    let input = PromptInput {
+        island,
+        task,
+        archive: &memory.archive,
+        playbook: &memory.playbook,
+        failures: &memory.failures,
+        pending: &pending,
+        config: &memory.config.reflection,
+    };
+    let mut shown = Vec::from_iter(pending.iter().flat_map(|p| p.bullets.iter().copied()));
     shown.sort_unstable();
     shown.dedup();
     shown.retain(|b| input.playbook.get(*b).is_some());
 
     let mut user = String::new();
     writeln!(user, "## Problem\n\n{}\n", input.task.trim()).expect(EXPECT_WRITE);
-    let lines = input.playbook.lines();
+    let lines = input.playbook.lines(island);
     writeln!(
         user,
         "## Current playbook ({} bullets)\n\n{}\n",
@@ -328,9 +343,11 @@ pub(crate) fn request<I: PartialEq + Clone>(
 
     ReflectionRequest {
         id,
+        island,
+        scope,
         system_prompt: SYSTEM_PROMPT.to_string(),
         user_prompt: user,
-        pending: input.pending,
+        pending,
         shown,
     }
 }
@@ -340,7 +357,7 @@ fn push_reference<I: PartialEq + Clone>(user: &mut String, input: &PromptInput<'
     let elites = Vec::from_iter(
         input
             .archive
-            .ranked()
+            .ranked(input.island)
             .into_iter()
             .filter(|e| !reviewed.contains(&e.seq()))
             .take(input.config.reference_elites),
@@ -368,7 +385,7 @@ fn push_reference<I: PartialEq + Clone>(user: &mut String, input: &PromptInput<'
 
 fn push_reviewed<I: PartialEq + Clone>(user: &mut String, input: &PromptInput<'_, I>) {
     user.push_str("## Attempts to review\n\n");
-    for pending in &input.pending {
+    for pending in input.pending {
         let entry = input
             .archive
             .by_seq(pending.seq)
@@ -476,7 +493,12 @@ pub(crate) fn apply<I: PartialEq + Clone>(
             continue;
         }
         let evidence = evidence_of(&op.evidence, request, archive);
-        match playbook.add(Section::parse(&op.section), &op.content, evidence) {
+        match playbook.add(
+            request.scope,
+            Section::parse(&op.section),
+            &op.content,
+            evidence,
+        ) {
             Ok(id) => report.added.push(id),
             Err(rejection) => report.rejected.push((op.content, rejection)),
         }

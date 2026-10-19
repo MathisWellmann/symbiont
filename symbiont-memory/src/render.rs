@@ -18,6 +18,7 @@ use crate::{
     Archive,
     Entry,
     EntrySeq,
+    IslandId,
 };
 
 pub(crate) const EXPECT_WRITE: &str = "writing to a String cannot fail";
@@ -78,8 +79,8 @@ impl Default for RenderConfig {
     }
 }
 
-/// Render the best and the newest entries of `archive`, leaving out the
-/// `exclude`d ids (the host shows a lane's parents itself).
+/// Render the best and the newest entries that `island` holds, leaving out
+/// the `exclude`d ids (the host shows a lane's parents itself).
 ///
 /// Blocks are added in priority order (elites, then recent attempts) for as
 /// long as they fit into [`RenderConfig::archive_tokens`]. An elite whose
@@ -87,6 +88,7 @@ impl Default for RenderConfig {
 /// it shows.
 pub(crate) fn render_archive<I: PartialEq + Clone>(
     archive: &Archive<I>,
+    island: IslandId,
     exclude: &[I],
     config: &RenderConfig,
 ) -> (String, Vec<EntrySeq>) {
@@ -98,7 +100,7 @@ pub(crate) fn render_archive<I: PartialEq + Clone>(
 
     let elites = Vec::from_iter(
         archive
-            .ranked()
+            .ranked(island)
             .into_iter()
             .filter(visible)
             .take(config.elites),
@@ -121,7 +123,7 @@ pub(crate) fn render_archive<I: PartialEq + Clone>(
 
     let recent = Vec::from_iter(
         archive
-            .recent()
+            .recent(island)
             .filter(visible)
             .filter(|e| !shown.contains(&e.seq()))
             .take(config.recent),
@@ -237,7 +239,12 @@ mod tests {
 
     #[test]
     fn empty_archive_renders_nothing() {
-        let (text, shown) = render_archive(&archive(&[]), &[], &RenderConfig::default());
+        let (text, shown) = render_archive(
+            &archive(&[]),
+            IslandId::default(),
+            &[],
+            &RenderConfig::default(),
+        );
         assert!(text.is_empty());
         assert!(shown.is_empty());
     }
@@ -246,7 +253,7 @@ mod tests {
     fn elites_then_recent_without_repeats() {
         let archive = archive(&[1.0, 5.0, 3.0, 0.0]);
         let config = RenderConfig::new(2, 1, 5, 6_000, 3_000);
-        let (text, shown) = render_archive(&archive, &[], &config);
+        let (text, shown) = render_archive(&archive, IslandId::default(), &[], &config);
         // Elites #1 and #2, then the remaining entries newest first.
         assert_eq!(
             shown,
@@ -267,7 +274,12 @@ mod tests {
     #[test]
     fn excluded_ids_are_not_shown() {
         let archive = archive(&[1.0, 5.0]);
-        let (text, shown) = render_archive(&archive, &[1], &RenderConfig::default());
+        let (text, shown) = render_archive(
+            &archive,
+            IslandId::default(),
+            &[1],
+            &RenderConfig::default(),
+        );
         assert_eq!(shown, vec![EntrySeq::from_raw(0)]);
         assert!(!text.contains("report of 1"));
     }
@@ -276,11 +288,15 @@ mod tests {
     fn budget_drops_source_then_blocks() {
         let archive = archive(&[1.0, 5.0, 3.0]);
         let tiny = RenderConfig::new(3, 3, 0, 6_000, 12);
-        let (text, shown) = render_archive(&archive, &[], &tiny);
+        let (text, shown) = render_archive(&archive, IslandId::default(), &[], &tiny);
         assert_eq!(shown, vec![EntrySeq::from_raw(1)]);
         assert!(!text.contains("```rust"));
         let zero = RenderConfig::new(3, 3, 3, 6_000, 0);
-        assert!(render_archive(&archive, &[], &zero).1.is_empty());
+        assert!(
+            render_archive(&archive, IslandId::default(), &[], &zero)
+                .1
+                .is_empty()
+        );
     }
 
     #[test]
@@ -293,8 +309,8 @@ mod tests {
     #[test]
     fn rendering_is_deterministic() {
         let archive = archive(&[2.0, 2.0, 1.0]);
-        let a = render_archive(&archive, &[], &RenderConfig::default());
-        let b = render_archive(&archive, &[], &RenderConfig::default());
+        let a = render_archive(&archive, IslandId::default(), &[], &RenderConfig::default());
+        let b = render_archive(&archive, IslandId::default(), &[], &RenderConfig::default());
         assert_eq!(a, b);
     }
 }
