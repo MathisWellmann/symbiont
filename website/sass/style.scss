@@ -199,6 +199,20 @@ section {
     line-height: 1.7;
   }
 
+  .setup-title {
+    text-align: center;
+    margin: 3rem 0 0.75rem;
+  }
+
+  .setup-intro {
+    color: $text-muted;
+    font-size: 0.9rem;
+    text-align: center;
+    margin-bottom: 1rem;
+
+    code { color: $teal; }
+  }
+
   .video-demo {
     margin-top: 2rem;
 
@@ -275,9 +289,46 @@ section {
     }
   }
 
+  .showcase-img {
+    display: block;
+    width: 100%;
+    border: 1px solid $border;
+    border-radius: 8px;
+    margin-bottom: 2rem;
+  }
+
   .showcase-cta {
     text-align: center;
     font-weight: 600;
+  }
+}
+
+// --- Memory showcase ---
+
+.memory {
+  .memory-parts {
+    margin-bottom: 2rem;
+    max-width: 900px;
+    grid-template-columns: repeat(4, 1fr);
+
+    // No headline number here: the title carries the card.
+    h3 { color: $teal; }
+
+    @media (max-width: 800px) {
+      grid-template-columns: 1fr 1fr;
+    }
+  }
+
+  pre {
+    background: $code-bg;
+    border: 1px solid $border;
+    border-radius: 8px;
+    padding: 1.5rem;
+    overflow-x: auto;
+    font-size: 0.85rem;
+    line-height: 1.7;
+    max-width: 900px;
+    margin: 0 auto 2rem;
   }
 }
 
@@ -529,7 +580,9 @@ $chart-mark: #00897B;
   .example {
     display: flex;
     flex-direction: column;
-    height: 380px;
+    // A minimum, not a fixed height: a longer caption grows the card instead
+    // of being clipped (the tool-calling caption was).
+    min-height: 380px;
     background: $bg-card;
     border: 1px solid $border;
     border-radius: 8px;
@@ -537,6 +590,9 @@ $chart-mark: #00897B;
     transition: border-color 0.2s;
 
     &:hover { border-color: $orange; }
+
+    // Examples without a screenshot only need room for their caption.
+    &.text-only { min-height: 0; }
 
     img {
       width: 100%;
