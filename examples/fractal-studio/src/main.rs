@@ -23,6 +23,7 @@
 //!   generate-and-compile round.
 
 use std::{
+    fmt::Write as _,
     sync::{
         Arc,
         Condvar,
@@ -433,15 +434,56 @@ fn spawn_render_thread(
         .expect("can spawn the render thread");
 }
 
+/// The most earlier requests a follow-up prompt repeats. Older ones are
+/// already folded into the current shader's code, which the prompt carries
+/// in full, so the list only has to explain the recent intent.
+const MAX_REMEMBERED_REQUESTS: usize = 8;
+
+/// The conversation behind the shader on the canvas.
+///
+/// The symbiont runtime forgets every evolve call on purpose, so request sizes
+/// stay bounded in a long session. A follow-up like "now make the palette
+/// cycle with time" only means something next to the shader it refers to, so
+/// the worker keeps the requests that shaped the active shader and renders
+/// them, with the shader's code, into the next prompt.
+#[derive(Debug, Default)]
+struct Session {
+    /// The requests behind the active shader, oldest first.
+    requests: Vec<String>,
+}
+
+impl Session {
+    /// Record a request whose shader is now active. A request whose evolution
+    /// failed is not recorded: the canvas still shows the shader before it.
+    fn remember(&mut self, request: String) {
+        self.requests.push(request);
+        if self.requests.len() > MAX_REMEMBERED_REQUESTS {
+            self.requests.remove(0);
+        }
+        assert!(self.requests.len() <= MAX_REMEMBERED_REQUESTS);
+    }
+}
+
+/// The shader a follow-up request refines.
+struct Refine<'a> {
+    /// The source of the active revision.
+    code: &'a str,
+    /// The requests that produced it, oldest first.
+    earlier: &'a [String],
+}
+
 /// Build the evolution prompt from the user request and live telemetry.
 ///
-/// Deliberately prompts with only the bare function *signature* (never the
-/// current or default implementation) so the agent is not anchored to an
-/// existing algorithm and new creative programs can emerge. The canvas
-/// conventions the agent needs are spelled out as text instead.
+/// The first request prompts with only the bare function *signature* (never
+/// the default implementation), so the agent is not anchored to an existing
+/// algorithm and new creative programs can emerge. Later requests carry the
+/// active shader and the requests behind it (`refine`), so a follow-up
+/// refines what is on the canvas instead of starting from nothing. The
+/// canvas conventions the agent needs are spelled out as text either way.
 fn evolution_prompt(
     fn_sig: &str,
     user_prompt: &str,
+    refine: Option<Refine<'_>>,
     canvas: (usize, usize),
     frame_ms: f64,
     mpix_per_s: f64,
@@ -454,9 +496,27 @@ fn evolution_prompt(
             "The previous implementation panicked at runtime: \"{msg}\". Avoid that failure mode.\n"
         )
     });
+    let request = match refine {
+        None => format!("The user wants the canvas to show: {user_prompt}\n"),
+        Some(Refine { code, earlier }) => {
+            let mut list = String::new();
+            for request in earlier {
+                writeln!(list, "- {request}").expect("writing to a String cannot fail");
+            }
+            format!(
+                "The canvas currently runs this shader:\n```rust\n{}\n```\n\
+                 It was written for these requests, oldest first:\n{list}\
+                 The user's latest request: {user_prompt}\n\
+                 Refine the current shader so it satisfies the latest request and keeps \
+                 what the earlier requests asked for. If the latest request asks for \
+                 something entirely different, replace the shader instead.\n",
+                code.trim_end()
+            )
+        }
+    };
     format!(
         "Implement this per-pixel shader function:\n```rust\n{fn_sig}\n```\n\
-         The user wants the canvas to show: {user_prompt}\n\
+         {request}\
          Canvas conventions: `(x, y)` is the pixel position with `(0, 0)` at \
          the center; `y` spans [-1, 1] (positive is up) and `x` spans \
          [-aspect, +aspect] where aspect is the window's aspect ratio, \
@@ -473,6 +533,63 @@ fn evolution_prompt(
          (cap iteration counts). Pick whatever algorithm best fits the request \
          — be creative. Respond with Rust code only."
     )
+}
+
+#[cfg(test)]
+mod prompt_tests {
+    use super::*;
+
+    #[test]
+    fn the_first_request_shows_no_code() {
+        let prompt = evolution_prompt(
+            "fn shade()",
+            "a Julia set",
+            None,
+            (960, 540),
+            1.0,
+            2.0,
+            None,
+        );
+        assert!(prompt.contains("The user wants the canvas to show: a Julia set\n"));
+        assert!(!prompt.contains("currently runs"));
+    }
+
+    #[test]
+    fn a_follow_up_carries_the_shader_and_earlier_requests() {
+        let earlier = vec!["a Julia set".to_string(), "sunset palette".to_string()];
+        let refine = Refine {
+            code: "fn shade() -> u32 { 7 }\n",
+            earlier: &earlier,
+        };
+        let prompt = evolution_prompt(
+            "fn shade()",
+            "cycle the palette with time",
+            Some(refine),
+            (960, 540),
+            1.0,
+            2.0,
+            Some("overflow".to_string()),
+        );
+        assert!(prompt.contains("```rust\nfn shade() -> u32 { 7 }\n```"));
+        assert!(prompt.contains("oldest first:\n- a Julia set\n- sunset palette\n"));
+        assert!(prompt.contains("The user's latest request: cycle the palette with time\n"));
+        assert!(prompt.contains("panicked at runtime: \"overflow\""));
+        assert!(!prompt.contains("wants the canvas to show"));
+    }
+
+    #[test]
+    fn the_session_forgets_the_oldest_requests() {
+        let mut session = Session::default();
+        for i in 0..MAX_REMEMBERED_REQUESTS + 2 {
+            session.remember(format!("request {i}"));
+        }
+        assert_eq!(session.requests.len(), MAX_REMEMBERED_REQUESTS);
+        assert_eq!(session.requests[0], "request 2");
+        assert_eq!(
+            session.requests.last().map(String::as_str),
+            Some(format!("request {}", MAX_REMEMBERED_REQUESTS + 1).as_str())
+        );
+    }
 }
 
 /// Spawn the evolution worker: for each user prompt it runs a single-lane
@@ -498,9 +615,11 @@ fn spawn_evolution_worker(
     std::thread::Builder::new()
         .name("symbiont-evolution".to_string())
         .spawn(move || {
-            // Only the bare signature — no default/current body — so the
-            // agent is free to invent a fresh algorithm each evolution.
+            // Only the bare signature — never the default body — so the
+            // first evolution is free to invent any algorithm. Follow-ups see
+            // the active shader through the session instead.
             let fn_sig = runtime.fn_sigs()[0].clone();
+            let mut session = Session::default();
             while let Ok(user_prompt) = prompt_rx.recv() {
                 let (canvas, frame_ms, mpix_per_s, panic_msg) = {
                     let mut s = shared.lock().expect("shared state mutex is not poisoned");
@@ -510,9 +629,15 @@ fn spawn_evolution_worker(
                 };
                 ctx.request_repaint();
 
+                let code = runtime.current_code();
+                let refine = (!session.requests.is_empty()).then(|| Refine {
+                    code: &code,
+                    earlier: &session.requests,
+                });
                 let prompt = evolution_prompt(
                     &fn_sig,
                     &user_prompt,
+                    refine,
                     canvas,
                     frame_ms,
                     mpix_per_s,
@@ -550,6 +675,7 @@ fn spawn_evolution_worker(
                             s.last_evolve_secs = Some(evolve_secs);
                             s.last_swap_us = Some(swap_time.as_secs_f64() * 1e6);
                             s.panic_msg = None;
+                            session.remember(user_prompt);
                             info!(
                                 "Evolution #{} hot-swapped successfully (revision {revision}, \
                                  render thread parked for {:.0} us).",
@@ -645,8 +771,8 @@ impl FractalApp {
                 .expect("the evolution worker outlives the UI");
         }
         ui.small(
-            "Follow-up prompts refine the current shader — the chat history \
-             is kept by the symbiont runtime.",
+            "Follow-up prompts refine the current shader: the prompt carries \
+             its code and the requests behind it.",
         );
     }
 
