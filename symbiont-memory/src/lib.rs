@@ -81,7 +81,8 @@
 //!
 //! A [`Memory`] is plain data. It is owned by one task, mutated through
 //! `&mut self` and serializable, so a host can checkpoint it next to its
-//! population. Nothing in it reads the clock or a random number generator,
+//! population: [`Memory::snapshot`] writes a versioned snapshot and
+//! [`Memory::restore`] checks one before it reads it back. Nothing in it reads the clock or a random number generator,
 //! and rendering is a pure function of the state: the same state renders the
 //! same bytes, which keeps a server's prefix cache warm and makes a recorded
 //! run replayable.
@@ -123,6 +124,7 @@ mod island;
 mod playbook;
 mod reflection;
 mod render;
+mod snapshot;
 
 use serde::{
     Deserialize,
@@ -175,6 +177,11 @@ pub use crate::{
     render::{
         RenderConfig,
         estimate_tokens,
+    },
+    snapshot::{
+        RestoreError,
+        SNAPSHOT_VERSION,
+        SnapshotError,
     },
 };
 
