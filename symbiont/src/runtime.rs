@@ -144,6 +144,10 @@ use crate::{
         RevisionEntry,
         RevisionFn,
     },
+    source_transform::{
+        self,
+        SourceTransform,
+    },
     state::State,
     tools::context::ToolContext,
     utils::{
@@ -339,6 +343,9 @@ pub struct Runtime {
     /// [`DylibConfig`] has one. Its [`DocIndex`] documents the API that
     /// compile errors about an invented method or field are attached with.
     host_crate: Option<String>,
+    /// The host's rewrite of each candidate before it is compiled, if it set
+    /// one. See [`Runtime::set_source_transform`].
+    source_transform: OnceLock<SourceTransform>,
     /// The index of `host_crate`, built on the first compile failure that
     /// needs it. A build runs `cargo rustdoc`, which is slow, so a runtime
     /// whose candidates compile never pays for it; a host that already built
@@ -500,6 +507,7 @@ impl Runtime {
             // ever calls `evolve` is unaffected.
             inference_gate: InferenceGate::unlimited(),
             host_crate: config.host_crate().map(str::to_string),
+            source_transform: OnceLock::new(),
             doc_index: tokio::sync::OnceCell::new(),
         };
 
@@ -1060,16 +1068,17 @@ impl Runtime {
         candidate: String,
         applied: &mut Vec<AppliedFix>,
     ) -> Result<Compiled> {
+        let compiled = self.compiled_text(&candidate)?;
         let first = match compile_dylib(
             &self.crate_dir,
             self.profile,
-            &candidate,
-            &assemble_lib_rs(&candidate, &self.glue),
+            &compiled,
+            &assemble_lib_rs(&compiled, &self.glue),
         )
         .await
         {
             Ok(()) => return Ok(Compiled::Fresh(candidate, Vec::new())),
-            Err(err) => err,
+            Err(err) => source_transform::onto_source(err, &compiled, &candidate),
         };
         let Error::CompilationFailed {
             diagnostics: first_diagnostics,
@@ -1091,13 +1100,15 @@ impl Runtime {
         if let Some(existing) = self.registered_with_source(&patched)? {
             return Ok(Compiled::Registered(existing, fixes));
         }
+        let compiled = self.compiled_text(&patched)?;
         match compile_dylib(
             &self.crate_dir,
             self.profile,
-            &patched,
-            &assemble_lib_rs(&patched, &self.glue),
+            &compiled,
+            &assemble_lib_rs(&compiled, &self.glue),
         )
         .await
+        .map_err(|err| source_transform::onto_source(err, &compiled, &patched))
         {
             Ok(()) => Ok(Compiled::Fresh(patched, fixes)),
             Err(Error::CompilationFailed {
@@ -1121,6 +1132,41 @@ impl Runtime {
             }
             Err(other) => Err(other),
         }
+    }
+
+    /// The text the compiler sees for the candidate `source`: the source
+    /// itself, or what the host's transform makes of it.
+    fn compiled_text(&self, source: &str) -> Result<String> {
+        match self.source_transform.get() {
+            Some(transform) => source_transform::apply(transform, source),
+            None => Ok(source.to_string()),
+        }
+    }
+
+    /// Rewrite every candidate's source with `transform` before it is
+    /// compiled, from the next build on.
+    ///
+    /// The revision keeps the agent's text: [`Runtime::revision_code`], the
+    /// edit base of the revision tools, and the check for byte-identical
+    /// candidates all use it. Only the dylib is built from the transformed
+    /// text. Compile errors keep their line numbers, because the transform
+    /// must keep the number of lines (it panics otherwise); their spans are
+    /// moved onto the agent's text where a line is unchanged, and dropped on
+    /// the lines the transform changed, together with any automatic fix
+    /// there. A transform that returns `Err` fails the build with its
+    /// message, which the agent reads like compiler output.
+    ///
+    /// Set it once, right after [`Runtime::new`] and before the first build.
+    /// The initial revision is built by `new` and is not transformed.
+    ///
+    /// # Errors
+    ///
+    /// Returns `transform` if a transform is already set.
+    pub fn set_source_transform(
+        &self,
+        transform: SourceTransform,
+    ) -> std::result::Result<(), SourceTransform> {
+        self.source_transform.set(transform)
     }
 
     /// The revision whose source is exactly `source`, if one is registered.

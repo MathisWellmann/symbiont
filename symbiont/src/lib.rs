@@ -34,6 +34,7 @@ mod parser;
 mod profile;
 mod revision;
 mod runtime;
+mod source_transform;
 mod state;
 mod system_prompt;
 mod thinking_level;
@@ -135,6 +136,7 @@ pub use runtime::{
 // provider parameters need it nameable without depending on `serde_json`
 // directly.
 pub use serde_json::Value;
+pub use source_transform::SourceTransform;
 pub use state::{
     State,
     StateDecl,
